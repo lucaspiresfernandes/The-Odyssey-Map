@@ -27,6 +27,8 @@ const env = {
 	PORT: String(APP_PORT),
 	WS_HOST: '127.0.0.1',
 	WS_PORT: String(WS_PORT),
+	APP_URL: app,
+	BRIDGE_SECRET: crypto.randomUUID(),
 	ORIGIN: undefined
 };
 const servers = [
@@ -95,7 +97,11 @@ class Visitor {
 			ws.onerror = () => resolve(false);
 			ws.onclose = () => resolve(false);
 		});
-		return { ws, messages, opened };
+		/** The close code, once the server has hung up. */
+		const closed = new Promise<number>((resolve) => {
+			ws.addEventListener('close', (event) => resolve(event.code));
+		});
+		return { ws, messages, opened, closed };
 	}
 }
 
@@ -136,7 +142,7 @@ async function run() {
 	const playerPage = await (await player.request(mapPath)).text();
 	check('the player is not shown the invite link', !playerPage.includes('/join/'));
 
-	// The WebSocket server recognises the session the app created.
+	// The WebSocket server asks the app who each session belongs to.
 	const gmSocket = gm.connect(campaign);
 	const playerSocket = player.connect(campaign);
 	check('the GM connects with the app session', await gmSocket.opened);
@@ -149,7 +155,7 @@ async function run() {
 		gmSocket.messages[0]?.role === 'gm' && playerSocket.messages[0]?.role === 'player'
 	);
 
-	// Written by the SvelteKit process, delivered by the WebSocket process.
+	// Written by the app over HTTP, then handed to the WebSocket server to deliver.
 	const hidden = await gm.command(campaign, {
 		t: 'marker.create',
 		mapId,
@@ -165,11 +171,7 @@ async function run() {
 	await pause(700);
 	check('a hidden marker reaches the GM live', JSON.stringify(gmSocket.messages).includes(secret));
 	check('a hidden marker never reaches the player', !JSON.stringify(playerSocket.messages).includes(secret));
-	check(
-		'the player cannot load it either',
-		!(await (await player.request(mapPath)).text()).includes(secret) &&
-			!(await (await player.request(`/c/${campaign}/history`)).text()).includes(secret)
-	);
+	check('the player cannot load it either', !(await (await player.request(mapPath)).text()).includes(secret));
 	const poke = await player.command(campaign, { t: 'marker.delete', id: markerId });
 	check('to the player it does not exist', poke.status === 404, `status ${poke.status}`);
 
@@ -184,6 +186,26 @@ async function run() {
 	await pause(500);
 	const reveal = playerSocket.messages.find((m) => m.t === 'event' && m.event.patch.t === 'marker.upsert');
 	check('revealing it delivers it to the player', reveal?.event.patch.marker.title === 'Revealed');
+	const seen = gmSocket.messages.findIndex((m) => m.t === 'event' && m.event.patch.marker?.title === 'Revealed');
+	const acked = gmSocket.messages.findIndex((m) => m.t === 'ack' && m.id === 1);
+	check('the sender is shown its change before the acknowledgement', seen !== -1 && seen < acked);
+
+	// Undo is asking for the opposite of a change by its number, and redo is
+	// undoing the undo. The acknowledgement says which numbers those are.
+	const revealSeq: number = gmSocket.messages[acked]?.undo?.[0];
+	check('the acknowledgement names the change, so it can be undone', Number.isInteger(revealSeq));
+	gmSocket.ws.send(JSON.stringify({ t: 'cmd', id: 2, cmd: { t: 'history.revert', seq: revealSeq } }));
+	await pause(500);
+	const undone = gmSocket.messages.find((m) => m.t === 'ack' && m.id === 2);
+	check(
+		'undoing the reveal takes the marker away from the player again',
+		undone?.ok === true &&
+			playerSocket.messages.some((m) => m.t === 'event' && m.event.patch.t === 'marker.remove' && m.event.patch.id === markerId)
+	);
+	gmSocket.ws.send(JSON.stringify({ t: 'cmd', id: 3, cmd: { t: 'history.revert', seq: undone?.undo?.[0] } }));
+	await pause(500);
+	const reveals = playerSocket.messages.filter((m) => m.t === 'event' && m.event.patch.marker?.title === 'Revealed');
+	check('redoing it gives the marker back', reveals.length === 2, `${reveals.length} reveals`);
 
 	playerSocket.ws.send(JSON.stringify({ t: 'cmd', id: 7, cmd: { t: 'marker.delete', id: markerId } }));
 	playerSocket.ws.send(
@@ -202,6 +224,83 @@ async function run() {
 		gmSocket.messages.some((m) => m.t === 'event' && m.event.patch.marker?.title === 'Meet here at dawn')
 	);
 	check('the player still never received the hidden text', !JSON.stringify(playerSocket.messages).includes(secret));
+
+	// A table note is deleted by whoever added it or by the GM, and by no other player.
+	const noteId: string = gmSocket.messages.find((m) => m.t === 'event' && m.event.patch.marker?.title === 'Meet here at dawn')
+		?.event.patch.marker.id;
+	const retitled = await gm.command(campaign, { t: 'marker.update', id: noteId, changes: { title: 'Meet here at dusk' } });
+	check('the GM can edit a player\'s note', retitled.status === 200, `status ${retitled.status}`);
+	const gmNote = await gm.command(campaign, { t: 'marker.create', mapId, kind: 'player', title: 'The GM was here', x: 0.6, y: 0.6 });
+	const gmNoteId: string = gmNote.body.events?.[0]?.patch.marker.id;
+	playerSocket.ws.send(JSON.stringify({ t: 'cmd', id: 12, cmd: { t: 'marker.delete', id: gmNoteId } }));
+	playerSocket.ws.send(JSON.stringify({ t: 'cmd', id: 10, cmd: { t: 'marker.delete', id: noteId } }));
+	await pause(500);
+	check('a player cannot delete a note someone else added', !!gmNoteId && ack(12)?.ok === false);
+	check('the player who added a note can delete it', ack(10)?.ok === true);
+	playerSocket.ws.send(JSON.stringify({ t: 'cmd', id: 11, cmd: { t: 'history.revert', seq: ack(10)?.undo?.[0] } }));
+	await pause(500);
+	check(
+		'and can undo that',
+		ack(11)?.ok === true && (await (await gm.request(mapPath)).text()).includes('Meet here at dusk')
+	);
+	const taken = await gm.command(campaign, { t: 'marker.delete', id: noteId });
+	check(
+		'the GM can delete a player\'s note too',
+		taken.status === 200 && !(await (await gm.request(mapPath)).text()).includes('Meet here at dusk'),
+		`status ${taken.status}`
+	);
+	const givenBack = await gm.command(campaign, { t: 'history.revert', seq: taken.body.undo?.[0] });
+	check(
+		'and undo that',
+		givenBack.status === 200 && (await (await player.request(mapPath)).text()).includes('Meet here at dusk'),
+		`status ${givenBack.status}`
+	);
+
+	// Pointers go from browser to browser through the WebSocket server alone.
+	const cursorsSeen = (socket: { messages: any[] }) => socket.messages.filter((m) => m.t === 'cursor');
+	playerSocket.ws.send(JSON.stringify({ t: 'cursor', at: { mapId, x: 0.25, y: 0.75 } }));
+	await pause(300);
+	const pointer = cursorsSeen(gmSocket)[0]?.cursor;
+	check(
+		'the GM sees where the player is pointing',
+		pointer?.name === 'Tester' && pointer.role === 'player' && pointer.mapId === mapId && pointer.x === 0.25 && pointer.y === 0.75
+	);
+	check('the player is not sent their own pointer', cursorsSeen(playerSocket).length === 0);
+	const latecomer = gm.connect(campaign);
+	await latecomer.opened;
+	await pause(300);
+	check(
+		'someone who connects later is told where everyone already is',
+		latecomer.messages[0]?.cursors?.some((c: any) => c.id === pointer?.id && c.x === 0.25)
+	);
+	latecomer.ws.close();
+	for (const at of [{ mapId, x: 'left', y: 0.5 }, { mapId: '../x', x: 0.5, y: 0.5 }, { mapId, x: 1e9, y: 0.5 }, 'here']) {
+		playerSocket.ws.send(JSON.stringify({ t: 'cursor', at }));
+		await pause(40);
+	}
+	await pause(200);
+	check('a malformed pointer goes nowhere', cursorsSeen(gmSocket).length === 1, `${cursorsSeen(gmSocket).length} delivered`);
+
+	// Only the app may tell the WebSocket server what to deliver.
+	const forgedEvent = {
+		seq: 999999,
+		at: Date.now(),
+		actor: { id: 'x', name: 'x' },
+		patch: { t: 'marker.remove', id: markerId, mapId }
+	};
+	const planted = await fetch(`http://127.0.0.1:${WS_PORT}/publish`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json', authorization: 'Bearer guess' },
+		body: JSON.stringify({
+			campaignId: campaign,
+			events: [{ seq: 999999, to: { gm: forgedEvent, player: forgedEvent } }]
+		})
+	});
+	await pause(200);
+	check(
+		'nobody but the app can have events delivered',
+		planted.status === 403 && !JSON.stringify(playerSocket.messages).includes('999999')
+	);
 
 	// Larger than the adapter's default 512 KB request limit.
 	const pixels = new Uint8Array(2 * 1024 * 1024);
@@ -224,8 +323,25 @@ async function run() {
 	check('the player can load the image', fetched.status === 200 && (await fetched.arrayBuffer()).byteLength === pixels.length);
 	check('a stranger cannot', (await new Visitor().request(imagePath)).status === 401);
 
+	// The app checks the login on every forwarded command, so an open socket
+	// stops working the moment its session ends.
+	await player.form('/?/logout', {});
+	playerSocket.ws.send(
+		JSON.stringify({
+			t: 'cmd',
+			id: 9,
+			cmd: { t: 'marker.create', mapId, kind: 'player', title: 'After logout', x: 0.3, y: 0.3 }
+		})
+	);
+	const code = await Promise.race([playerSocket.closed, pause(2000).then(() => 0)]);
+	check('logging out ends the live connection', ack(9)?.ok === false && code === 4401, `close code ${code}`);
+	check('and nothing was written', !(await (await gm.request(mapPath)).text()).includes('After logout'));
+	check(
+		'their pointer leaves with them',
+		gmSocket.messages.some((m) => m.t === 'cursor.left' && m.id === pointer?.id)
+	);
+
 	gmSocket.ws.close();
-	playerSocket.ws.close();
 }
 
 let crashed: unknown;

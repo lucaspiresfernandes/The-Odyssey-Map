@@ -1,13 +1,16 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
+import { and, eq } from 'drizzle-orm';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { announce } from '#lib/server/bridge.ts';
 import { getDb, uploadsDir } from '#lib/server/db.ts';
 import { newId } from '#lib/server/ids.ts';
+import { maps } from '#lib/server/schema.ts';
 import { requireMemberApi } from '#lib/server/session.ts';
 import { toLiveEvent } from '#lib/server/visibility.ts';
-import { ActionError, IMAGE_FILE_PATTERN, setMapImage } from '#lib/server/world.ts';
+import { ActionError, IMAGE_FILE_PATTERN, setMapImage, undoable } from '#lib/server/world.ts';
 import { canEditWorld } from '#lib/shared/rules.ts';
-import { LIMITS } from '#lib/shared/types.ts';
+import { LIMITS, type CommandResponse } from '#lib/shared/types.ts';
 
 const CONTENT_TYPES = {
 	png: 'image/png',
@@ -38,16 +41,19 @@ export const GET: RequestHandler = async (event) => {
 	const { campaign } = requireMemberApi(event, event.params.campaign!);
 	const mapId = event.params.map!;
 	const row = getDb()
-		.query('SELECT image_file FROM maps WHERE id = ? AND campaign_id = ?')
-		.get(mapId, campaign.id) as { image_file: string | null } | null;
+		.select({ imageFile: maps.imageFile })
+		.from(maps)
+		.where(and(eq(maps.id, mapId), eq(maps.campaignId, campaign.id)))
+		.get();
 	if (!row) return refuse(404, 'Map not found');
 
 	// `v` names one specific upload of this map, so a URL always means the
-	// same bytes and can be cached for good. Older uploads stay reachable
-	// for the history. Anything else falls back to the current image.
+	// same bytes and can be cached for good. Older uploads stay reachable,
+	// so undoing a replacement brings the old image back. Anything else
+	// falls back to the current image.
 	const wanted = event.url.searchParams.get('v') ?? '';
 	const pinned = IMAGE_FILE_PATTERN.test(wanted) && wanted.startsWith(`${mapId}-`);
-	const file = pinned ? wanted : row.image_file;
+	const file = pinned ? wanted : row.imageFile;
 	if (!file) return refuse(404, 'This map has no image');
 
 	const blob = Bun.file(join(uploadsDir(), file));
@@ -71,8 +77,10 @@ export const POST: RequestHandler = async (event) => {
 	const db = getDb();
 	const mapId = event.params.map!;
 	const exists = db
-		.query('SELECT 1 FROM maps WHERE id = ? AND campaign_id = ?')
-		.get(mapId, campaign.id);
+		.select({ id: maps.id })
+		.from(maps)
+		.where(and(eq(maps.id, mapId), eq(maps.campaignId, campaign.id)))
+		.get();
 	if (!exists) return refuse(404, 'Map not found');
 
 	const tooBig = `Map images can be up to ${LIMITS.imageBytes / 1024 / 1024} MB.`;
@@ -106,10 +114,12 @@ export const POST: RequestHandler = async (event) => {
 			width: Number(form.get('width')),
 			height: Number(form.get('height'))
 		});
+		await announce(events);
 		return json({
 			ok: true,
-			events: events.map((e) => toLiveEvent(e, actor.role)).filter((e) => e !== null)
-		});
+			events: events.map((e) => toLiveEvent(e, actor.role)).filter((e) => e !== null),
+			undo: undoable(events)
+		} satisfies CommandResponse);
 	} catch (err) {
 		rmSync(path, { force: true });
 		if (err instanceof ActionError) return refuse(400, err.message);

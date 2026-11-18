@@ -9,7 +9,18 @@ const [mode = 'dev', ...flags] = process.argv.slice(2);
 const host = flags.includes('--lan') ? '0.0.0.0' : '127.0.0.1';
 const bun = process.execPath;
 
-const env = { ...process.env, WS_HOST: host, HOST: host };
+const appPort = mode === 'start' ? process.env.PORT || '3000' : '5173';
+
+const env = {
+	...process.env,
+	WS_HOST: host,
+	HOST: host,
+	// The two servers talk to each other on this machine. The WebSocket
+	// server forwards what browsers send it to the app at APP_URL, and the
+	// app proves who it is to the WebSocket server with BRIDGE_SECRET.
+	APP_URL: process.env.APP_URL || `http://127.0.0.1:${appPort}`,
+	BRIDGE_SECRET: process.env.BRIDGE_SECRET || crypto.randomUUID()
+};
 
 const commands =
 	mode === 'start'
@@ -18,7 +29,8 @@ const commands =
 				[bun, 'ws/server.ts']
 			]
 		: [
-				[bun, 'run', '--bun', 'vite', 'dev', '--host', host],
+				// A fixed port, because the WebSocket server has to find the app.
+				[bun, 'run', '--bun', 'vite', 'dev', '--host', host, '--port', appPort, '--strictPort'],
 				[bun, '--watch', 'ws/server.ts']
 			];
 

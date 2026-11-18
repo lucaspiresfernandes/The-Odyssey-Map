@@ -3,7 +3,7 @@
 	import { untrack } from 'svelte';
 	import { getLive } from '#lib/client/live.svelte.ts';
 	import { MapState } from '#lib/client/mapstate.svelte.ts';
-	import HistoryPanel from '#lib/components/HistoryPanel.svelte';
+	import { UndoStack, type Step } from '#lib/client/undo.ts';
 	import MapCanvas from '#lib/components/MapCanvas.svelte';
 	import MarkerForm from '#lib/components/MarkerForm.svelte';
 	import NamePrompt from '#lib/components/NamePrompt.svelte';
@@ -33,8 +33,13 @@
 	});
 	$effect(() => live.subscribe((event) => world.apply(event)));
 
+	// What this person has done on this map, for Ctrl+Z and Ctrl+Shift+Z.
+	const undos = new UndoStack(live);
+
 	const campaignId = $derived(data.campaign.id);
 	const isGm = $derived(canEditWorld(data.role));
+	/** Everyone else's mouse, for those looking at the same map. */
+	const cursors = $derived(live.cursors.filter((c) => c.mapId === world.map.id));
 
 	type Placing = { create: MarkerKind } | { move: Marker };
 	type Form =
@@ -46,7 +51,8 @@
 	interface Notice {
 		id: number;
 		text: string;
-		undo?: Command;
+		/** What the Undo button on the notice takes back. */
+		undo?: Step | null;
 	}
 
 	let canvas = $state<ReturnType<typeof MapCanvas>>();
@@ -58,11 +64,12 @@
 	let prompt = $state<Prompt | null>(null);
 	let selectedMarkerId = $state<string | null>(null);
 	let selectedRegionId = $state<string | null>(null);
-	let historyOpen = $state(false);
 	let inviteOpen = $state(false);
 	let copied = $state(false);
 	let uploading = $state(false);
-	let notice = $state<Notice | null>(null);
+	// Raw, because a notice's step is looked up in the undo stack by identity,
+	// and deep state would hand out a proxy of it instead.
+	let notice = $state.raw<Notice | null>(null);
 
 	const tool = $derived(placing ? 'place' : drawing ? 'draw' : 'pan');
 	const selectedRegion = $derived(world.regions.find((r) => r.id === selectedRegionId) ?? null);
@@ -83,10 +90,12 @@
 			prompt = null;
 			selectedMarkerId = null;
 			selectedRegionId = null;
+			// Undo is for the map in front of you, not one you have left.
+			undos.clear();
 		});
 	});
 
-	function say(text: string, undo?: Command) {
+	function say(text: string, undo?: Step | null) {
 		const id = Date.now();
 		notice = { id, text, undo };
 		setTimeout(() => {
@@ -94,14 +103,42 @@
 		}, 7000);
 	}
 
-	/** Sends a command, reporting a refusal to the user. True when it went through. */
-	async function run(command: Command): Promise<boolean> {
+	/**
+	 * Sends a command and remembers it for undo. A refusal is reported to the
+	 * user. `step` is what there is to undo about it, if anything.
+	 */
+	async function attempt(command: Command): Promise<{ ok: boolean; step: Step | null }> {
 		try {
-			await live.send(command);
-			return true;
+			return { ok: true, step: undos.did(await live.send(command)) };
 		} catch (err) {
 			say((err as Error).message);
-			return false;
+			return { ok: false, step: null };
+		}
+	}
+
+	/** The same, for when all that matters is whether it went through. */
+	async function run(command: Command): Promise<boolean> {
+		return (await attempt(command)).ok;
+	}
+
+	// ----------------------------------------------------------- undo, redo
+
+	/** Takes back the last thing this person did here, or `step` in particular. */
+	async function undo(step?: Step) {
+		// A notice offering to undo something would now be offering the past.
+		if (notice?.undo) notice = null;
+		try {
+			if (!(await undos.undo(step))) say('Nothing to undo.');
+		} catch (err) {
+			say((err as Error).message);
+		}
+	}
+
+	async function redo() {
+		try {
+			if (!(await undos.redo())) say('Nothing to redo.');
+		} catch (err) {
+			say((err as Error).message);
 		}
 	}
 
@@ -142,9 +179,8 @@
 
 	async function deleteMarker(marker: Marker) {
 		selectedMarkerId = null;
-		if (await run({ t: 'marker.delete', id: marker.id })) {
-			say(`Deleted “${marker.title}”.`, { t: 'marker.restore', id: marker.id });
-		}
+		const { ok, step } = await attempt({ t: 'marker.delete', id: marker.id });
+		if (ok) say(`Deleted “${marker.title}”.`, step);
 	}
 
 	// ------------------------------------------------------ maps & regions
@@ -166,12 +202,8 @@
 
 	async function deleteRegion(region: Region) {
 		selectedRegionId = null;
-		if (await run({ t: 'region.delete', id: region.id })) {
-			say(`Deleted the region “${region.name}”. Its map is kept.`, {
-				t: 'region.restore',
-				id: region.id
-			});
-		}
+		const { ok, step } = await attempt({ t: 'region.delete', id: region.id });
+		if (ok) say(`Deleted the region “${region.name}”. Its map is kept.`, step);
 	}
 
 	async function upload(file: File | undefined) {
@@ -200,6 +232,7 @@
 			const result = (await response.json().catch(() => null)) as CommandResponse | null;
 			if (!result?.ok) throw new Error(result?.error ?? "The image couldn't be uploaded.");
 			live.receive(result.events ?? []);
+			undos.did(result.undo ?? []);
 		} catch (err) {
 			say((err as Error).message);
 		} finally {
@@ -221,7 +254,21 @@
 	}
 
 	function onkeydown(e: KeyboardEvent) {
-		if (e.key !== 'Escape' || form || prompt) return;
+		if (form || prompt) return;
+
+		if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'z') {
+			// In a text field, Ctrl+Z belongs to the text.
+			const field = 'input, textarea, select, [contenteditable]';
+			if (e.target instanceof Element && e.target.closest(field)) return;
+			e.preventDefault();
+			// One step per press: holding the keys down doesn't run through the lot.
+			if (e.repeat) return;
+			if (e.shiftKey) redo();
+			else undo();
+			return;
+		}
+
+		if (e.key !== 'Escape') return;
 		if (placing || drawing) {
 			placing = null;
 			drawing = false;
@@ -346,12 +393,6 @@
 					{/if}
 				</div>
 			{/if}
-			<button
-				class="btn small"
-				class:active={historyOpen}
-				aria-pressed={historyOpen}
-				onclick={() => (historyOpen = !historyOpen)}>History</button
-			>
 		</div>
 	</header>
 
@@ -362,7 +403,9 @@
 				map={world.map}
 				regions={world.regions}
 				markers={world.markers}
+				{cursors}
 				role={data.role}
+				userId={data.me.id}
 				{editing}
 				{tool}
 				depth={world.trail.length}
@@ -379,6 +422,7 @@
 				onmove={(marker) => startPlacing({ move: marker })}
 				ondelete={deleteMarker}
 				onhide={(marker, hidden) => run({ t: 'marker.update', id: marker.id, changes: { hidden } })}
+				oncursor={(at) => live.point(at && { mapId: world.map.id, x: at[0], y: at[1] })}
 			/>
 
 			{#if selectedRegion && editing && tool === 'pan'}
@@ -452,14 +496,8 @@
 				<div class="notice" role="status">
 					<span>{notice.text}</span>
 					{#if notice.undo}
-						{@const undo = notice.undo}
-						<button
-							class="btn small"
-							onclick={() => {
-								notice = null;
-								run(undo);
-							}}>Undo</button
-						>
+						{@const step = notice.undo}
+						<button class="btn small" onclick={() => undo(step)}>Undo</button>
 					{/if}
 					<button class="btn small ghost" aria-label="Dismiss" onclick={() => (notice = null)}>
 						×
@@ -467,18 +505,6 @@
 				</div>
 			{/if}
 		</main>
-
-		{#if historyOpen}
-			<div class="side">
-				<HistoryPanel
-					{campaignId}
-					mapId={world.map.id}
-					role={data.role}
-					onclose={() => (historyOpen = false)}
-					onerror={say}
-				/>
-			</div>
-		{/if}
 	</div>
 </div>
 
@@ -650,10 +676,6 @@
 		min-width: 0;
 	}
 
-	.side {
-		flex-shrink: 0;
-	}
-
 	.toolbar {
 		position: absolute;
 		left: 50%;
@@ -740,16 +762,6 @@
 	@media (max-width: 720px) {
 		.bar {
 			flex-wrap: wrap;
-		}
-
-		.side {
-			position: absolute;
-			inset: 0;
-			z-index: 4;
-		}
-
-		.stage {
-			position: relative;
 		}
 
 		.toolbar {

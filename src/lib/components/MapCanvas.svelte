@@ -9,6 +9,7 @@
 	import {
 		mapImageUrl,
 		markerType,
+		type Cursor,
 		type MapInfo,
 		type Marker,
 		type Point,
@@ -22,7 +23,10 @@
 		map: MapInfo;
 		regions: Region[];
 		markers: Marker[];
+		/** Where the other people looking at this map are pointing. */
+		cursors: Cursor[];
 		role: Role;
+		userId: string;
 		/** GM edit mode: regions can be selected and reshaped. */
 		editing: boolean;
 		/** `place` waits for a click that positions a marker, `draw` outlines a region. */
@@ -39,13 +43,17 @@
 		onmove: (marker: Marker) => void;
 		ondelete: (marker: Marker) => void;
 		onhide: (marker: Marker, hidden: boolean) => void;
+		/** Where this browser's mouse is on the map, or null when it is not over it. */
+		oncursor: (at: Point | null) => void;
 	}
 
 	let {
 		map,
 		regions,
 		markers,
+		cursors,
 		role,
+		userId,
 		editing,
 		tool,
 		depth,
@@ -58,7 +66,8 @@
 		onedit,
 		onmove,
 		ondelete,
-		onhide
+		onhide,
+		oncursor
 	}: Props = $props();
 
 	interface View {
@@ -99,9 +108,8 @@
 	);
 	const orderedMarkers = $derived([...markers].sort((a, b) => a.y - b.y));
 	const selectedRegion = $derived(regions.find((r) => r.id === selectedRegionId) ?? null);
-	const labelRegion = $derived(
-		tool === 'pan' ? (regions.find((r) => r.id === hoveredRegionId) ?? null) : null
-	);
+	/** The region whose name is lit, because the mouse is over it. */
+	const litRegionId = $derived(tool === 'pan' ? hoveredRegionId : null);
 
 	// Markers take priority over the region beneath them: they sit above the
 	// regions and get the pointer first, so hovering one shows its card.
@@ -135,6 +143,28 @@
 
 	function pointsOf(region: Region): Point[] {
 		return reshape && reshape.id === region.id ? reshape.points : region.points;
+	}
+
+	const within = (value: number, low: number, high: number) =>
+		Math.min(high, Math.max(low, value));
+
+	/**
+	 * Where a region's name goes: the middle of its outline. When that is off
+	 * screen the name slides to the nearest spot that is still on screen and
+	 * still over the region, so a region you have zoomed into keeps its name.
+	 */
+	function labelSpot(points: Point[]): Point {
+		const b = boundsOf(points);
+		const sx = view.k * W;
+		const sy = view.k * H;
+		// Room for the name itself, and for the toolbars that float over the
+		// top and bottom of the map.
+		const mx = Math.min(170, cw / 2);
+		const my = Math.min(80, ch / 2);
+		return [
+			within(within(b.cx, (mx - view.x) / sx, (cw - mx - view.x) / sx), b.x0, b.x1),
+			within(within(b.cy, (my - view.y) / sy, (ch - my - view.y) / sy), b.y0, b.y1)
+		];
 	}
 
 	function svgPoints(points: Point[]): string {
@@ -351,8 +381,55 @@
 		hoveredRegionId = null;
 	}
 
+	// ------------------------------------------------------------- pointers
+
+	/** Where this browser's mouse is over the map, in client pixels. */
+	let mouse: { x: number; y: number } | null = null;
+
+	function followMouse(e: PointerEvent) {
+		if (e.pointerType === 'touch') return;
+		mouse = { x: e.clientX, y: e.clientY };
+		reportCursor();
+	}
+
+	function reportCursor() {
+		oncursor(mouse && viewport && ready ? toMap(mouse.x, mouse.y) : null);
+	}
+
+	// The map can move under a mouse that is holding still: a zoom, an
+	// arrival, stepping into another map. The mouse is then over a different
+	// spot, and the table should see that too.
+	$effect(() => {
+		void [view, W, H, map.id, ready];
+		untrack(reportCursor);
+	});
+
+	$effect(() => () => oncursor(null));
+
+	// Each person keeps one colour for as long as this page is open. The GM's
+	// is the gold of everything else that is the GM's.
+	const TINTS = [
+		'#ff7a90',
+		'#5cc8ff',
+		'#7be495',
+		'#c79bff',
+		'#4fe0d0',
+		'#ff8ad8',
+		'#c3e24f',
+		'#8fa2ff'
+	];
+	const tints = new Map<string, string>();
+
+	function tintOf(other: Cursor): string {
+		if (other.role === 'gm') return 'var(--accent)';
+		let tint = tints.get(other.userId);
+		if (!tint) tints.set(other.userId, (tint = TINTS[tints.size % TINTS.length]));
+		return tint;
+	}
+
 	function onpointerdown(e: PointerEvent) {
 		trackHover(e);
+		followMouse(e);
 		if (e.pointerType === 'mouse') {
 			if (e.button !== 0) return;
 			pointers.clear();
@@ -403,6 +480,7 @@
 	function onpointermove(e: PointerEvent) {
 		if (tool === 'draw' && e.pointerType === 'mouse') cursor = toMap(e.clientX, e.clientY);
 		trackHover(e);
+		followMouse(e);
 
 		const pointer = pointers.get(e.pointerId);
 		if (!pointer) return;
@@ -629,7 +707,11 @@
 		{onpointermove}
 		onpointerup={(e) => release(e, true)}
 		onpointercancel={(e) => release(e, false)}
-		onpointerleave={clearHover}
+		onpointerleave={() => {
+			clearHover();
+			mouse = null;
+			reportCursor();
+		}}
 	>
 		<div
 			class="world"
@@ -680,14 +762,18 @@
 				{/if}
 			</svg>
 
-			{#if labelRegion}
-				{@const b = boundsOf(pointsOf(labelRegion))}
-				<div class="region-label" style:left="{b.cx * W}px" style:top="{b.cy * H}px">
-					<strong>{labelRegion.name}</strong>
-					<span class="mouse">Double-click to enter</span>
-					<span class="touch">Double-tap to enter</span>
+			<!-- Every region wears its name. It comes before the markers, so it is never drawn over one. -->
+			{#each orderedRegions as region (region.id)}
+				{@const [x, y] = labelSpot(pointsOf(region))}
+				{@const lit = litRegionId === region.id}
+				<div class="region-label" class:lit style:left="{x * W}px" style:top="{y * H}px">
+					<strong>{region.name}</strong>
+					{#if lit}
+						<span class="mouse">Double-click to enter</span>
+						<span class="touch">Double-tap to enter</span>
+					{/if}
 				</div>
-			{/if}
+			{/each}
 
 			{#each orderedMarkers as marker (marker.id)}
 				{@const type = markerType(marker.type)}
@@ -721,6 +807,21 @@
 					</span>
 				</button>
 			{/each}
+
+			<!-- Everyone else's mouse. On top of the map, and never in the way of your own. -->
+			{#each cursors as other (other.id)}
+				<div
+					class="cursor"
+					style:translate="{other.x * W}px {other.y * H}px"
+					style:--c={tintOf(other)}
+					aria-hidden="true"
+				>
+					<svg viewBox="0 0 18 22" width="18" height="22">
+						<path d="M2 1.5v16l4.4-4 2.9 6.6 2.7-1.2-2.9-6.5h6Z" />
+					</svg>
+					<span>{other.name}</span>
+				</div>
+			{/each}
 		</div>
 	</div>
 
@@ -739,6 +840,7 @@
 				<MarkerCard
 					marker={active}
 					{role}
+					{userId}
 					{pinned}
 					onclose={() => (selectedMarkerId = null)}
 					{onedit}
@@ -938,29 +1040,52 @@
 		cursor: move;
 	}
 
+	/* A region's name is lettered straight onto the map, like a place name in
+	   an atlas: quiet until the region is hovered, and never boxed in. It
+	   never takes the pointer, so the outline beneath it still does. */
 	.region-label {
 		position: absolute;
 		transform: translate(-50%, -50%) scale(var(--inv));
-		display: grid;
-		justify-items: center;
-		gap: 2px;
-		padding: 6px 12px;
-		border-radius: 10px;
-		background: rgb(16 19 26 / 0.85);
-		border: 1px solid rgb(224 165 38 / 0.5);
-		white-space: nowrap;
+		width: max-content;
+		max-width: 300px;
+		text-align: center;
 		pointer-events: none;
+		text-shadow:
+			0 0 2px rgb(8 10 15 / 0.95),
+			0 0 5px rgb(8 10 15 / 0.85),
+			0 1px 10px rgb(8 10 15 / 0.6);
 	}
 
 	.region-label strong {
+		display: block;
 		font-family: var(--serif);
 		font-size: 17px;
 		font-weight: 600;
+		line-height: 1.2;
+		letter-spacing: 0.02em;
+		color: #fff8e4;
+		opacity: 0.55;
+		overflow-wrap: anywhere;
+		transition:
+			opacity 0.15s,
+			color 0.15s;
 	}
 
+	.region-label.lit strong {
+		opacity: 1;
+		color: #fff;
+	}
+
+	/* How to get in, said under the name while the region is hovered. Out of
+	   the flow, so the name does not jump when it appears. */
 	.region-label span {
+		position: absolute;
+		left: 50%;
+		top: calc(100% + 2px);
+		transform: translateX(-50%);
+		white-space: nowrap;
 		font-size: 12px;
-		color: var(--muted);
+		color: #e4dcc6;
 	}
 
 	.region-label .touch {
@@ -1065,6 +1190,60 @@
 	.surface[data-tool='draw'] .pin {
 		pointer-events: none;
 		opacity: 0.6;
+	}
+
+	/* ---- pointers ---- */
+
+	/* Other people's mice. Like pins they live in the scaled layer and undo
+	   its scale. Position and scale are separate properties so that only the
+	   position glides from one report to the next, not the size in a zoom. */
+	.cursor {
+		position: absolute;
+		left: 0;
+		top: 0;
+		z-index: 3;
+		display: flex;
+		align-items: flex-start;
+		scale: var(--inv);
+		transform-origin: 0 0;
+		pointer-events: none;
+		transition: translate 0.08s linear;
+	}
+
+	/* The tip of the arrow sits exactly on the spot. */
+	.cursor svg {
+		flex-shrink: 0;
+		margin: -1.5px 0 0 -2px;
+		filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.6));
+	}
+
+	.cursor path {
+		fill: var(--c);
+		stroke: #12151c;
+		stroke-width: 1.5;
+		stroke-linejoin: round;
+	}
+
+	.cursor span {
+		margin: 17px 0 0 -3px;
+		max-width: 150px;
+		padding: 0 7px;
+		border-radius: 3px 9px 9px 9px;
+		background: var(--c);
+		color: #12151c;
+		font-size: 12px;
+		font-weight: 600;
+		line-height: 1.6;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		box-shadow: 0 1px 3px rgb(0 0 0 / 0.5);
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.cursor {
+			transition: none;
+		}
 	}
 
 	/* ---- overlay ---- */

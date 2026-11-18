@@ -1,11 +1,13 @@
 <script lang="ts">
-	import { canEditMarkerKind } from '#lib/shared/rules.ts';
+	import { canEditMarkerKind, canRemoveMarker } from '#lib/shared/rules.ts';
 	import { markerType, type Marker, type Role } from '#lib/shared/types.ts';
 	import MarkerGlyph from './MarkerGlyph.svelte';
 
 	interface Props {
 		marker: Marker;
 		role: Role;
+		/** Who is looking. A table note offers Delete to its author and to the GM. */
+		userId: string;
 		/** A pinned card stays open and offers actions. A hover card only informs. */
 		pinned: boolean;
 		onclose: () => void;
@@ -15,10 +17,12 @@
 		onhide: (marker: Marker, hidden: boolean) => void;
 	}
 
-	let { marker, role, pinned, onclose, onedit, onmove, ondelete, onhide }: Props = $props();
+	let { marker, role, userId, pinned, onclose, onedit, onmove, ondelete, onhide }: Props =
+		$props();
 
 	const type = $derived(markerType(marker.type));
 	const editable = $derived(canEditMarkerKind(role, marker.kind));
+	const removable = $derived(canRemoveMarker(role, userId, marker));
 </script>
 
 <article class="card" class:pinned>
@@ -37,7 +41,9 @@
 	{#if marker.description}<p class="body">{marker.description}</p>{/if}
 
 	{#if marker.hidden}<p class="secret">Hidden from players</p>{/if}
-	{#if marker.kind === 'player'}<p class="by">Added by {marker.authorName}</p>{/if}
+	{#if marker.kind === 'player'}
+		<p class="by">Added by {marker.authorId === userId ? 'you' : marker.authorName}</p>
+	{/if}
 
 	{#if editable}
 		{#if pinned}
@@ -49,7 +55,9 @@
 						{marker.hidden ? 'Reveal' : 'Hide'}
 					</button>
 				{/if}
-				<button class="btn small danger" onclick={() => ondelete(marker)}>Delete</button>
+				{#if removable}
+					<button class="btn small danger" onclick={() => ondelete(marker)}>Delete</button>
+				{/if}
 			</footer>
 		{:else}
 			<p class="by">Click the marker to edit</p>

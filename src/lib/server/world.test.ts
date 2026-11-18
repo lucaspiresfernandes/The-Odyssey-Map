@@ -2,14 +2,16 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { createGuest, createSession, getSessionUser, registerUser, verifyLogin } from './auth';
 import { actorFor, createCampaign, getMembership, joinCampaign } from './campaigns';
 import { openDb, type Db } from './db';
-import { getMapSnapshot, listHistory } from './queries';
+import { getMapSnapshot } from './queries';
 import { toLiveEvent } from './visibility';
-import { ActionError, eventsAfter, perform, setMapImage, type Actor } from './world';
+import { ActionError, eventsAfter, perform, setMapImage, undoable, type Actor } from './world';
 import type { Marker, Point, StoredEvent } from '../shared/types';
 
 let db: Db;
 let gm: Actor;
 let player: Actor;
+/** A second player at the same table. */
+let other: Actor;
 let mapId: string;
 
 const SQUARE: Point[] = [
@@ -27,6 +29,9 @@ beforeEach(async () => {
 	joinCampaign(db, campaign.id, guest.id);
 	gm = actorFor(owner, getMembership(db, campaign.id, owner.id)!);
 	player = actorFor(guest, getMembership(db, campaign.id, guest.id)!);
+	const second = createGuest(db, 'Tovin');
+	joinCampaign(db, campaign.id, second.id);
+	other = actorFor(second, getMembership(db, campaign.id, second.id)!);
 	mapId = campaign.rootMapId;
 });
 
@@ -83,6 +88,12 @@ describe('accounts', () => {
 		expect(getSessionUser(db, token + 'x')).toBeNull();
 	});
 
+	test('a username can be registered only once, whatever its case', async () => {
+		await expect(registerUser(db, 'Keeper', 'another long password')).rejects.toThrow(
+			'That username is taken.'
+		);
+	});
+
 	test('joining by invite never changes an existing role', () => {
 		joinCampaign(db, gm.campaignId, gm.userId);
 		expect(getMembership(db, gm.campaignId, gm.userId)?.role).toBe('gm');
@@ -117,9 +128,8 @@ describe('world markers', () => {
 
 		expect(sentToPlayer(events)).toBe('[]');
 		expect(JSON.stringify(getMapSnapshot(db, gm.campaignId, mapId, 'player'))).not.toContain('SECRET');
-		expect(JSON.stringify(listHistory(db, gm.campaignId, 'player'))).not.toContain('SECRET');
 		expect(getMapSnapshot(db, gm.campaignId, mapId, 'gm')!.markers[0].hidden).toBe(true);
-		expect(listHistory(db, gm.campaignId, 'gm')).toHaveLength(4);
+		expect(eventsAfter(db, 0)).toHaveLength(4);
 
 		// To a player the marker does not exist, whatever they try on it.
 		expect(refusal(() => perform(db, player, { t: 'marker.update', id, changes: { title: 'x' } }))).toBe('not_found');
@@ -143,21 +153,58 @@ describe('world markers', () => {
 
 	test('the past of a revealed marker stays with the GM', () => {
 		const marker = worldMarker({ hidden: true, title: 'SECRET working title' });
-		perform(db, gm, { t: 'marker.update', id: marker.id, changes: { title: 'The Bell', hidden: false } });
-		expect(JSON.stringify(listHistory(db, gm.campaignId, 'player'))).not.toContain('SECRET');
+		const [reveal] = perform(db, gm, { t: 'marker.update', id: marker.id, changes: { title: 'The Bell', hidden: false } });
+		expect(sentToPlayer([reveal])).not.toContain('SECRET');
+		// Undoing the reveal would be a way to reach back into that past.
+		expect(refusal(() => perform(db, player, { t: 'history.revert', seq: reveal.seq }))).toBe('not_found');
 	});
 });
 
 describe('player markers', () => {
-	test('anyone at the table can add, edit and delete them', () => {
+	test('anyone at the table can add and edit them', () => {
 		const marker = note(player);
-		const other = actorFor(createGuest(db, 'Tovin'), getMembership(db, gm.campaignId, player.userId)!);
-		joinCampaign(db, gm.campaignId, other.userId);
-
 		perform(db, other, { t: 'marker.update', id: marker.id, changes: { description: 'Meet here at dawn' } });
 		perform(db, gm, { t: 'marker.update', id: marker.id, changes: { type: 'danger' } });
-		perform(db, other, { t: 'marker.delete', id: marker.id });
+
+		const [now] = getMapSnapshot(db, gm.campaignId, mapId, 'player')!.markers;
+		expect(now.description).toBe('Meet here at dawn');
+		expect(now.type).toBe('danger');
+		// Editing a note does not make it yours.
+		expect(now.authorId).toBe(player.userId);
+	});
+
+	test('a note is deleted by whoever added it, or by the GM', () => {
+		const marker = note(player);
+		expect(refusal(() => perform(db, other, { t: 'marker.delete', id: marker.id }))).toBe('forbidden');
+		expect(getMapSnapshot(db, gm.campaignId, mapId, 'player')!.markers).toHaveLength(1);
+
+		perform(db, player, { t: 'marker.delete', id: marker.id });
 		expect(getMapSnapshot(db, gm.campaignId, mapId, 'player')!.markers).toHaveLength(0);
+
+		// The GM can clear anyone's note off the map, and take that back.
+		const second = note(other);
+		const [cleared] = perform(db, gm, { t: 'marker.delete', id: second.id });
+		expect(getMapSnapshot(db, gm.campaignId, mapId, 'player')!.markers).toHaveLength(0);
+		perform(db, gm, { t: 'history.revert', seq: cleared.seq });
+		expect(getMapSnapshot(db, gm.campaignId, mapId, 'player')!.markers[0].id).toBe(second.id);
+
+		// The GM's own notes are not a player's to delete.
+		const gmNote = note(gm);
+		expect(refusal(() => perform(db, player, { t: 'marker.delete', id: gmNote.id }))).toBe('forbidden');
+	});
+
+	test('undo is no way around that', () => {
+		const marker = note(player);
+		const [created] = eventsAfter(db, 0);
+		// Undoing the creation would delete the note.
+		expect(refusal(() => perform(db, other, { t: 'history.revert', seq: created.seq }))).toBe('forbidden');
+
+		// And once it is deleted, another player can't bring it back either.
+		const [deleted] = perform(db, player, { t: 'marker.delete', id: marker.id });
+		expect(refusal(() => perform(db, other, { t: 'marker.restore', id: marker.id }))).toBe('forbidden');
+		expect(refusal(() => perform(db, other, { t: 'history.revert', seq: deleted.seq }))).toBe('forbidden');
+		perform(db, player, { t: 'history.revert', seq: deleted.seq });
+		expect(getMapSnapshot(db, gm.campaignId, mapId, 'player')!.markers).toHaveLength(1);
 	});
 
 	test('they can never be hidden', () => {
@@ -167,7 +214,7 @@ describe('player markers', () => {
 	});
 });
 
-describe('history', () => {
+describe('undo', () => {
 	test('a deleted marker can be restored by undoing the delete', () => {
 		const marker = note();
 		const [deleted] = perform(db, player, { t: 'marker.delete', id: marker.id });
@@ -190,13 +237,36 @@ describe('history', () => {
 		expect(now.x).toBe(0.9);
 	});
 
-	test('records who changed what, and what it was before', () => {
+	test('redo is undoing the undo', () => {
+		const marker = note();
+		const [retitle] = perform(db, player, { t: 'marker.update', id: marker.id, changes: { title: 'Wrong name' } });
+		const title = () => getMapSnapshot(db, gm.campaignId, mapId, 'player')!.markers[0].title;
+
+		const [undone] = perform(db, player, { t: 'history.revert', seq: retitle.seq });
+		expect(title()).toBe('The suspicious innkeeper');
+		const [redone] = perform(db, player, { t: 'history.revert', seq: undone.seq });
+		expect(title()).toBe('Wrong name');
+		perform(db, player, { t: 'history.revert', seq: redone.seq });
+		expect(title()).toBe('The suspicious innkeeper');
+	});
+
+	test('the log records who changed what, and what it was before', () => {
 		const marker = note();
 		perform(db, gm, { t: 'marker.update', id: marker.id, changes: { title: 'The honest innkeeper' } });
-		const [latest] = listHistory(db, gm.campaignId, 'player');
+		const latest = eventsAfter(db, 0).at(-1)!;
 		expect(latest.actorName).toBe('keeper');
 		expect((latest.before as Marker).title).toBe('The suspicious innkeeper');
 		expect((latest.after as Marker).title).toBe('The honest innkeeper');
+	});
+
+	test('everything but creating a map can be undone', () => {
+		const drawn = perform(db, gm, { t: 'region.create', mapId, name: 'Port Varr', points: SQUARE });
+		expect(drawn.map((e) => `${e.entity}.${e.action}`)).toEqual(['map.create', 'region.create']);
+		expect(undoable(drawn)).toEqual([drawn[1].seq]);
+		expect(refusal(() => perform(db, gm, { t: 'history.revert', seq: drawn[0].seq }))).toBe('invalid');
+
+		perform(db, gm, { t: 'history.revert', seq: drawn[1].seq });
+		expect(getMapSnapshot(db, gm.campaignId, mapId, 'gm')!.regions).toHaveLength(0);
 	});
 
 	test('players cannot undo the GM\'s work', () => {
@@ -241,6 +311,20 @@ describe('nested maps', () => {
 		expect(back.targetMapId).toBe(region.targetMapId);
 		expect(getMapSnapshot(db, gm.campaignId, back.targetMapId, 'player')!.markers).toHaveLength(1);
 	});
+
+	test('a region can be reshaped, and the reshape undone', () => {
+		perform(db, gm, { t: 'region.create', mapId, name: 'Port Varr', points: SQUARE });
+		const [region] = getMapSnapshot(db, gm.campaignId, mapId, 'gm')!.regions;
+		const moved = SQUARE.map(([x, y]): Point => [x + 0.2, y]);
+
+		expect(refusal(() => perform(db, player, { t: 'region.update', id: region.id, points: moved }))).toBe('forbidden');
+		const [reshaped] = perform(db, gm, { t: 'region.update', id: region.id, points: moved });
+		expect(getMapSnapshot(db, gm.campaignId, mapId, 'player')!.regions[0].points).toEqual(moved);
+		expect(perform(db, gm, { t: 'region.update', id: region.id, points: moved })).toHaveLength(0);
+
+		perform(db, gm, { t: 'history.revert', seq: reshaped.seq });
+		expect(getMapSnapshot(db, gm.campaignId, mapId, 'player')!.regions[0].points).toEqual(SQUARE);
+	});
 });
 
 describe('boundaries', () => {
@@ -253,7 +337,8 @@ describe('boundaries', () => {
 		expect(refusal(() => perform(db, outsider, { t: 'marker.update', id: marker.id, changes: { title: 'x' } }))).toBe('not_found');
 		expect(refusal(() => perform(db, outsider, { t: 'marker.create', mapId, kind: 'world', title: 'x', x: 0, y: 0 }))).toBe('not_found');
 		expect(getMapSnapshot(db, other.id, mapId, 'gm')).toBeNull();
-		expect(listHistory(db, other.id, 'gm')).toHaveLength(0);
+		const [created] = eventsAfter(db, 0);
+		expect(refusal(() => perform(db, outsider, { t: 'history.revert', seq: created.seq }))).toBe('not_found');
 	});
 
 	test('malformed input is refused, not stored', () => {

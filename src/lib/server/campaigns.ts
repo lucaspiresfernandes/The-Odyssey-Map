@@ -1,8 +1,10 @@
 // Campaigns and who belongs to them.
 
+import { and, desc, eq, sql } from 'drizzle-orm';
 import type { User } from './auth';
 import type { Db } from './db';
 import { newId, newToken } from './ids';
+import { campaigns, members } from './schema';
 import type { Actor } from './world';
 import { insertMap } from './world';
 import { LIMITS, type Role } from '../shared/types';
@@ -17,6 +19,12 @@ export interface CampaignSummary extends Campaign {
 	role: Role;
 }
 
+const campaignColumns = {
+	id: campaigns.id,
+	name: campaigns.name,
+	rootMapId: campaigns.rootMapId
+};
+
 export function createCampaign(db: Db, owner: User, rawName: unknown): Campaign {
 	const name = typeof rawName === 'string' ? rawName.trim() : '';
 	if (name.length < 1 || name.length > LIMITS.name) {
@@ -24,47 +32,43 @@ export function createCampaign(db: Db, owner: User, rawName: unknown): Campaign 
 	}
 	if (owner.isGuest) throw new Error('Create an account to run your own campaign.');
 
-	return db
-		.transaction(() => {
+	return db.transaction(
+		(tx) => {
 			const id = newId();
 			const now = Date.now();
-			// The campaign row needs its root map id and the map row needs its
-			// campaign id, so the check is deferred to the end of the transaction.
-			db.exec('PRAGMA defer_foreign_keys = ON');
-			const rootMapId = insertMap(db, id, null, name);
-			db.query(
-				`INSERT INTO campaigns (id, name, owner_id, invite_token, root_map_id, created_at)
-				 VALUES (?, ?, ?, ?, ?, ?)`
-			).run(id, name, owner.id, newToken(), rootMapId, now);
-			db.query(
-				`INSERT INTO members (campaign_id, user_id, role, joined_at) VALUES (?, ?, 'gm', ?)`
-			).run(id, owner.id, now);
+			// The root map is inserted before the campaign it points at, so the
+			// foreign key check is deferred to the end of the transaction.
+			tx.run(sql`PRAGMA defer_foreign_keys = ON`);
+			const rootMapId = insertMap(tx, id, null, name);
+			tx.insert(campaigns)
+				.values({ id, name, ownerId: owner.id, inviteToken: newToken(), rootMapId, createdAt: now })
+				.run();
+			tx.insert(members).values({ campaignId: id, userId: owner.id, role: 'gm', joinedAt: now }).run();
 			return { id, name, rootMapId };
-		})
-		.immediate();
+		},
+		{ behavior: 'immediate' }
+	);
 }
 
 export function listCampaigns(db: Db, userId: string): CampaignSummary[] {
-	const rows = db
-		.query(
-			`SELECT c.id, c.name, c.root_map_id, m.role FROM members m
-			 JOIN campaigns c ON c.id = m.campaign_id
-			 WHERE m.user_id = ? ORDER BY c.created_at DESC`
-		)
-		.all(userId) as { id: string; name: string; root_map_id: string; role: Role }[];
-	return rows.map((r) => ({ id: r.id, name: r.name, rootMapId: r.root_map_id, role: r.role }));
+	return db
+		.select({ ...campaignColumns, role: members.role })
+		.from(members)
+		.innerJoin(campaigns, eq(campaigns.id, members.campaignId))
+		.where(eq(members.userId, userId))
+		.orderBy(desc(campaigns.createdAt))
+		.all();
 }
 
 /** The campaign and this user's role in it, or null if they are not a member. */
 export function getMembership(db: Db, campaignId: string, userId: string): CampaignSummary | null {
 	const row = db
-		.query(
-			`SELECT c.id, c.name, c.root_map_id, m.role FROM members m
-			 JOIN campaigns c ON c.id = m.campaign_id
-			 WHERE m.campaign_id = ? AND m.user_id = ?`
-		)
-		.get(campaignId, userId) as { id: string; name: string; root_map_id: string; role: Role } | null;
-	return row ? { id: row.id, name: row.name, rootMapId: row.root_map_id, role: row.role } : null;
+		.select({ ...campaignColumns, role: members.role })
+		.from(members)
+		.innerJoin(campaigns, eq(campaigns.id, members.campaignId))
+		.where(and(eq(members.campaignId, campaignId), eq(members.userId, userId)))
+		.get();
+	return row ?? null;
 }
 
 /** Who a member is when they act on a campaign. */
@@ -73,21 +77,26 @@ export function actorFor(user: User, membership: CampaignSummary): Actor {
 }
 
 export function getInviteToken(db: Db, campaignId: string): string {
-	const row = db.query('SELECT invite_token FROM campaigns WHERE id = ?').get(campaignId);
-	return (row as { invite_token: string }).invite_token;
+	return db
+		.select({ inviteToken: campaigns.inviteToken })
+		.from(campaigns)
+		.where(eq(campaigns.id, campaignId))
+		.get()!.inviteToken;
 }
 
 export function findCampaignByInvite(db: Db, token: string): Campaign | null {
 	const row = db
-		.query('SELECT id, name, root_map_id FROM campaigns WHERE invite_token = ?')
-		.get(token) as { id: string; name: string; root_map_id: string } | null;
-	return row ? { id: row.id, name: row.name, rootMapId: row.root_map_id } : null;
+		.select(campaignColumns)
+		.from(campaigns)
+		.where(eq(campaigns.inviteToken, token))
+		.get();
+	return row ?? null;
 }
 
 /** Adds the user as a player. Existing members, the GM included, keep their role. */
 export function joinCampaign(db: Db, campaignId: string, userId: string) {
-	db.query(
-		`INSERT INTO members (campaign_id, user_id, role, joined_at) VALUES (?, ?, 'player', ?)
-		 ON CONFLICT (campaign_id, user_id) DO NOTHING`
-	).run(campaignId, userId, Date.now());
+	db.insert(members)
+		.values({ campaignId, userId, role: 'player', joinedAt: Date.now() })
+		.onConflictDoNothing()
+		.run();
 }

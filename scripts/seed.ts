@@ -7,6 +7,7 @@
 // The demo login is for local development only. Change the password or
 // delete the account before putting a server on the internet.
 
+import { eq } from 'drizzle-orm';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createGuest, registerUser } from '#lib/server/auth.ts';
@@ -14,6 +15,7 @@ import { actorFor, createCampaign, getInviteToken, getMembership, joinCampaign }
 import { openDb, uploadsDir } from '#lib/server/db.ts';
 import { newId } from '#lib/server/ids.ts';
 import { getMapSnapshot } from '#lib/server/queries.ts';
+import { users } from '#lib/server/schema.ts';
 import { perform, setMapImage, type Actor } from '#lib/server/world.ts';
 import type { Marker, Point } from '#lib/shared/types.ts';
 import { interior, terrain, type Painting } from './demo-art.ts';
@@ -23,7 +25,7 @@ export const DEMO_PASSWORD = 'odyssey-demo';
 
 const db = openDb();
 
-if (db.query('SELECT 1 FROM users WHERE username = ?').get(DEMO_USERNAME)) {
+if (db.select({ id: users.id }).from(users).where(eq(users.username, DEMO_USERNAME)).get()) {
 	console.log(`The demo account "${DEMO_USERNAME}" already exists. Nothing to do.`);
 	process.exit(0);
 }
@@ -100,13 +102,6 @@ const cellar = region(tavern, 'The Cellar', [
 await paint(cellar, interior({ seed: 11, rooms: 3, dark: true }));
 
 mark(gm, world, {
-	type: 'city',
-	title: 'Port Varr',
-	description: 'The last free harbour on the Reach. Double-click the region to walk its streets.',
-	x: 0.64,
-	y: 0.44
-});
-mark(gm, world, {
 	type: 'quest',
 	title: 'The Drowned Bell',
 	description: 'It still rings at low tide. The fishers say whoever answers it does not come back.',
@@ -117,8 +112,8 @@ mark(gm, world, {
 	type: 'danger',
 	title: 'Wyrm nest',
 	description: 'Hidden until the party finds the scorched clearing.',
-	x: 0.27,
-	y: 0.31,
+	x: 0.34,
+	y: 0.42,
 	hidden: true
 });
 mark(gm, port, {
@@ -127,13 +122,6 @@ mark(gm, port, {
 	description: 'Knows every ship that came in this month, and which ones did not declare their cargo.',
 	x: 0.7,
 	y: 0.3
-});
-mark(gm, port, {
-	type: 'location',
-	title: 'The Gilded Eel',
-	description: 'Cheap rooms, loud music, and a cellar nobody talks about.',
-	x: 0.49,
-	y: 0.4
 });
 mark(gm, tavern, {
 	type: 'treasure',

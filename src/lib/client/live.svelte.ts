@@ -3,11 +3,17 @@
 // Commands go out over the socket when it is open and over plain HTTP when
 // it is not, so the map stays usable while the connection is down. Either
 // way, changes come back as events and are handed to whoever subscribed.
+//
+// The socket also carries where everyone's pointer is. That is only ever
+// live: nothing about it is kept, and none of it is sent while offline.
 
 import { getContext, setContext } from 'svelte';
 import type {
+	ClientMessage,
 	Command,
 	CommandResponse,
+	Cursor,
+	CursorSpot,
 	LiveEvent,
 	Presence,
 	ServerMessage
@@ -22,16 +28,21 @@ interface Options {
 }
 
 interface Pending {
-	resolve: () => void;
+	resolve: (undo: number[]) => void;
 	reject: (error: Error) => void;
 	timer: ReturnType<typeof setTimeout>;
 }
 
 const KEY = Symbol('live');
 
+/** The least time between two reports of this browser's pointer, in milliseconds. */
+const POINTER_INTERVAL = 50;
+
 export class Live {
 	status = $state<'connecting' | 'open' | 'offline'>('connecting');
 	online = $state<Presence[]>([]);
+	/** Where everyone else is pointing, on whichever map they are looking at. */
+	cursors = $state.raw<Cursor[]>([]);
 
 	/**
 	 * The last few events received. A page that finishes loading while
@@ -47,6 +58,11 @@ export class Live {
 	#attempt = 0;
 	#retry: ReturnType<typeof setTimeout> | undefined;
 	#stopped = false;
+	/** Where this browser's pointer is, and what the server was last told about it. */
+	#spot: CursorSpot | null = null;
+	#toldSpot: CursorSpot | null = null;
+	#toldAt = 0;
+	#telling: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(options: Options) {
 		this.#options = options;
@@ -62,6 +78,7 @@ export class Live {
 			if (this.#ws !== ws) return;
 			this.#ws = null;
 			this.status = 'offline';
+			this.cursors = [];
 			for (const [id, pending] of this.#pending) {
 				clearTimeout(pending.timer);
 				pending.reject(new Error('The connection dropped. Check the map and try again.'));
@@ -76,6 +93,7 @@ export class Live {
 	stop() {
 		this.#stopped = true;
 		clearTimeout(this.#retry);
+		clearTimeout(this.#telling);
 		this.#ws?.close();
 	}
 
@@ -85,10 +103,25 @@ export class Live {
 				this.#attempt = 0;
 				this.status = 'open';
 				this.online = message.online;
+				this.cursors = message.cursors;
+				// A new connection is a new pointer to everyone else.
+				this.#toldSpot = null;
+				this.#tell();
 				this.#options.onHello(message.seq);
 				break;
 			case 'presence':
 				this.online = message.online;
+				break;
+			case 'cursor': {
+				const { cursor } = message;
+				const known = this.cursors.some((c) => c.id === cursor.id);
+				this.cursors = known
+					? this.cursors.map((c) => (c.id === cursor.id ? cursor : c))
+					: [...this.cursors, cursor];
+				break;
+			}
+			case 'cursor.left':
+				this.cursors = this.cursors.filter((c) => c.id !== message.id);
 				break;
 			case 'event':
 				this.#dispatch(message.event);
@@ -98,7 +131,7 @@ export class Live {
 				if (!pending) break;
 				this.#pending.delete(message.id);
 				clearTimeout(pending.timer);
-				if (message.ok) pending.resolve();
+				if (message.ok) pending.resolve(message.undo);
 				else pending.reject(new Error(message.error));
 			}
 		}
@@ -116,8 +149,12 @@ export class Live {
 		return () => this.#listeners.delete(listener);
 	}
 
-	/** Resolves once the server has applied the command. Rejects with its reason if it refuses. */
-	async send(command: Command): Promise<void> {
+	/**
+	 * Resolves once the server has applied the command, with the sequence
+	 * numbers of the changes it made that can be undone. Rejects with the
+	 * server's reason if it refuses.
+	 */
+	async send(command: Command): Promise<number[]> {
 		const ws = this.#ws;
 		if (ws && this.status === 'open' && ws.readyState === WebSocket.OPEN) {
 			const id = this.#nextId++;
@@ -127,7 +164,7 @@ export class Live {
 					reject(new Error('The server took too long to answer.'));
 				}, 10000);
 				this.#pending.set(id, { resolve, reject, timer });
-				ws.send(JSON.stringify({ t: 'cmd', id, cmd: command }));
+				ws.send(JSON.stringify({ t: 'cmd', id, cmd: command } satisfies ClientMessage));
 			});
 		}
 
@@ -144,11 +181,39 @@ export class Live {
 		}
 		if (!body.ok) throw new Error(body.error ?? 'Something went wrong.');
 		this.receive(body.events ?? []);
+		return body.undo ?? [];
 	}
 
 	/** Feeds in events that arrived some other way, such as an HTTP response. */
 	receive(events: LiveEvent[]) {
 		for (const event of events) this.#dispatch(event);
+	}
+
+	/**
+	 * Says where this browser's pointer is, or null once it has left the map.
+	 * Call it as often as the pointer moves: only the latest spot is sent,
+	 * and not more often than every POINTER_INTERVAL.
+	 */
+	point(spot: CursorSpot | null) {
+		this.#spot = spot;
+		this.#telling ??= setTimeout(
+			() => {
+				this.#telling = undefined;
+				this.#tell();
+			},
+			Math.max(0, this.#toldAt + POINTER_INTERVAL - Date.now())
+		);
+	}
+
+	#tell() {
+		const ws = this.#ws;
+		if (!ws || this.status !== 'open' || ws.readyState !== WebSocket.OPEN) return;
+		const spot = this.#spot;
+		const told = this.#toldSpot;
+		if (spot?.mapId === told?.mapId && spot?.x === told?.x && spot?.y === told?.y) return;
+		this.#toldSpot = spot;
+		this.#toldAt = Date.now();
+		ws.send(JSON.stringify({ t: 'cursor', at: spot } satisfies ClientMessage));
 	}
 }
 

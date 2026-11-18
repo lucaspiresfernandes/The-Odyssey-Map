@@ -13,6 +13,7 @@
 		"start": "bun scripts/run.ts start",
 		"start:lan": "bun scripts/run.ts start --lan",
 		"seed": "bun scripts/seed.ts",
+		"db:generate": "drizzle-kit generate",
 		"test": "bun test src",
 		"test:e2e": "bun run build && bun scripts/e2e.ts",
 		"prepare": "svelte-kit sync || echo \"\"",
@@ -22,9 +23,13 @@
 		"@sveltejs/adapter-bun": "^1.0.0",
 		"@sveltejs/kit": "^3.0.0",
 		"@sveltejs/vite-plugin-svelte": "^7.2.0",
+		"drizzle-kit": "^0.31.11",
 		"svelte": "^5.57.2",
 		"svelte-check": "^4.6.0",
 		"typescript": "^6.0.3",
 		"vite": "^8.3.0"
+	},
+	"dependencies": {
+		"drizzle-orm": "^0.45.4"
 	}
 }

@@ -1,8 +1,10 @@
-// Accounts and login sessions. Used by the SvelteKit hooks and by the
-// WebSocket server, so both recognise the same session cookie.
+// Accounts and login sessions. The WebSocket server has no copy of this: it
+// passes a browser's cookies to the app, which looks the session up here.
 
+import { and, eq, gt, sql } from 'drizzle-orm';
 import type { Db } from './db';
 import { newId, newToken } from './ids';
+import { sessions, users } from './schema';
 
 export const SESSION_COOKIE = 'odyssey_session';
 export const SESSION_MAX_AGE = 60 * 60 * 24 * 180; // seconds
@@ -39,11 +41,19 @@ export async function registerUser(db: Db, rawUsername: unknown, rawPassword: un
 	const hash = await Bun.password.hash(password);
 	const id = newId();
 	try {
-		db.query(
-			'INSERT INTO users (id, name, username, password_hash, created_at) VALUES (?, ?, ?, ?, ?)'
-		).run(id, username, username.toLowerCase(), hash, Date.now());
+		db.insert(users)
+			.values({
+				id,
+				name: username,
+				username: username.toLowerCase(),
+				passwordHash: hash,
+				createdAt: Date.now()
+			})
+			.run();
 	} catch (err) {
-		if (String(err).includes('UNIQUE')) throw new AuthError('That username is taken.');
+		// Drizzle wraps the database's own error, which names the constraint.
+		const reason = err instanceof Error && err.cause ? err.cause : err;
+		if (String(reason).includes('UNIQUE')) throw new AuthError('That username is taken.');
 		throw err;
 	}
 	return { id, name: username, isGuest: false };
@@ -53,10 +63,12 @@ export async function verifyLogin(db: Db, rawUsername: unknown, rawPassword: unk
 	const username = typeof rawUsername === 'string' ? rawUsername.trim().toLowerCase() : '';
 	const password = typeof rawPassword === 'string' ? rawPassword : '';
 	const row = db
-		.query('SELECT id, name, password_hash FROM users WHERE username = ?')
-		.get(username) as { id: string; name: string; password_hash: string | null } | null;
+		.select({ id: users.id, name: users.name, passwordHash: users.passwordHash })
+		.from(users)
+		.where(eq(users.username, username))
+		.get();
 
-	const ok = row?.password_hash ? await Bun.password.verify(password, row.password_hash) : false;
+	const ok = row?.passwordHash ? await Bun.password.verify(password, row.passwordHash) : false;
 	if (!row || !ok) throw new AuthError('Wrong username or password.');
 	return { id: row.id, name: row.name, isGuest: false };
 }
@@ -65,7 +77,7 @@ export async function verifyLogin(db: Db, rawUsername: unknown, rawPassword: unk
 export function createGuest(db: Db, rawName: unknown): User {
 	const name = cleanName(rawName);
 	const id = newId();
-	db.query('INSERT INTO users (id, name, created_at) VALUES (?, ?, ?)').run(id, name, Date.now());
+	db.insert(users).values({ id, name, createdAt: Date.now() }).run();
 	return { id, name, isGuest: true };
 }
 
@@ -78,38 +90,31 @@ function hashToken(token: string): string {
 /** Returns the token to put in the session cookie. */
 export function createSession(db: Db, userId: string): string {
 	const token = newToken();
-	db.query('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').run(
-		hashToken(token),
-		userId,
-		Date.now() + SESSION_MAX_AGE * 1000
-	);
+	db.insert(sessions)
+		.values({
+			tokenHash: hashToken(token),
+			userId,
+			expiresAt: Date.now() + SESSION_MAX_AGE * 1000
+		})
+		.run();
 	return token;
 }
 
 export function getSessionUser(db: Db, token: string | undefined | null): User | null {
 	if (!token) return null;
 	const row = db
-		.query(
-			`SELECT u.id, u.name, u.password_hash IS NULL AS is_guest
-			 FROM sessions s JOIN users u ON u.id = s.user_id
-			 WHERE s.token_hash = ? AND s.expires_at > ?`
-		)
-		.get(hashToken(token), Date.now()) as { id: string; name: string; is_guest: number } | null;
-	return row ? { id: row.id, name: row.name, isGuest: row.is_guest === 1 } : null;
+		.select({
+			id: users.id,
+			name: users.name,
+			isGuest: sql<boolean>`${users.passwordHash} IS NULL`.mapWith(Boolean)
+		})
+		.from(sessions)
+		.innerJoin(users, eq(users.id, sessions.userId))
+		.where(and(eq(sessions.tokenHash, hashToken(token)), gt(sessions.expiresAt, Date.now())))
+		.get();
+	return row ?? null;
 }
 
 export function deleteSession(db: Db, token: string | undefined | null) {
-	if (token) db.query('DELETE FROM sessions WHERE token_hash = ?').run(hashToken(token));
-}
-
-/** Reads one cookie out of a raw `Cookie` header. */
-export function readCookie(header: string | null, name: string): string | undefined {
-	if (!header) return undefined;
-	for (const part of header.split(';')) {
-		const eq = part.indexOf('=');
-		if (eq !== -1 && part.slice(0, eq).trim() === name) {
-			return decodeURIComponent(part.slice(eq + 1).trim());
-		}
-	}
-	return undefined;
+	if (token) db.delete(sessions).where(eq(sessions.tokenHash, hashToken(token))).run();
 }

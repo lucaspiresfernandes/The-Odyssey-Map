@@ -5,9 +5,22 @@
 
 import type { Marker, MarkerKind, Role, StoredEvent } from './types';
 
-/** The GM owns world markers. Player markers belong to the whole table. */
+/** The GM owns world markers. Anyone at the table can add notes and edit them. */
 export function canEditMarkerKind(role: Role, kind: MarkerKind): boolean {
 	return kind === 'player' || role === 'gm';
+}
+
+/**
+ * Taking a marker off the map, or putting a deleted one back. The GM can do
+ * that to any marker. A player can do it to the table notes they added
+ * themselves, and to nobody else's.
+ */
+export function canRemoveMarker(
+	role: Role,
+	userId: string,
+	marker: Pick<Marker, 'kind' | 'authorId'>
+): boolean {
+	return role === 'gm' || (marker.kind === 'player' && marker.authorId === userId);
 }
 
 /** Maps, their images and their regions are the GM's to shape. */
@@ -21,9 +34,9 @@ export function canSeeMarker(role: Role, marker: Pick<Marker, 'kind' | 'hidden'>
 }
 
 /**
- * Which history a role may read (and therefore undo). Players get the
- * history of the table's own markers. Everything else is the GM's: the past
- * of a world marker can hold text from before it was revealed.
+ * Which past changes a role may undo. Players get the changes to the table's
+ * own notes. Everything else is the GM's: the past of a world marker can
+ * hold text from before it was revealed.
  */
 export function canSeeEvent(role: Role, event: Pick<StoredEvent, 'entity' | 'before' | 'after'>) {
 	if (role === 'gm') return true;

@@ -1,12 +1,14 @@
-// The same commands the WebSocket server accepts, over plain HTTP. The
-// browser falls back to this when the live connection is down, so the map
-// stays editable. Both paths end in the same `perform` call.
+// Where every command is carried out. The WebSocket server forwards the
+// commands it receives to this endpoint, with the sender's cookies, and the
+// browser posts here itself when its live connection is down, so the map
+// stays editable.
 
 import { json, type RequestHandler } from '@sveltejs/kit';
+import { announce } from '#lib/server/bridge.ts';
 import { getDb } from '#lib/server/db.ts';
 import { requireMemberApi } from '#lib/server/session.ts';
 import { toLiveEvent } from '#lib/server/visibility.ts';
-import { ActionError, perform, type ErrorCode } from '#lib/server/world.ts';
+import { ActionError, perform, undoable, type ErrorCode } from '#lib/server/world.ts';
 import type { CommandResponse } from '#lib/shared/types.ts';
 
 const STATUS: Record<ErrorCode, number> = {
@@ -31,9 +33,13 @@ export const POST: RequestHandler = async (event) => {
 
 	try {
 		const events = perform(getDb(), actor, command);
+		// Deliver the change before answering, so the sender has already seen
+		// its effect by the time their request resolves.
+		await announce(events);
 		return json({
 			ok: true,
-			events: events.map((e) => toLiveEvent(e, actor.role)).filter((e) => e !== null)
+			events: events.map((e) => toLiveEvent(e, actor.role)).filter((e) => e !== null),
+			undo: undoable(events)
 		} satisfies CommandResponse);
 	} catch (err) {
 		if (err instanceof ActionError) {

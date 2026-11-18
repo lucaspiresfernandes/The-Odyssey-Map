@@ -1,20 +1,12 @@
 // The only path from the event log to a client.
 //
 // Stored events hold full before/after snapshots, including hidden world
-// markers. Nothing leaves either server without passing through one of the
-// functions below, which decide what a given role is allowed to receive.
+// markers. Nothing leaves the app without passing through the functions
+// below, which decide what a given role is allowed to receive. That includes
+// what is handed to the WebSocket server to deliver.
 
-import { canSeeEvent, canSeeMarker } from '../shared/rules';
-import type {
-	HistoryEntry,
-	LiveEvent,
-	MapInfo,
-	Marker,
-	Patch,
-	Region,
-	Role,
-	StoredEvent
-} from '../shared/types';
+import { canSeeMarker } from '../shared/rules';
+import type { LiveEvent, MapInfo, Marker, Patch, Region, Role, StoredEvent } from '../shared/types';
 
 /**
  * Turns an event into the change a client of this role should apply, or
@@ -50,23 +42,5 @@ export function toLiveEvent(event: StoredEvent, role: Role): LiveEvent | null {
 		at: event.at,
 		actor: { id: event.actorId, name: event.actorName },
 		patch
-	};
-}
-
-export function toHistoryEntry(event: StoredEvent, role: Role, mapName: string): HistoryEntry | null {
-	if (!canSeeEvent(role, event)) return null;
-	return {
-		seq: event.seq,
-		at: event.at,
-		actorName: event.actorName,
-		mapId: event.mapId,
-		mapName,
-		entity: event.entity,
-		entityId: event.entityId,
-		action: event.action,
-		before: event.before,
-		after: event.after,
-		// Creating a map is the one change with no opposite of its own.
-		canRevert: !(event.entity === 'map' && event.action === 'create')
 	};
 }
