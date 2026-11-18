@@ -9,6 +9,7 @@ import type { Db } from './db';
 import { isConcealed } from './world';
 import { canSeeMarker, canSeeRegion, canSeeToken } from '../shared/rules';
 import type {
+	Drawing,
 	LiveEvent,
 	MapInfo,
 	Marker,
@@ -45,6 +46,14 @@ export function projectEvent(event: StoredEvent, role: Role): Patch | null {
 			return { t: 'token.remove', id: event.entityId, mapId: event.mapId };
 		}
 		return null;
+	}
+
+	// A drawing is in plain sight of everyone who can open its map.
+	if (event.entity === 'drawing') {
+		const after = event.after as Drawing | null;
+		return after
+			? { t: 'drawing.upsert', drawing: after }
+			: { t: 'drawing.remove', id: event.entityId, mapId: event.mapId };
 	}
 
 	if (event.entity === 'region') {

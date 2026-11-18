@@ -41,8 +41,8 @@ on port 3001.
    asks first: the map behind it goes too, with everything inside, and there is no undo.
 3. For a fight, make a battle map. Pick **Battle map** when you name a new region, or
    open a map with nothing on it yet and use **Make this a battle map** in the bar. Set
-   the size of a cell to match the squares of your image, then add tokens and hand each
-   player's to them. See [Battle maps](#battle-maps).
+   the size of a cell to match the squares of your image, then put tokens on it from the
+   dock underneath and hand each player's to them. See [Battle maps](#battle-maps).
 4. Click **Invite** and send the link to your players. They pick a name and they're in.
    Players need no account.
 
@@ -119,29 +119,56 @@ map that should zoom further, enlarge the image with an upscaler such as
 
 A map is a world map or a battle map. A world map is for finding your way: markers,
 notes, and regions that lead further in. A battle map is a table to play on, and the end
-of the way down. It holds no markers, no notes and no regions, and the bar under it has
-none of the tools for them. What it has instead:
+of the way down. It holds no markers, no notes and no regions, and none of the tools for
+them. It has two palettes of its own, and each folds away with the arrow at its end:
 
-- **A grid.** **Set up the grid** in the bar takes the size of one cell in pixels of the
-  map image, and how far to shift the grid right and down to line it up. The dialog says
-  how many cells that makes, to compare with the squares you count on the image. For an
-  image that has its own grid drawn on, turn the lines off: tokens still snap to the cells.
-- **Tokens.** A coloured disc with a name, one to six cells across. The GM adds tokens and
-  can hand each one to a player. A player can add a token of their own. Whoever a token
-  belongs to drags it, and so does the GM. Everyone sees it move while it is being
-  dragged, and it snaps to the grid when it is let go. Hold `Alt` to put it down exactly
-  where you let go. The GM can hide a token from the players until it is time.
+- **The dock of tokens**, along the bottom. It shows every token that can be put on the
+  map: a plain disc first, then the token pictures in the gallery (for a player, the ones
+  the GM has revealed). Click one and it goes down in the free cell nearest the middle of
+  the view. Drag one and it goes down where you let go. The GM's **+** adds pictures to
+  the gallery straight from here.
+- **The tools**, in the upper right corner: select and move, select several, measure,
+  draw, write text. The GM's also has the map image, the name and the grid. A tool stays
+  in hand until you click it again or press `Esc`.
+
+What is on a battle map:
+
+- **A grid.** **Set up the grid** takes the size of one cell in pixels of the map image,
+  and how far to shift the grid right and down to line it up. The dialog says how many
+  cells that makes, to compare with the squares you count on the image. For an image that
+  has its own grid drawn on, turn the lines off: tokens still snap to the cells.
+- **Tokens.** A disc in its colour, or its picture ringed in it, one to six cells across,
+  with its label written underneath. Whoever a token belongs to drags it, and so does the
+  GM. Everyone sees it move while it is being dragged, and it snaps to the grid when it
+  is let go. Hold `Alt` to put it down exactly where you let go.
+- **The buttons on a selected token.** Click a token and they float over it. Whoever
+  moves it turns it 15 degrees at a time and makes it bigger or smaller, and opens its
+  picture, its colour and (for the GM) whose it is. Anyone at the table labels it, locks
+  it and duplicates it: a locked token can't be moved, resized or turned until someone
+  unlocks it, and a copy belongs to whoever the first one does. Only the GM hides it,
+  reveals it and deletes it.
+- **Drawings.** With **Draw** in hand, drag across the map to draw a line in the colour
+  you pick beside the tools. Lines sit on the map under the tokens, and grow and shrink
+  with it.
+- **Text.** With **Write text** in hand, click the map and type, then press `Enter`.
+  Double-click a text of yours to reword it.
+- **Selecting several.** With **Select several** in hand, drag a box: every token,
+  drawing and text it touches is selected. `Shift`-click adds one or takes one out.
+  Drag any of them and the rest come along, and the buttons act on all of them at once.
+  `Delete` takes off the map what is yours to take off, and one `Ctrl+Z` brings it all back.
 - **A ruler.** Dragging a token shows how many cells it has moved. **Measure a distance**
-  in the bar measures between any two spots, and the table sees your ruler while you do.
-  A diagonal step counts as one cell.
+  measures between any two spots, and the table sees your ruler while you do. A diagonal
+  step counts as one cell.
+
+Anyone at the table draws and writes. A drawing or a text is moved, changed and rubbed
+out by whoever made it, and by the GM.
 
 The way from the world to a battle map is a region, like the way to any other map:
-double-click it and you are at the table. The GM's bar on a battle map has the token and
-the ruler, the map image, the name and the grid. A player's has the token and the ruler.
+double-click it and you are at the table.
 
 A world map can be turned into a battle map only while it has no markers, notes or
 regions on it: delete them first. Turning a battle map back into a world map puts its
-tokens away without deleting them.
+tokens and drawings away without deleting them.
 
 ### On the map
 
@@ -153,8 +180,10 @@ tokens away without deleting them.
 | Double-click a region | Step into its map |
 | Click a region, as the GM | Open its menu: enter, hide or reveal, rename, delete |
 | Double-click a bare spot | Start a note there, on a world map |
-| Drag a token | Move it, if it's yours. It snaps to the grid, unless `Alt` is held |
-| Click a token | See whose it is, with edit, hide and delete if it's yours to change |
+| Drag a token | Move it, if it's yours and not locked. It snaps to the grid, unless `Alt` is held |
+| Click a token, a drawing or a text | Select it: its buttons float over it. `Shift`-click selects several |
+| Double-click a text | Reword it, if it's yours |
+| `Delete` | Take what is selected off a battle map, if it's yours to take off |
 | A token with the focus | Arrow keys walk it one cell at a time |
 | Breadcrumbs | Step back out |
 | Arrow keys, `+` `-` `0` | Pan, zoom and fit from the keyboard |
@@ -164,7 +193,8 @@ Everyone's mouse shows on the map as it moves, with their name, for the people l
 the same map.
 
 It works on a phone too: a tap is a click and a double-tap a double-click, and the tools
-sit in a bar along the bottom of the screen.
+sit in a bar along the bottom of the screen. On a battle map that bar is the dock of
+tokens, and the tools are in the corner.
 
 ## Who can do what
 
@@ -175,10 +205,15 @@ sit in a bar along the bottom of the screen.
 | Maps, regions | create, edit, hide, reveal, delete | read (never the hidden ones) |
 | The gallery | add, rename, reveal, hide, take out, lay an image under a map | look through what the GM has revealed, pick one of those for their own token |
 | Battle maps and grids | turn an empty map into one and back, set up the grid | read |
-| Tokens | create, move, edit, give any picture, hide, hand to a player, delete, anyone's | create their own, and move, edit, give a revealed picture, delete those |
-| Undo and redo | their own changes | their own changes to table notes and tokens |
+| Tokens | create, move, resize, turn, give any picture, hide, hand to a player, delete, anyone's | create their own, and move, resize, turn and give a revealed picture to those |
+| Any token they can see | label, lock, unlock, duplicate | label, lock, unlock, duplicate |
+| Drawings and text, on battle maps | create, move, change, rub out, anyone's | create, and move, change, rub out their own |
+| Undo and redo | their own changes | their own changes to table notes, tokens and drawings |
 
 A table note can be deleted by whoever added it and by the GM, never by another player.
+
+A token is deleted by the GM only. The one way round that is undo: a player who has just
+put a token on the map, or duplicated one, can take that back with `Ctrl+Z`.
 
 Hidden world markers are filtered on the server. They are not in the page a player loads,
 not in the events their browser receives, and out of reach of a player's undo. Hidden
@@ -228,7 +263,15 @@ scripts/            run both servers, seed a demo, end-to-end check
 - **So does a token in someone's hand.** While a token is dragged, where it is rides
   along with the pointer, and so does a ruler. Only letting go is a change: one
   `token.update` command, checked, stored and undoable like any other. A browser shows a
-  token in someone's hand only if that person could really move it.
+  token in someone's hand only if that person could really move it. When a whole
+  selection is dragged, the table sees the token under the pointer move, and the rest
+  arrive when it is put down.
+- **A selection is one command.** What is done to several things at once goes to the
+  server as a `batch`: every change in it happens in one transaction, or if one is
+  refused, none does. Undo sends the batch back the same way.
+- **A drawn line is thinned before it is sent.** The browser keeps the points that give
+  the line its shape, to within a pixel on screen, and the server stores at most 800 of
+  them. A line appears for the table when it is finished, not while it is being drawn.
 - **One login.** When a browser connects, the WebSocket server passes its session cookie
   to the app, which says who that is. Commands are forwarded with the same cookie, so the
   app checks the login on every one.
@@ -268,8 +311,8 @@ All optional. Copy [.env.example](.env.example) to `.env` to change a default.
 bun run test
 ```
 
-Unit tests for the rules: permissions, hidden markers and regions, battle maps and tokens,
-the grid's arithmetic, undo and restore, campaign isolation.
+Unit tests for the rules: permissions, hidden markers and regions, battle maps, tokens
+and drawings, the grid's arithmetic, undo and restore, campaign isolation.
 
 ```bash
 bun run test:e2e
@@ -305,7 +348,13 @@ Type-checks everything.
   After that the region has to be deleted from the bar, which asks first.
 - Everyone's pointer is shown, the GM's included, also while it hovers over something
   hidden from the players.
-- A battle map has no fog of war, no initiative order and no drawing tools.
+- A battle map has no fog of war and no initiative order.
+- The pen draws freehand lines in one thickness, and text is one size: no shapes, no
+  eraser that rubs out part of a line. A drawing can't be hidden from the players.
+- A token's label is its name: it can be changed by anyone, but not left empty.
+- A token is one to six whole cells across, and turns in steps of 15 degrees.
+- A player sees a newly revealed token picture in the dock the next time they reach for
+  it, not the moment the GM reveals it.
 - The grid is square, and is lined up by typing numbers, not by dragging it over the image.
 - The ruler counts cells with a diagonal step as one. It doesn't convert to feet or metres.
 - The way into a battle map is a region. A marker can't lead to one.

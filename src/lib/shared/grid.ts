@@ -28,6 +28,33 @@ export function snapToGrid(map: Sheet, [x, y]: Point, size = 1): Point {
 }
 
 /**
+ * Somewhere to put a new one-cell token down near `at`: the nearest cell
+ * that none of the `taken` spots is standing in. If every cell around is
+ * full, it goes down at `at` regardless.
+ */
+export function freeCell(map: Sheet, at: Point, taken: Point[]): Point {
+	const home = snapToGrid(map, at);
+	const stepX = map.grid.size / map.width;
+	const stepY = map.grid.size / map.height;
+	const reach = 6;
+	const around: Point[] = [];
+	for (let dx = -reach; dx <= reach; dx++) {
+		for (let dy = -reach; dy <= reach; dy++) around.push([dx, dy]);
+	}
+	around.sort((a, b) => Math.hypot(...a) - Math.hypot(...b));
+	for (const [dx, dy] of around) {
+		const x = home[0] + dx * stepX;
+		const y = home[1] + dy * stepY;
+		if (x < 0 || x > 1 || y < 0 || y > 1) continue;
+		const full = taken.some(
+			([tx, ty]) => Math.abs(tx - x) < stepX / 2 && Math.abs(ty - y) < stepY / 2
+		);
+		if (!full) return [x, y];
+	}
+	return home;
+}
+
+/**
  * How many cells apart two spots are, counting a diagonal step as one: the
  * way most tabletop games count movement on squares. To one decimal place.
  */

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { cellCount, cellsAcross, cellsBetween, snapToGrid, wrapOffset } from './grid';
+import { cellCount, cellsAcross, cellsBetween, freeCell, snapToGrid, wrapOffset } from './grid';
 
 // A thousand pixels each way with cells of a hundred: ten by ten.
 const map = { width: 1000, height: 1000, grid: { size: 100, x: 0, y: 0, shown: true } };
@@ -59,4 +59,20 @@ test('an offset of a whole cell or more is the same grid', () => {
 
 test('a map knows how many cells it holds', () => {
 	expect(cellsAcross({ ...map, width: 1650 })).toEqual([16, 10]);
+});
+
+describe('a free cell', () => {
+	test('is the one asked for while it is empty', () => {
+		expect(freeCell(map, [0.52, 0.58], [])).toEqual([0.55, 0.55]);
+	});
+
+	test('is the nearest empty one once that is taken', () => {
+		const first = freeCell(map, [0.55, 0.55], [[0.55, 0.55]]);
+		expect(first).not.toEqual([0.55, 0.55]);
+		expect(Math.hypot(first[0] - 0.55, first[1] - 0.55)).toBeCloseTo(0.1);
+		// And it never leaves the map.
+		const corner = freeCell(map, [0.05, 0.05], [[0.05, 0.05]]);
+		expect(corner[0]).toBeGreaterThanOrEqual(0);
+		expect(corner[1]).toBeGreaterThanOrEqual(0);
+	});
 });

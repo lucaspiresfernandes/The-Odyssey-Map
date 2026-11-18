@@ -554,6 +554,53 @@ async function run() {
 			playerSocket.messages.some((m) => m.t === 'event' && m.event.patch.t === 'token.remove' && m.event.patch.id === mine?.id)
 	);
 
+	// What the table shares about a token, and what is the GM's alone. The
+	// player's token is hidden by now, so this is about the ogre.
+	tokenCommand(40, { t: 'token.update', id: ogreId, changes: { name: 'Ogre chief', locked: true } });
+	tokenCommand(41, { t: 'token.duplicate', id: ogreId });
+	tokenCommand(42, { t: 'token.delete', id: ogreId });
+	await pause(700);
+	const chief = tokenEvents(gmSocket, ogreId).at(-1);
+	check('a player labels and locks the GM\'s token', ack(40)?.ok === true && chief?.name === 'Ogre chief' && chief?.locked === true);
+	const twin = gmSocket.messages.filter((m) => m.t === 'event' && m.event.patch.token?.name === 'Ogre chief').map((m) => m.event.patch.token).find((t) => t.id !== ogreId);
+	check('and duplicates it, into another of the GM\'s', ack(41)?.ok === true && !!twin && twin.ownerId === null && twin.locked === false);
+	check('but cannot delete it', ack(42)?.ok === false);
+	check('a locked token stays where it is, for the GM too', (await gm.command(campaign, { t: 'token.update', id: ogreId, changes: { x: 0.2 } })).status === 409);
+	// Several changes as one: turned and unlocked together, or not at all.
+	const both = await gm.command(campaign, {
+		t: 'batch',
+		cmds: [
+			{ t: 'token.update', id: ogreId, changes: { locked: false, rotation: 45 } },
+			{ t: 'token.update', id: twin?.id, changes: { rotation: 45 } }
+		]
+	});
+	check('a batch changes several tokens at once', both.status === 200 && both.body.events?.length === 2 && both.body.undo?.length === 2);
+	const none = await gm.command(campaign, { t: 'batch', cmds: [{ t: 'token.update', id: ogreId, changes: { rotation: 90 } }, { t: 'token.delete', id: 'nothing' }] });
+	await pause(300);
+	check('and changes none of them when one is refused', none.status === 404 && tokenEvents(gmSocket, ogreId).at(-1)?.rotation === 45);
+
+	// Anyone draws and writes on a battle map. What is there is its maker's and the GM's.
+	const drawingEvents = (socket: { messages: any[] }) => socket.messages.filter((m) => m.t === 'event' && m.event.patch.t.startsWith('drawing.')).map((m) => m.event.patch);
+	tokenCommand(50, { t: 'drawing.create', mapId: bridgeId, kind: 'line', points: [[0.1, 0.1], [0.2, 0.15], [0.3, 0.1]], color: '#e5544b' });
+	await pause(400);
+	const scrawl = drawingEvents(gmSocket).at(-1)?.drawing;
+	check('a line a player draws reaches the GM live', ack(50)?.ok === true && scrawl?.kind === 'line' && scrawl.points.length === 3 && scrawl.authorName === 'Tester');
+	const caption = await gm.command(campaign, { t: 'drawing.create', mapId: bridgeId, kind: 'text', points: [[0.5, 0.5]], text: 'Mind the gap' });
+	const captionId: string = caption.body.events?.[0]?.patch.drawing?.id;
+	await pause(300);
+	check('a text the GM writes reaches the player', drawingEvents(playerSocket).some((p) => p.drawing?.text === 'Mind the gap'));
+	tokenCommand(51, { t: 'drawing.delete', id: captionId });
+	tokenCommand(52, { t: 'drawing.update', id: scrawl?.id, changes: { move: [0.1, 0.1] } });
+	await pause(500);
+	check('a player cannot rub out the GM\'s text', ack(51)?.ok === false);
+	check('but slides their own line across the map', ack(52)?.ok === true && drawingEvents(gmSocket).at(-1)?.drawing?.points[0][0] === 0.2);
+	check('drawings stay off a world map', (await gm.command(campaign, { t: 'drawing.create', mapId, kind: 'line', points: [[0.1, 0.1], [0.2, 0.2]] })).status === 400);
+	check('the GM rubs out anyone\'s', (await gm.command(campaign, { t: 'drawing.delete', id: scrawl?.id })).status === 200);
+	check('and both are in the map a player loads, or not', await (async () => {
+		const page = await (await player.request(`/c/${campaign}/m/${bridgeId}`)).text();
+		return page.includes('Mind the gap') && !page.includes(scrawl?.id);
+	})());
+
 	// A token in someone's hand, and a ruler, ride along with their pointer.
 	playerSocket.ws.send(
 		JSON.stringify({

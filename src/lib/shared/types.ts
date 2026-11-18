@@ -111,11 +111,55 @@ export interface Token {
 	y: number;
 	/** How many cells it is across. */
 	size: number;
+	/** Which way it is turned, in degrees clockwise: a multiple of ROTATION_STEP under 360. */
+	rotation: number;
+	/** A locked token stays as it is put until someone unlocks it: not moved, resized or turned. */
+	locked: boolean;
 	/** The player who moves it, besides the GM. Null for a token that is the GM's alone. */
 	ownerId: string | null;
 	ownerName: string | null;
 	/** Only ever sent to the GM as true. */
 	hidden: boolean;
+	updatedAt: number;
+}
+
+/** How far one press of a rotate button turns a token, in degrees. */
+export const ROTATION_STEP = 15;
+
+/** The colours the table draws and writes in. */
+export const INK_COLORS = [
+	'#fff8e4',
+	'#12151c',
+	'#e5544b',
+	'#e0a526',
+	'#3fae7c',
+	'#5b8def',
+	'#b072e0'
+] as const;
+
+/** A drawing is a line drawn freehand, or a line of text. */
+export type DrawingKind = 'line' | 'text';
+
+/** How big a drawing is unless it says otherwise, in cells: see `Drawing.size`. */
+export const DRAWING_SIZE: Record<DrawingKind, number> = { line: 0.1, text: 0.5 };
+
+/**
+ * Something the table drew or wrote on a battle map. Anyone can add one.
+ * Changing it or rubbing it out is for whoever made it, and the GM.
+ */
+export interface Drawing {
+	id: string;
+	mapId: string;
+	kind: DrawingKind;
+	/** The path of a line. A text has one point: the middle of its left edge. */
+	points: Point[];
+	/** What a text says. Empty for a line. */
+	text: string;
+	color: string;
+	/** In cells, like a token's: how thick a line is, how tall a text's letters are. */
+	size: number;
+	authorId: string;
+	authorName: string;
 	updatedAt: number;
 }
 
@@ -192,6 +236,8 @@ export interface MapSnapshot {
 	markers: Marker[];
 	/** Empty on a world map. */
 	tokens: Token[];
+	/** Empty on a world map. */
+	drawings: Drawing[];
 	/** Sequence number of the newest event already reflected in this snapshot. */
 	lastSeq: number;
 }
@@ -215,10 +261,29 @@ export interface TokenInput {
 	x: number;
 	y: number;
 	size: number;
+	rotation: number;
+	/** Anyone's to set, like the name: the two things the whole table shares about a token. */
+	locked: boolean;
 	/** The GM's to set. A token a player adds is their own. */
 	ownerId: string | null;
 	/** The GM's to set. */
 	hidden: boolean;
+}
+
+export interface DrawingInput {
+	kind: DrawingKind;
+	points: Point[];
+	text: string;
+	color: string;
+	size: number;
+}
+
+/** What can be changed about a drawing once it is made. */
+export interface DrawingChanges {
+	text?: string;
+	color?: string;
+	/** Slides the whole drawing this far across the map, in map space. */
+	move?: Point;
 }
 
 /** Everything a client can ask the server to change. */
@@ -230,8 +295,14 @@ export type Command =
 	| ({ t: 'token.create'; mapId: string } & Partial<TokenInput>)
 	/** Moving a token is this, with a new `x` and `y`. */
 	| { t: 'token.update'; id: string; changes: Partial<TokenInput> }
+	/** Puts a copy of a token beside it. Anyone can, of any token they see. */
+	| { t: 'token.duplicate'; id: string }
 	| { t: 'token.delete'; id: string }
 	| { t: 'token.restore'; id: string }
+	| ({ t: 'drawing.create'; mapId: string } & Partial<DrawingInput>)
+	| { t: 'drawing.update'; id: string; changes: DrawingChanges }
+	| { t: 'drawing.delete'; id: string }
+	| { t: 'drawing.restore'; id: string }
 	/** `kind` is the kind of map the region leads to: a world map unless it says otherwise. */
 	| {
 			t: 'region.create';
@@ -259,14 +330,19 @@ export type Command =
 			image?: string;
 	  }
 	/** Takes back the change with this sequence number by performing its opposite. */
-	| { t: 'history.revert'; seq: number };
+	| { t: 'history.revert'; seq: number }
+	/**
+	 * Several commands as one: all of them happen, or if any is refused, none.
+	 * For what is done to a whole selection at once. A batch holds no batches.
+	 */
+	| { t: 'batch'; cmds: Command[] };
 
 // ------------------------------------------------------------------ events
 
-export type EntityType = 'marker' | 'region' | 'map' | 'token';
+export type EntityType = 'marker' | 'region' | 'map' | 'token' | 'drawing';
 
 /** A full copy of one of them, as the event log keeps it. */
-export type Entity = Marker | Region | MapInfo | Token;
+export type Entity = Marker | Region | MapInfo | Token | Drawing;
 export type EventAction = 'create' | 'update' | 'delete' | 'restore';
 
 /**
@@ -297,7 +373,9 @@ export type Patch =
 	| { t: 'region.remove'; id: string; mapId: string; targetMapId: string }
 	| { t: 'map.upsert'; map: MapInfo }
 	| { t: 'token.upsert'; token: Token }
-	| { t: 'token.remove'; id: string; mapId: string };
+	| { t: 'token.remove'; id: string; mapId: string }
+	| { t: 'drawing.upsert'; drawing: Drawing }
+	| { t: 'drawing.remove'; id: string; mapId: string };
 
 export interface LiveEvent {
 	seq: number;
@@ -405,6 +483,16 @@ export const LIMITS = {
 	tokenName: 40,
 	/** The most cells a token can be across. */
 	tokenSize: 6,
+	/** The most points a drawn line is kept as. The browser thins a line out before sending it. */
+	drawingPoints: 800,
+	drawingText: 200,
+	/** How thin and how thick a drawing can be, in cells. */
+	drawingSizeMin: 0.02,
+	drawingSizeMax: 3,
+	/** The most drawings one map holds. */
+	drawings: 500,
+	/** The most commands in one batch. */
+	batch: 200,
 	/** The smallest and the largest a grid cell can be, in map pixels. */
 	gridMin: 8,
 	gridMax: 2000,

@@ -17,7 +17,30 @@
 		// A playing piece: a head on a foot.
 		token: 'M9.4 10.4a4 4 0 1 1 5.2 0 M9.4 10.4 7.5 18h9l-1.9-7.6 M5.5 21h13 M7.5 18l-2 3 M16.5 18l2 3',
 		ruler: 'M16 3l5 5L8 21l-5-5Z M7 12l2 2 M10 9l2 2 M13 6l2 2',
-		grid: 'M3 3h18v18H3Z M3 9h18 M3 15h18 M9 3v18 M15 3v18'
+		grid: 'M3 3h18v18H3Z M3 9h18 M3 15h18 M9 3v18 M15 3v18',
+		// The tools of a battle map: a pointer, a box to catch several things
+		// in, a line drawn freehand, a letter.
+		pointer: 'M4 4l7.07 17 2.51-7.39L21 11.07Z',
+		marquee:
+			'M5 3a2 2 0 0 0-2 2 M19 3a2 2 0 0 1 2 2 M21 19a2 2 0 0 1-2 2 M5 21a2 2 0 0 1-2-2 M9 3h1 M14 3h1 M9 21h1 M14 21h1 M3 9v1 M3 14v1 M21 9v1 M21 14v1',
+		draw: 'M3 16c2.5-8 5-8 7-1.5s4.5 4.5 6-2 2.5-5.5 5-3.5',
+		text: 'M4 7V4h16v3 M9 20h6 M12 4v16',
+		// What is done to a token.
+		'turn-left': 'M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8 M3 3v5h5',
+		'turn-right': 'M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8 M21 3v5h-5',
+		grow: 'M15 3h6v6 M9 21H3v-6 M21 3l-7 7 M3 21l7-7',
+		shrink: 'M4 14h6v6 M20 10h-6V4 M14 10l7-7 M3 21l7-7',
+		label:
+			'M12.59 2.59A2 2 0 0 0 11.17 2H4a2 2 0 0 0-2 2v7.17a2 2 0 0 0 .59 1.42l8.7 8.7a2.43 2.43 0 0 0 3.42 0l6.58-6.58a2.43 2.43 0 0 0 0-3.42Z M7.5 7.5h.01',
+		lock: 'M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z M7 11V7a5 5 0 0 1 10 0v4',
+		unlock:
+			'M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z M7 11V7a5 5 0 0 1 9.9-1',
+		duplicate:
+			'M10 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2Z M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2',
+		plus: 'M12 5v14 M5 12h14',
+		up: 'M6 15l6-6 6 6',
+		down: 'M6 9l6 6 6-6',
+		right: 'M9 6l6 6-6 6'
 	};
 
 	export type ToolIcon = keyof typeof ICONS;
@@ -39,6 +62,10 @@
 		danger?: boolean;
 		/** A tool that is switched on. */
 		active?: boolean;
+		/** A smaller button, for the ones that float over the map beside what they act on. */
+		small?: boolean;
+		/** Which side the tooltip comes out on. Above, unless the button is docked where that has no room. */
+		tip?: 'top' | 'bottom' | 'left';
 		onclick: () => void;
 	}
 
@@ -50,23 +77,37 @@
 		disabled = false,
 		danger = false,
 		active = false,
+		small = false,
+		tip = 'top',
 		onclick
 	}: Props = $props();
+
+	const TIP = {
+		top: 'bottom-[calc(100%+10px)] left-1/2 -translate-x-1/2',
+		bottom: 'top-[calc(100%+10px)] left-1/2 -translate-x-1/2',
+		left: 'top-1/2 right-[calc(100%+10px)] -translate-y-1/2'
+	};
 </script>
 
 <!-- The tooltip hangs off this wrapper and not the button, because a disabled
      button is the one that most needs explaining. -->
 <span class="group relative flex">
 	<button
-		class={['btn', !named && 'w-9 px-0 touch:w-11', danger && 'btn-danger', active && 'btn-active']}
+		class={[
+			'btn',
+			small && 'btn-sm',
+			!named && (small ? 'w-7 px-0 touch:w-9' : 'w-9 px-0 touch:w-11'),
+			danger && 'btn-danger',
+			active && 'btn-active'
+		]}
 		aria-label={named ? undefined : label}
 		aria-pressed={active || undefined}
 		{disabled}
 		{onclick}
 	>
 		<svg
-			width="18"
-			height="18"
+			width={small ? 15 : 18}
+			height={small ? 15 : 18}
 			viewBox="0 0 24 24"
 			fill="none"
 			stroke="currentColor"
@@ -81,7 +122,9 @@
 	</button>
 	{#if !named || hint}
 		<span
-			class="pointer-events-none absolute bottom-[calc(100%+10px)] left-1/2 z-5 grid w-max -translate-x-1/2 gap-0.5 rounded-lg border border-[#4a5670] bg-night px-2.5 py-1.5 text-center text-xs opacity-0 shadow-pop transition-opacity delay-150 duration-100 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100 touch:hidden"
+			class="pointer-events-none absolute z-5 grid w-max gap-0.5 rounded-lg border border-[#4a5670] bg-night px-2.5 py-1.5 text-center text-xs opacity-0 shadow-pop transition-opacity delay-150 duration-100 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100 touch:hidden {TIP[
+				tip
+			]}"
 			aria-hidden="true"
 		>
 			{#if !named}<span>{label}</span>{/if}

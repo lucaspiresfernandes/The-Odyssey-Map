@@ -6,24 +6,41 @@
 // writes the change, and appends one row per change to the event log, all in
 // a single transaction.
 
-import { and, eq, gt, inArray, isNull, max, or } from 'drizzle-orm';
+import { and, count, eq, gt, inArray, isNull, max, or } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import type { Db } from './db';
 import { newId } from './ids';
-import { events, gallery, maps, markers, members, regions, tokens, users } from './schema';
+import {
+	drawings,
+	events,
+	gallery,
+	maps,
+	markers,
+	members,
+	regions,
+	tokens,
+	users
+} from './schema';
 import { wrapOffset } from '../shared/grid';
 import {
+	canChangeDrawing,
 	canEditMarkerKind,
 	canEditWorld,
 	canMoveToken,
 	canRemoveMarker,
+	canRemoveToken,
 	canSeeEvent
 } from '../shared/rules';
 import {
 	DEFAULT_MAP_SIZE,
+	DRAWING_SIZE,
+	INK_COLORS,
 	LIMITS,
 	MARKER_TYPE_IDS,
+	ROTATION_STEP,
 	TOKEN_COLORS,
+	type Drawing,
+	type DrawingKind,
 	type EntityType,
 	type EventAction,
 	type GalleryKind,
@@ -129,10 +146,25 @@ export const tokenColumns = {
 	x: tokens.x,
 	y: tokens.y,
 	size: tokens.size,
+	rotation: tokens.rotation,
+	locked: tokens.locked,
 	ownerId: tokens.ownerId,
 	ownerName: tokens.ownerName,
 	hidden: tokens.hidden,
 	updatedAt: tokens.updatedAt
+};
+
+export const drawingColumns = {
+	id: drawings.id,
+	mapId: drawings.mapId,
+	kind: drawings.kind,
+	points: drawings.points,
+	text: drawings.text,
+	color: drawings.color,
+	size: drawings.size,
+	authorId: drawings.authorId,
+	authorName: drawings.authorName,
+	updatedAt: drawings.updatedAt
 };
 
 /**
@@ -204,6 +236,22 @@ function findToken(db: Db, actor: Actor, id: string): { token: Token; deletedAt:
 	const secret =
 		row && actor.role !== 'gm' && (row.token.hidden || isConcealed(db, row.token.mapId));
 	if (!row || secret) fail('not_found', 'That token does not exist.');
+	return row;
+}
+
+function findDrawing(
+	db: Db,
+	actor: Actor,
+	id: string
+): { drawing: Drawing; deletedAt: number | null } {
+	const row = db
+		.select({ drawing: drawingColumns, deletedAt: drawings.deletedAt })
+		.from(drawings)
+		.innerJoin(maps, eq(maps.id, drawings.mapId))
+		.where(and(eq(drawings.id, id), eq(maps.campaignId, actor.campaignId)))
+		.get();
+	const secret = row && actor.role !== 'gm' && isConcealed(db, row.drawing.mapId);
+	if (!row || secret) fail('not_found', 'That drawing does not exist.');
 	return row;
 }
 
@@ -407,6 +455,15 @@ function asTokenChanges(value: unknown): Partial<TokenInput> {
 		}
 		out.size = size;
 	}
+	if (raw.rotation !== undefined) {
+		const turn = raw.rotation;
+		if (typeof turn !== 'number' || !Number.isInteger(turn) || turn % ROTATION_STEP !== 0) {
+			fail('invalid', `A token turns ${ROTATION_STEP} degrees at a time.`);
+		}
+		// A full turn is no turn: kept as 0 to 345.
+		out.rotation = ((turn % 360) + 360) % 360;
+	}
+	if (raw.locked !== undefined) out.locked = asBool(raw.locked);
 	if (raw.ownerId !== undefined) out.ownerId = raw.ownerId === null ? null : asId(raw.ownerId);
 	if (raw.hidden !== undefined) out.hidden = asBool(raw.hidden);
 	return out;
@@ -542,11 +599,23 @@ function readToken(db: Db, id: string): Token {
 	return db.select(tokenColumns).from(tokens).where(eq(tokens.id, id)).get()!;
 }
 
-/** For everything a token's owner may do to it: move, rename, resize, delete, restore. */
+/** For everything a token's owner may do to it: move, resize, turn, recolour, dress. */
 function requireTokenMove(actor: Actor, token: Token, what: string) {
 	if (!canMoveToken(actor.role, actor.userId, token)) {
 		const whose = token.ownerName ? `${token.ownerName} or the GM` : 'the GM';
 		fail('forbidden', `Only ${whose} can ${what} this token.`);
+	}
+}
+
+/**
+ * Taking a token off the map, or putting a deleted one back, is the GM's.
+ * `undoing` is the one way round that: a player takes back a token they
+ * put on the table themselves, and may change their mind about that again.
+ * Undo only ever reaches a player's own changes, so that is all it opens.
+ */
+function requireTokenRemoval(actor: Actor, what: 'delete' | 'restore', undoing: boolean) {
+	if (!canRemoveToken(actor.role) && !undoing) {
+		fail('forbidden', `Only the GM can ${what} a token.`);
 	}
 }
 
@@ -589,6 +658,8 @@ function createToken(db: Db, actor: Actor, raw: Record<string, unknown>): Stored
 			x: input.x,
 			y: input.y,
 			size: input.size ?? 1,
+			rotation: input.rotation ?? 0,
+			locked: input.locked === true,
 			ownerId,
 			ownerName: gm ? ownerId && ownerName(db, actor, ownerId) : actor.name,
 			hidden: gm && input.hidden === true,
@@ -599,7 +670,73 @@ function createToken(db: Db, actor: Actor, raw: Record<string, unknown>): Stored
 	return [record(db, actor, map.id, 'token', 'create', null, readToken(db, id))];
 }
 
-const TOKEN_FIELDS = ['name', 'color', 'image', 'x', 'y', 'size', 'ownerId', 'hidden'] as const;
+/**
+ * Puts a copy of a token beside it: the same in everything but where it
+ * stands, and never locked, so it can be dragged to its place. It belongs to
+ * whoever the first one belongs to. Anyone who sees a token can copy it.
+ */
+function duplicateToken(db: Db, actor: Actor, id: string): StoredEvent[] {
+	const { token, deletedAt } = findToken(db, actor, id);
+	if (deletedAt !== null) fail('conflict', 'That token was deleted.');
+	const map = readMap(db, token.mapId);
+	if (map.kind !== 'battle') fail('invalid', 'Tokens go on battle maps.');
+
+	// Its own width to the right, or as many more as it takes to find room.
+	// Where the map ends that way, to the left instead.
+	const step = (token.size * map.grid.size) / map.width;
+	const taken = db
+		.select({ x: tokens.x, y: tokens.y })
+		.from(tokens)
+		.where(and(eq(tokens.mapId, token.mapId), isNull(tokens.deletedAt)))
+		.all();
+	const free = (x: number) =>
+		x >= 0 &&
+		x <= 1 &&
+		!taken.some((t) => Math.abs(t.x - x) < step / 2 && Math.abs(t.y - token.y) < step / 2);
+	const spots = [1, 2, 3, 4, 5, 6].flatMap((n) => [token.x + n * step, token.x - n * step]);
+	const fallback = token.x + step <= 1 ? token.x + step : Math.max(0, token.x - step);
+	const x =
+		spots.filter((x) => x > token.x).find(free) ?? spots.find(free) ?? fallback;
+	const copy = newId();
+	const now = Date.now();
+	db.insert(tokens)
+		.values({
+			id: copy,
+			mapId: token.mapId,
+			name: token.name,
+			color: token.color,
+			image: token.image,
+			x,
+			y: token.y,
+			size: token.size,
+			rotation: token.rotation,
+			locked: false,
+			ownerId: token.ownerId,
+			ownerName: token.ownerName,
+			hidden: token.hidden,
+			createdAt: now,
+			updatedAt: now
+		})
+		.run();
+	return [record(db, actor, token.mapId, 'token', 'create', null, readToken(db, copy))];
+}
+
+const TOKEN_FIELDS = [
+	'name',
+	'color',
+	'image',
+	'x',
+	'y',
+	'size',
+	'rotation',
+	'locked',
+	'ownerId',
+	'hidden'
+] as const;
+/** What only the GM and the token's own player change. Its name and its lock are anyone's. */
+const TOKEN_HANDLING = ['color', 'image', 'x', 'y', 'size', 'rotation'] as const;
+/** What a lock holds in place. */
+const TOKEN_PLACING = ['x', 'y', 'size', 'rotation'] as const;
 
 /** `restoring` says this is undo, putting back what an earlier change took away. */
 function updateToken(
@@ -610,16 +747,22 @@ function updateToken(
 	restoring = false
 ): StoredEvent[] {
 	const { token: before, deletedAt } = findToken(db, actor, id);
-	requireTokenMove(actor, before, 'change');
 	if (deletedAt !== null) fail('conflict', 'That token was deleted. Restore it first.');
 
 	const changes = asTokenChanges(rawChanges);
 	if (actor.role !== 'gm' && (changes.hidden !== undefined || changes.ownerId !== undefined)) {
 		fail('forbidden', 'Only the GM can hide a token or hand it to someone.');
 	}
+	if (TOKEN_HANDLING.some((field) => changes[field] !== undefined)) {
+		requireTokenMove(actor, before, 'change');
+	}
 
 	const after: Token = { ...before, ...changes };
 	if (!TOKEN_FIELDS.some((field) => before[field] !== after[field])) return [];
+	// A lock holds until it is taken off. The same change can do both.
+	if (before.locked && after.locked && TOKEN_PLACING.some((f) => before[f] !== after[f])) {
+		fail('conflict', 'That token is locked. Unlock it first.');
+	}
 	if (after.image && after.image !== before.image) {
 		// Undo may hand a player's token back a picture the GM gave it and
 		// has not revealed: it is the token's own past, not a pick.
@@ -638,6 +781,8 @@ function updateToken(
 			x: after.x,
 			y: after.y,
 			size: after.size,
+			rotation: after.rotation,
+			locked: after.locked,
 			ownerId: after.ownerId,
 			ownerName: after.ownerName,
 			hidden: after.hidden,
@@ -648,22 +793,174 @@ function updateToken(
 	return [record(db, actor, before.mapId, 'token', 'update', before, after)];
 }
 
-function deleteToken(db: Db, actor: Actor, id: string): StoredEvent[] {
+function deleteToken(db: Db, actor: Actor, id: string, undoing = false): StoredEvent[] {
 	const { token, deletedAt } = findToken(db, actor, id);
-	requireTokenMove(actor, token, 'delete');
+	requireTokenRemoval(actor, 'delete', undoing);
 	if (deletedAt !== null) fail('conflict', 'That token is already deleted.');
 
 	db.update(tokens).set({ deletedAt: Date.now() }).where(eq(tokens.id, id)).run();
 	return [record(db, actor, token.mapId, 'token', 'delete', token, null)];
 }
 
-function restoreToken(db: Db, actor: Actor, id: string): StoredEvent[] {
+function restoreToken(db: Db, actor: Actor, id: string, undoing = false): StoredEvent[] {
 	const { token, deletedAt } = findToken(db, actor, id);
-	requireTokenMove(actor, token, 'restore');
+	requireTokenRemoval(actor, 'restore', undoing);
 	if (deletedAt === null) fail('conflict', 'That token is already on the map.');
 
 	db.update(tokens).set({ deletedAt: null, updatedAt: Date.now() }).where(eq(tokens.id, id)).run();
 	return [record(db, actor, token.mapId, 'token', 'restore', null, readToken(db, id))];
+}
+
+// ---------------------------------------------------------------- drawings
+
+function readDrawing(db: Db, id: string): Drawing {
+	return db.select(drawingColumns).from(drawings).where(eq(drawings.id, id)).get()!;
+}
+
+function requireDrawingChange(actor: Actor, drawing: Drawing, what: string) {
+	if (!canChangeDrawing(actor.role, actor.userId, drawing)) {
+		fail('forbidden', `Only ${drawing.authorName} or the GM can ${what} this drawing.`);
+	}
+}
+
+/** Five decimal places put a point within a hundredth of a pixel on any map. */
+const rounded = (n: number) => Math.round(n * 1e5) / 1e5;
+
+function asDrawingPoints(value: unknown, kind: DrawingKind): Point[] {
+	if (!Array.isArray(value) || value.length > LIMITS.drawingPoints) {
+		fail('invalid', 'That drawing could not be kept.');
+	}
+	if (kind === 'text' ? value.length !== 1 : value.length < 2) {
+		fail('invalid', 'That drawing could not be kept.');
+	}
+	return value.map((p) => {
+		if (!Array.isArray(p) || p.length !== 2) fail('invalid', 'That drawing could not be kept.');
+		return [rounded(asCoord(p[0])), rounded(asCoord(p[1]))] as Point;
+	});
+}
+
+function asInk(value: unknown): string {
+	if (!(INK_COLORS as readonly unknown[]).includes(value)) fail('invalid', 'Unknown colour.');
+	return value as string;
+}
+
+function asDrawingText(value: unknown): string {
+	return asText(value, 'The text', LIMITS.drawingText, true);
+}
+
+/** `points` moved as far as `by` says, or as far as the map goes that way. */
+function slid(points: Point[], by: unknown): Point[] {
+	if (!Array.isArray(by) || by.length !== 2) fail('invalid', 'Malformed request.');
+	const along = (axis: 0 | 1): number => {
+		const d = by[axis];
+		if (typeof d !== 'number' || !Number.isFinite(d)) fail('invalid', 'Malformed request.');
+		const at = points.map((p) => p[axis]);
+		return Math.min(1 - Math.max(...at), Math.max(-Math.min(...at), d));
+	};
+	const [dx, dy] = [along(0), along(1)];
+	return points.map(([x, y]) => [rounded(x + dx), rounded(y + dy)]);
+}
+
+function createDrawing(db: Db, actor: Actor, raw: Record<string, unknown>): StoredEvent[] {
+	const map = findMap(db, actor, asId(raw.mapId));
+	if (map.kind !== 'battle') fail('invalid', 'Drawings go on battle maps.');
+	if (raw.kind !== 'line' && raw.kind !== 'text') fail('invalid', 'Unknown kind of drawing.');
+	const kind: DrawingKind = raw.kind;
+
+	const points = asDrawingPoints(raw.points, kind);
+	const size = raw.size ?? DRAWING_SIZE[kind];
+	if (
+		typeof size !== 'number' ||
+		!(size >= LIMITS.drawingSizeMin && size <= LIMITS.drawingSizeMax)
+	) {
+		fail('invalid', 'That drawing could not be kept.');
+	}
+	const held = db
+		.select({ n: count() })
+		.from(drawings)
+		.where(and(eq(drawings.mapId, map.id), isNull(drawings.deletedAt)))
+		.get();
+	if ((held?.n ?? 0) >= LIMITS.drawings) {
+		fail('conflict', 'This map is full of drawings. Rub some out first.');
+	}
+
+	const id = newId();
+	const now = Date.now();
+	db.insert(drawings)
+		.values({
+			id,
+			mapId: map.id,
+			kind,
+			points,
+			text: kind === 'text' ? asDrawingText(raw.text) : '',
+			color: raw.color === undefined ? INK_COLORS[0] : asInk(raw.color),
+			size,
+			authorId: actor.userId,
+			authorName: actor.name,
+			createdAt: now,
+			updatedAt: now
+		})
+		.run();
+	return [record(db, actor, map.id, 'drawing', 'create', null, readDrawing(db, id))];
+}
+
+function writeDrawing(db: Db, actor: Actor, before: Drawing, after: Drawing): StoredEvent[] {
+	if (
+		before.text === after.text &&
+		before.color === after.color &&
+		samePoints(before.points, after.points)
+	) {
+		return [];
+	}
+	after.updatedAt = Date.now();
+	db.update(drawings)
+		.set({ points: after.points, text: after.text, color: after.color, updatedAt: after.updatedAt })
+		.where(eq(drawings.id, after.id))
+		.run();
+	return [record(db, actor, before.mapId, 'drawing', 'update', before, after)];
+}
+
+/** The drawing as it is, deleted ones refused, for whoever may change it. */
+function drawingToChange(db: Db, actor: Actor, id: string): Drawing {
+	const { drawing, deletedAt } = findDrawing(db, actor, id);
+	requireDrawingChange(actor, drawing, 'change');
+	if (deletedAt !== null) fail('conflict', 'That drawing was rubbed out. Restore it first.');
+	return drawing;
+}
+
+/** Rewords a text, recolours a drawing, slides it across the map: whichever are asked for. */
+function updateDrawing(db: Db, actor: Actor, id: string, rawChanges: unknown): StoredEvent[] {
+	const before = drawingToChange(db, actor, id);
+	const changes = asRecord(rawChanges);
+	const after: Drawing = { ...before };
+	if (changes.text !== undefined) {
+		if (before.kind !== 'text') fail('invalid', 'Only a text has words to change.');
+		after.text = asDrawingText(changes.text);
+	}
+	if (changes.color !== undefined) after.color = asInk(changes.color);
+	if (changes.move !== undefined) after.points = slid(before.points, changes.move);
+	return writeDrawing(db, actor, before, after);
+}
+
+function deleteDrawing(db: Db, actor: Actor, id: string): StoredEvent[] {
+	const { drawing, deletedAt } = findDrawing(db, actor, id);
+	requireDrawingChange(actor, drawing, 'rub out');
+	if (deletedAt !== null) fail('conflict', 'That drawing is already rubbed out.');
+
+	db.update(drawings).set({ deletedAt: Date.now() }).where(eq(drawings.id, id)).run();
+	return [record(db, actor, drawing.mapId, 'drawing', 'delete', drawing, null)];
+}
+
+function restoreDrawing(db: Db, actor: Actor, id: string): StoredEvent[] {
+	const { drawing, deletedAt } = findDrawing(db, actor, id);
+	requireDrawingChange(actor, drawing, 'restore');
+	if (deletedAt === null) fail('conflict', 'That drawing is already on the map.');
+
+	db.update(drawings)
+		.set({ deletedAt: null, updatedAt: Date.now() })
+		.where(eq(drawings.id, id))
+		.run();
+	return [record(db, actor, drawing.mapId, 'drawing', 'restore', null, readDrawing(db, id))];
 }
 
 // ---------------------------------------------------------- maps & regions
@@ -789,12 +1086,17 @@ function deleteRegion(db: Db, actor: Actor, id: string): StoredEvent[] {
 	];
 }
 
-/** True while nothing has been put on a map: no image, no markers, no tokens, no regions. */
+/** True while nothing has been put on a map: no image, no markers, no tokens, no drawings, no regions. */
 function isBlank(db: Db, mapId: string): boolean {
 	const marker = db.select({ id: markers.id }).from(markers).where(eq(markers.mapId, mapId)).get();
 	const token = db.select({ id: tokens.id }).from(tokens).where(eq(tokens.mapId, mapId)).get();
+	const drawing = db
+		.select({ id: drawings.id })
+		.from(drawings)
+		.where(eq(drawings.mapId, mapId))
+		.get();
 	const region = db.select({ id: regions.id }).from(regions).where(eq(regions.mapId, mapId)).get();
-	return !readMap(db, mapId).imageFile && !marker && !token && !region;
+	return !readMap(db, mapId).imageFile && !marker && !token && !drawing && !region;
 }
 
 /**
@@ -937,9 +1239,26 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 		return updateMarker(db, actor, id, changes);
 	}
 
+	if (event.entity === 'drawing') {
+		if (event.action === 'create' || event.action === 'restore') return deleteDrawing(db, actor, id);
+		if (event.action === 'delete') return restoreDrawing(db, actor, id);
+		// As everywhere: only what this change changed goes back.
+		const before = event.before as Drawing;
+		const after = event.after as Drawing;
+		const current = drawingToChange(db, actor, id);
+		return writeDrawing(db, actor, current, {
+			...current,
+			text: before.text === after.text ? current.text : before.text,
+			color: before.color === after.color ? current.color : before.color,
+			points: samePoints(before.points, after.points) ? current.points : before.points
+		});
+	}
+
 	if (event.entity === 'token') {
-		if (event.action === 'create' || event.action === 'restore') return deleteToken(db, actor, id);
-		if (event.action === 'delete') return restoreToken(db, actor, id);
+		if (event.action === 'create' || event.action === 'restore') {
+			return deleteToken(db, actor, id, true);
+		}
+		if (event.action === 'delete') return restoreToken(db, actor, id, true);
 		// Undoing a move puts the token back where it stood, and leaves a
 		// rename made since alone.
 		const before = event.before as Token;
@@ -993,9 +1312,28 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 
 // ----------------------------------------------------------------- perform
 
-function run(db: Db, actor: Actor, input: unknown): StoredEvent[] {
+function run(db: Db, actor: Actor, input: unknown, nested = false): StoredEvent[] {
 	const cmd = asRecord(input);
 	switch (cmd.t) {
+		case 'batch': {
+			const { cmds } = cmd;
+			if (nested || !Array.isArray(cmds) || cmds.length === 0 || cmds.length > LIMITS.batch) {
+				fail('invalid', 'Malformed request.');
+			}
+			// One refusal throws, and the transaction they all share takes
+			// the rest back with it.
+			return cmds.flatMap((each) => run(db, actor, each, true));
+		}
+		case 'token.duplicate':
+			return duplicateToken(db, actor, asId(cmd.id));
+		case 'drawing.create':
+			return createDrawing(db, actor, cmd);
+		case 'drawing.update':
+			return updateDrawing(db, actor, asId(cmd.id), cmd.changes);
+		case 'drawing.delete':
+			return deleteDrawing(db, actor, asId(cmd.id));
+		case 'drawing.restore':
+			return restoreDrawing(db, actor, asId(cmd.id));
 		case 'marker.create':
 			return createMarker(db, actor, cmd);
 		case 'marker.update':

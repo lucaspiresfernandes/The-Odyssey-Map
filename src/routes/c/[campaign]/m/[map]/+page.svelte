@@ -10,11 +10,15 @@
 	import MarkerForm from '#lib/components/MarkerForm.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import NamePrompt from '#lib/components/NamePrompt.svelte';
+	import TokenDock from '#lib/components/TokenDock.svelte';
 	import TokenForm from '#lib/components/TokenForm.svelte';
-	import ToolButton from '#lib/components/ToolButton.svelte';
-	import { snapToGrid } from '#lib/shared/grid.ts';
+	import ToolButton, { type ToolIcon } from '#lib/components/ToolButton.svelte';
+	import { freeCell, snapToGrid } from '#lib/shared/grid.ts';
 	import { canEditWorld } from '#lib/shared/rules.ts';
 	import {
+		INK_COLORS,
+		LIMITS,
+		TOKEN_COLORS,
 		type Command,
 		type GalleryItem,
 		type MapKind,
@@ -55,11 +59,15 @@
 	/** Everyone else's mouse, for those looking at the same map. */
 	const cursors = $derived(live.cursors.filter((c) => c.mapId === world.map.id));
 
-	type Placing = { create: MarkerKind } | { move: Marker } | { token: true };
+	type Placing = { create: MarkerKind } | { move: Marker };
 	type Form =
 		| { mode: 'create'; kind: MarkerKind; x: number; y: number }
 		| { mode: 'edit'; marker: Marker };
-	type TokenEdit = { mode: 'create'; x: number; y: number } | { mode: 'edit'; token: Token };
+	/**
+	 * What is in hand on a battle map. `pan` is the hand itself: it selects
+	 * and moves things. The others are picked from the palette in the corner.
+	 */
+	type BattleTool = 'pan' | 'select' | 'measure' | 'sketch' | 'text';
 	type Prompt =
 		| { kind: 'region'; points: Point[] }
 		| { kind: 'rename'; mapId: string; initial: string };
@@ -73,10 +81,17 @@
 	let canvas = $state<ReturnType<typeof MapCanvas>>();
 	let placing = $state<Placing | null>(null);
 	let drawing = $state(false);
-	/** The ruler is out, on a battle map. */
-	let measuring = $state(false);
+	let battleTool = $state<BattleTool>('pan');
+	/** The colour the pen draws in and text is written in. */
+	let ink = $state<string>(INK_COLORS[0]);
 	let form = $state<Form | null>(null);
-	let tokenForm = $state<TokenEdit | null>(null);
+	/** The token whose picture, colour and owner are being changed. */
+	let tokenForm = $state<Token | null>(null);
+	/** Goes up whenever the gallery may have changed, so the dock reads it again. */
+	let galleryStamp = $state(0);
+	// The two palettes of a battle map fold away, and stay as they were left.
+	let dockFolded = $state(false);
+	let toolsFolded = $state(false);
 	/** The GM is choosing what kind of map this is, and setting up its grid. */
 	let setup = $state(false);
 	/**
@@ -89,18 +104,41 @@
 	let deleting = $state<Region | null>(null);
 	let selectedMarkerId = $state<string | null>(null);
 	let selectedRegionId = $state<string | null>(null);
-	let selectedTokenId = $state<string | null>(null);
+	/** The tokens and drawings selected on a battle map. */
+	let selectedIds = $state<string[]>([]);
 	let inviteOpen = $state(false);
 	// Raw, because a notice's step is looked up in the undo stack by identity,
 	// and deep state would hand out a proxy of it instead.
 	let notice = $state.raw<Notice | null>(null);
 
-	const tool = $derived(placing ? 'place' : drawing ? 'draw' : measuring ? 'measure' : 'pan');
 	/**
-	 * A battle map is a table to play on: tokens and a ruler, and none of what
-	 * a world map is built from. No markers, no notes, no regions further in.
+	 * A battle map is a table to play on: tokens, a ruler, a pen, and none of
+	 * what a world map is built from. No markers, no notes, no regions
+	 * further in.
 	 */
 	const battle = $derived(world.map.kind === 'battle');
+	const tool = $derived(battle ? battleTool : placing ? 'place' : drawing ? 'draw' : 'pan');
+
+	// How the palettes were left is this browser's to remember: read once the
+	// page is in it, and written whenever one is folded or unfolded.
+	let recalled = false;
+	$effect(() => {
+		const folded = { dock: dockFolded, tools: toolsFolded };
+		untrack(() => {
+			try {
+				if (recalled) {
+					localStorage.setItem('odyssey:dock', folded.dock ? '1' : '0');
+					localStorage.setItem('odyssey:tools', folded.tools ? '1' : '0');
+				} else {
+					dockFolded = localStorage.getItem('odyssey:dock') === '1';
+					toolsFolded = localStorage.getItem('odyssey:tools') === '1';
+				}
+			} catch {
+				// A private window may refuse. The palettes then start unfolded.
+			}
+			recalled = true;
+		});
+	});
 	/** The region the GM has clicked. The region buttons under the map act on it. */
 	const selectedRegion = $derived(world.regions.find((r) => r.id === selectedRegionId) ?? null);
 	/** Why the region buttons are off, for their tooltips. */
@@ -133,7 +171,7 @@
 		untrack(() => {
 			placing = null;
 			drawing = false;
-			measuring = false;
+			battleTool = 'pan';
 			form = null;
 			tokenForm = null;
 			setup = false;
@@ -142,7 +180,7 @@
 			deleting = null;
 			selectedMarkerId = null;
 			selectedRegionId = null;
-			selectedTokenId = null;
+			selectedIds = [];
 			// Undo is for the map in front of you, not one you have left.
 			undos.clear();
 		});
@@ -199,10 +237,8 @@
 
 	function startPlacing(next: Placing) {
 		drawing = false;
-		measuring = false;
 		selectedMarkerId = null;
 		selectedRegionId = null;
-		selectedTokenId = null;
 		placing = next;
 	}
 
@@ -210,8 +246,7 @@
 		const target = placing;
 		placing = null;
 		if (!target) return;
-		if ('token' in target) tokenForm = { mode: 'create', x, y };
-		else if ('move' in target) run({ t: 'marker.update', id: target.move.id, changes: { x, y } });
+		if ('move' in target) run({ t: 'marker.update', id: target.move.id, changes: { x, y } });
 		else form = { mode: 'create', kind: target.create, x, y };
 	}
 
@@ -241,26 +276,75 @@
 
 	// -------------------------------------------------------------- tokens
 
-	function saveToken(
-		values: Pick<TokenInput, 'name' | 'color' | 'image' | 'size' | 'ownerId' | 'hidden'>
-	) {
-		if (!tokenForm) return Promise.resolve(false);
-		// Who moves a token and whether it is hidden are the GM's to say.
-		const { ownerId, hidden, ...shared } = values;
-		const fields = isGm ? values : shared;
-		if (tokenForm.mode === 'edit') {
-			return run({ t: 'token.update', id: tokenForm.token.id, changes: fields });
-		}
-		// It goes down squarely on the grid, where a click rarely lands.
-		const [x, y] = snapToGrid(world.map, [tokenForm.x, tokenForm.y], values.size);
-		return run({ t: 'token.create', mapId: world.map.id, x, y, ...fields });
+	/**
+	 * Carries out what was done to the tokens and drawings of a battle map:
+	 * one command, or several as one, which then undo as one too. `note` is
+	 * said once it is done, with a button to undo it.
+	 */
+	async function send(commands: Command[], note?: string): Promise<boolean> {
+		if (commands.length === 0) return true;
+		const command = commands.length === 1 ? commands[0] : { t: 'batch' as const, cmds: commands };
+		const { ok, step } = await attempt(command);
+		if (ok && note) say(note, step);
+		return ok;
 	}
 
-	async function deleteToken(token: Token) {
-		selectedTokenId = null;
-		const { ok, step } = await attempt({ t: 'token.delete', id: token.id });
-		if (ok) say(`Deleted “${token.name}”.`, step);
+	/** A new token is the GM's red, or a player's blue: mostly foes from one, themself from the other. */
+	const tokenColor = $derived(isGm ? TOKEN_COLORS[0] : TOKEN_COLORS[5]);
+
+	/**
+	 * A token out of the dock: of that picture, or a plain one. It goes down
+	 * where it was dropped, or for a click, in the free cell nearest the
+	 * middle of the view. Either way squarely on the grid, and selected.
+	 */
+	async function addToken(item: GalleryItem | null, drop: { x: number; y: number } | null) {
+		if (!canvas) return;
+		const here = world.tokens.map((token): Point => [token.x, token.y]);
+		const dropped = drop && canvas.spotAt(drop.x, drop.y);
+		// Let go anywhere but over the map, it goes back in the dock.
+		if (drop && !dropped) return;
+		const [x, y] = dropped
+			? snapToGrid(world.map, dropped)
+			: freeCell(world.map, canvas.middle(), here);
+		// A token is called what its picture is. A plain one a player adds is
+		// most likely themself.
+		const name = (item?.name ?? (isGm ? 'Token' : data.me.name)).slice(0, LIMITS.tokenName);
+		const had = new Set(world.tokens.map((token) => token.id));
+		const made = await run({
+			t: 'token.create',
+			mapId: world.map.id,
+			name: name.trim() || 'Token',
+			image: item?.file ?? null,
+			color: tokenColor,
+			x,
+			y
+		});
+		if (!made) return;
+		battleTool = 'pan';
+		selectedIds = world.tokens.filter((token) => !had.has(token.id)).map((token) => token.id);
 	}
+
+	function saveToken(values: Pick<TokenInput, 'color' | 'image' | 'ownerId'>) {
+		if (!tokenForm) return Promise.resolve(false);
+		// Who moves a token is the GM's to say.
+		const { ownerId, ...shared } = values;
+		return run({ t: 'token.update', id: tokenForm.id, changes: isGm ? values : shared });
+	}
+
+	/** Picks up a tool of the battle map, or with the one in hand, puts it down again. */
+	function pick(next: BattleTool) {
+		battleTool = battleTool === next ? 'pan' : next;
+		// A box to select with keeps what is selected: Shift adds to it.
+		if (battleTool !== 'pan' && battleTool !== 'select') selectedIds = [];
+	}
+
+	const BATTLE_TOOLS: { tool: BattleTool; icon: ToolIcon; label: string }[] = [
+		{ tool: 'pan', icon: 'pointer', label: 'Select and move' },
+		{ tool: 'select', icon: 'marquee', label: 'Select several' },
+		{ tool: 'measure', icon: 'ruler', label: 'Measure a distance' },
+		{ tool: 'sketch', icon: 'draw', label: 'Draw' },
+		{ tool: 'text', icon: 'text', label: 'Write text' }
+	];
 
 	// ------------------------------------------------------ maps & regions
 
@@ -343,14 +427,14 @@
 		}
 
 		if (e.key !== 'Escape') return;
-		if (placing || drawing || measuring) {
+		if (placing || drawing || battleTool !== 'pan') {
 			putAway();
 		} else if (inviteOpen) {
 			inviteOpen = false;
 		} else {
 			selectedMarkerId = null;
 			selectedRegionId = null;
-			selectedTokenId = null;
+			selectedIds = [];
 		}
 	}
 
@@ -358,7 +442,7 @@
 	function putAway() {
 		placing = null;
 		drawing = false;
-		measuring = false;
+		battleTool = 'pan';
 	}
 
 	// Looks shared by more than one element below.
@@ -492,14 +576,18 @@
 				regions={world.regions}
 				markers={world.markers}
 				tokens={world.tokens}
+				drawings={world.drawings}
 				{cursors}
 				role={data.role}
 				userId={data.me.id}
 				{tool}
+				{ink}
 				depth={world.trail.length}
 				bind:selectedMarkerId
 				bind:selectedRegionId
-				bind:selectedTokenId
+				bind:selectedIds
+				{send}
+				ondone={() => (battleTool = 'pan')}
 				onplace={placed}
 				onnote={(x, y) => (form = { mode: 'create', kind: 'player', x, y })}
 				ondrawn={(points) => {
@@ -512,10 +600,7 @@
 				onmove={(marker) => startPlacing({ move: marker })}
 				ondelete={deleteMarker}
 				onhide={(marker, hidden) => run({ t: 'marker.update', id: marker.id, changes: { hidden } })}
-				onmovetoken={(token, x, y) => run({ t: 'token.update', id: token.id, changes: { x, y } })}
-				onedittoken={(token) => (tokenForm = { mode: 'edit', token })}
-				ondeletetoken={deleteToken}
-				onhidetoken={(token, hidden) => run({ t: 'token.update', id: token.id, changes: { hidden } })}
+				onedittoken={(token) => (tokenForm = token)}
 				oncursor={(at) => live.point(at && { mapId: world.map.id, ...at })}
 			/>
 
@@ -524,9 +609,92 @@
 					class="absolute top-4.5 left-1/2 w-max max-w-[calc(100%-28px)] -translate-x-1/2 rounded-full border bg-night/90 px-3.5 py-2 text-center text-sm max-[720px]:max-w-[calc(100%-136px)] max-[720px]:rounded-2xl"
 				>
 					{battle
-						? 'This battle map is empty. Add a map image and tokens from the bar below.'
+						? 'This battle map is empty. Choose a map image in the corner, and add tokens from below.'
 						: 'This map is empty. Add a map image, markers and regions from the bar below.'}
 				</p>
+			{/if}
+
+			{#if battle}
+				<!-- The tools of a battle map, docked in the upper right corner: what is
+				     in hand, and for the GM, what the map itself is. Folded away it is
+				     one button, which still shows the tool in hand. -->
+				{@const inHand = BATTLE_TOOLS.find((each) => each.tool === battleTool) ?? BATTLE_TOOLS[0]}
+				<div class="absolute top-3.5 right-3.5 z-1 flex items-start gap-1.5">
+					{#if !toolsFolded && (battleTool === 'sketch' || battleTool === 'text')}
+						<!-- The inks, out while there is something to draw or write with. -->
+						<div
+							class="grid gap-1.5 p-1.5 {floating}"
+							role="radiogroup"
+							aria-label={battleTool === 'text' ? 'Colour of the text' : 'Colour of the pen'}
+						>
+							{#each INK_COLORS as option (option)}
+								<!-- Each ink is a disc of itself, which arrives as --c. -->
+								<button
+									class={[
+										'size-6 cursor-pointer rounded-full border-2 border-[#55607a] bg-(--c) touch:size-8',
+										ink === option && 'token-selected'
+									]}
+									style:--c={option}
+									role="radio"
+									aria-checked={ink === option}
+									aria-label="Colour {option}"
+									onclick={() => (ink = option)}
+								></button>
+							{/each}
+						</div>
+					{/if}
+					<div class="grid gap-1.5 p-1.5 {floating}" role="toolbar" aria-label="Map tools">
+						{#if toolsFolded}
+							<ToolButton
+								tip="left"
+								icon={inHand.icon}
+								label="Show the tools"
+								hint="In hand: {inHand.label.toLowerCase()}"
+								active={battleTool !== 'pan'}
+								onclick={() => (toolsFolded = false)}
+							/>
+						{:else}
+							<ToolButton
+								tip="left"
+								icon="up"
+								label="Fold the tools away"
+								onclick={() => (toolsFolded = true)}
+							/>
+							<span class="h-px bg-line"></span>
+							{#each BATTLE_TOOLS as each (each.tool)}
+								<ToolButton
+									tip="left"
+									icon={each.icon}
+									label={each.label}
+									active={battleTool === each.tool}
+									onclick={() => pick(each.tool)}
+								/>
+							{/each}
+							{#if isGm}
+								<span class="h-px bg-line"></span>
+								<ToolButton
+									tip="left"
+									icon="image"
+									label={world.map.imageFile ? 'Change the map image' : 'Choose a map image'}
+									onclick={() => (gallery = 'pick')}
+								/>
+								<ToolButton
+									tip="left"
+									icon="rename"
+									label="Rename this map"
+									onclick={() =>
+										(prompt = { kind: 'rename', mapId: world.map.id, initial: world.map.name })}
+								/>
+								<ToolButton
+									tip="left"
+									icon="grid"
+									label="Set up the grid"
+									onclick={() => (setup = true)}
+								/>
+							{/if}
+						{/if}
+					</div>
+				</div>
 			{/if}
 
 			<!-- What floats over the bottom of the map: a notice when there is one,
@@ -552,64 +720,54 @@
 					</div>
 				{/if}
 
+				{#if battle}
+					<!-- A battle map is played on: under it is the dock of tokens to put
+					     on it, for everyone at the table. Its tools are in the corner. -->
+					<TokenDock
+						{campaignId}
+						gm={isGm}
+						color={tokenColor}
+						stamp={galleryStamp}
+						bind:collapsed={dockFolded}
+						onadd={addToken}
+						onerror={say}
+					/>
+				{:else}
 				<div
 					class="pointer-events-auto flex max-w-[calc(100%-120px)] flex-wrap items-center justify-center gap-1.5 p-1.5 max-[720px]:max-w-[calc(100%-24px)] max-[720px]:flex-col {floating}"
 					role="toolbar"
 					aria-label="Map tools"
 				>
 					{#if tool !== 'pan'}
-						<button class="btn" onclick={putAway}>{measuring ? 'Done measuring' : 'Cancel'}</button>
+						<button class="btn" onclick={putAway}>Cancel</button>
 					{:else}
 						<!-- The tools for the map. This wrapper only exists on a narrow
 						     screen, where it makes them a row of their own. -->
 						<div class="contents flex-wrap items-center justify-center gap-1.5 max-[720px]:flex">
-							<!-- Icons, each with a tooltip that names it. A player has a tool
-							     or two, so theirs keep their words. -->
-							{#if battle}
-								<!-- A battle map is played on, not written on: pieces and a
-								     ruler, for everyone at the table. -->
-								<ToolButton
-									icon="token"
-									label={isGm ? 'Add a token' : 'Add your token'}
-									named={!isGm}
-									onclick={() => startPlacing({ token: true })}
-								/>
-								<ToolButton
-									icon="ruler"
-									label={isGm ? 'Measure a distance' : 'Measure'}
-									named={!isGm}
-									onclick={() => {
-										selectedTokenId = null;
-										measuring = true;
-									}}
-								/>
-							{:else}
-								<ToolButton
-									icon="note"
-									label={isGm ? 'Add a note' : 'Add note'}
-									named={!isGm}
-									onclick={() => startPlacing({ create: 'player' })}
-								/>
-							{/if}
+							<!-- Icons, each with a tooltip that names it. A player has one
+							     tool, so theirs keeps its words. -->
+							<ToolButton
+								icon="note"
+								label={isGm ? 'Add a note' : 'Add note'}
+								named={!isGm}
+								onclick={() => startPlacing({ create: 'player' })}
+							/>
 							{#if isGm}
 								<span class="w-px self-stretch bg-line"></span>
-								{#if !battle}
-									<ToolButton
-										icon="marker"
-										label="Add a world marker"
-										onclick={() => startPlacing({ create: 'world' })}
-									/>
-									<ToolButton
-										icon="region"
-										label="Draw a region"
-										onclick={() => {
-											selectedMarkerId = null;
-											selectedRegionId = null;
-											selectedTokenId = null;
-											drawing = true;
-										}}
-									/>
-								{/if}
+								<ToolButton
+									icon="marker"
+									label="Add a world marker"
+									onclick={() => startPlacing({ create: 'world' })}
+								/>
+								<ToolButton
+									icon="region"
+									label="Draw a region"
+									onclick={() => {
+										selectedMarkerId = null;
+										selectedRegionId = null;
+										drawing = true;
+									}}
+								/>
 								<ToolButton
 									icon="image"
 									label={world.map.imageFile ? 'Change the map image' : 'Choose a map image'}
@@ -623,12 +781,12 @@
 								/>
 								<ToolButton
 									icon="grid"
-									label={battle ? 'Set up the grid' : 'Make this a battle map'}
+									label="Make this a battle map"
 									onclick={() => (setup = true)}
 								/>
 							{/if}
 						</div>
-						{#if isGm && !battle}
+						{#if isGm}
 							<!-- What can be done with a region. Always here on a world map, so
 							     the bar keeps its shape, and live once a region on the map has
 							     been clicked. A narrow screen has no room for that: there they
@@ -687,6 +845,7 @@
 						{/if}
 					{/if}
 				</div>
+				{/if}
 			</div>
 		</main>
 	</div>
@@ -704,13 +863,16 @@
 
 {#if tokenForm}
 	<TokenForm
-		mode={tokenForm.mode}
 		gm={isGm}
 		{campaignId}
 		members={data.members}
-		initial={tokenForm.mode === 'edit' ? tokenForm.token : {}}
+		token={tokenForm}
 		onsubmit={saveToken}
-		onclose={() => (tokenForm = null)}
+		onclose={() => {
+			tokenForm = null;
+			// The form's own gallery may have been added to or tidied.
+			galleryStamp++;
+		}}
 	/>
 {/if}
 
@@ -732,7 +894,14 @@
 		onclose={() => (gallery = null)}
 	/>
 {:else if gallery === 'browse'}
-	<Gallery {campaignId} onclose={() => (gallery = null)} />
+	<Gallery
+		{campaignId}
+		onclose={() => {
+			gallery = null;
+			// What was added, revealed or taken out shows in the dock of tokens.
+			galleryStamp++;
+		}}
+	/>
 {/if}
 
 {#if prompt}

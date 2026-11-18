@@ -155,6 +155,9 @@ export const tokens = sqliteTable(
 		y: real('y').notNull(),
 		/** Cells across. */
 		size: integer('size').notNull().default(1),
+		/** Degrees clockwise. */
+		rotation: integer('rotation').notNull().default(0),
+		locked: integer('locked', { mode: 'boolean' }).notNull().default(false),
 		/** The player who moves it, besides the GM. Null for the GM's own. */
 		ownerId: text('owner_id'),
 		ownerName: text('owner_name'),
@@ -164,6 +167,31 @@ export const tokens = sqliteTable(
 		deletedAt: integer('deleted_at')
 	},
 	(t) => [index('tokens_map').on(t.mapId)]
+);
+
+// What the table draws and writes on a battle map: freehand lines and lines
+// of text. Deleted like tokens are, so that undo brings the same one back.
+export const drawings = sqliteTable(
+	'drawings',
+	{
+		id: text('id').primaryKey(),
+		mapId: text('map_id')
+			.notNull()
+			.references(() => maps.id, { onDelete: 'cascade' }),
+		kind: text('kind', { enum: ['line', 'text'] }).notNull(),
+		/** In map space. A text has one. */
+		points: text('points', { mode: 'json' }).$type<Point[]>().notNull(),
+		text: text('text').notNull().default(''),
+		color: text('color').notNull(),
+		/** In cells: the thickness of a line, the height of a text's letters. */
+		size: real('size').notNull(),
+		authorId: text('author_id').notNull(),
+		authorName: text('author_name').notNull(),
+		createdAt: integer('created_at').notNull(),
+		updatedAt: integer('updated_at').notNull(),
+		deletedAt: integer('deleted_at')
+	},
+	(t) => [index('drawings_map').on(t.mapId)]
 );
 
 // The pictures a campaign keeps to use again: images to lay under a map, and

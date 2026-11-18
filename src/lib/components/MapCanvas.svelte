@@ -6,21 +6,26 @@
 	// `view` turns map space into screen pixels: screen = map * size * k + offset.
 	//
 	// A battle map is the same sheet used as a table: a grid drawn over it,
-	// tokens to drag from cell to cell, and a ruler that counts the cells
-	// between. It holds no markers and no regions.
+	// tokens to drag from cell to cell, a ruler that counts the cells
+	// between, and lines and words the table draws on it. It holds no
+	// markers and no regions.
 
 	import { untrack } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
+	import { boxOf, capped, linePath, thinOut, touchesBox } from '#lib/shared/drawing.ts';
 	import { cellCount, cellsBetween, snapToGrid } from '#lib/shared/grid.ts';
-	import { canEditWorld, canMoveToken } from '#lib/shared/rules.ts';
+	import { canChangeDrawing, canEditWorld, canMoveToken } from '#lib/shared/rules.ts';
 	import { tileLevelFor, tileLevels, tilesIn, type Tile } from '#lib/shared/tiles.ts';
 	import {
+		DRAWING_SIZE,
 		LIMITS,
 		imageUrl,
 		mapImageUrl,
 		markerType,
+		type Command,
 		type Cursor,
 		type CursorSpot,
+		type Drawing,
 		type MapInfo,
 		type Marker,
 		type Point,
@@ -30,7 +35,7 @@
 	} from '#lib/shared/types.ts';
 	import MarkerCard from './MarkerCard.svelte';
 	import MarkerGlyph from './MarkerGlyph.svelte';
-	import TokenCard from './TokenCard.svelte';
+	import SelectionBar from './SelectionBar.svelte';
 
 	/** Where this browser is pointing on the map in front of it, and what it has in hand. */
 	type Pointing = Omit<CursorSpot, 'mapId'>;
@@ -41,20 +46,37 @@
 		markers: Marker[];
 		/** The pieces on a battle map. A world map shows none. */
 		tokens: Token[];
+		/** What has been drawn and written on a battle map. */
+		drawings: Drawing[];
 		/** Where the other people looking at this map are pointing. */
 		cursors: Cursor[];
 		role: Role;
 		userId: string;
 		/**
-		 * `place` waits for a click that positions a marker or a token, `draw`
-		 * outlines a region, `measure` drags a ruler across a battle map.
+		 * `pan` is the hand: it moves the map, and on a battle map selects and
+		 * drags what is on it. `place` waits for a click that positions a
+		 * marker, `draw` outlines a region. The rest are a battle map's:
+		 * `select` drags a box around several things, `measure` a ruler across
+		 * the map, `sketch` draws a line freehand, `text` waits for a click to
+		 * start writing at.
 		 */
-		tool: 'pan' | 'place' | 'draw' | 'measure';
+		tool: 'pan' | 'place' | 'draw' | 'measure' | 'select' | 'sketch' | 'text';
+		/** The colour `sketch` draws in and `text` writes in. */
+		ink: string;
 		/** How many maps deep this one is. Decides which way the arrival animation zooms. */
 		depth: number;
 		selectedMarkerId: string | null;
 		selectedRegionId: string | null;
-		selectedTokenId: string | null;
+		/** The tokens and drawings selected on a battle map, by id. */
+		selectedIds: string[];
+		/**
+		 * Carries out what was done to tokens and drawings. Resolves once the
+		 * server has done it, or refused. `note` is said when it has, with a
+		 * way to undo.
+		 */
+		send: (commands: Command[], note?: string) => Promise<boolean>;
+		/** A tool that does one thing has done it: `select` caught something, `text` was written. */
+		ondone: () => void;
 		onplace: (x: number, y: number) => void;
 		/** A bare spot of a world map was double-clicked: a note is wanted there. */
 		onnote: (x: number, y: number) => void;
@@ -65,11 +87,8 @@
 		onmove: (marker: Marker) => void;
 		ondelete: (marker: Marker) => void;
 		onhide: (marker: Marker, hidden: boolean) => void;
-		/** A token was let go somewhere new. Resolves once the server has moved it, or refused. */
-		onmovetoken: (token: Token, x: number, y: number) => Promise<boolean>;
+		/** The rest of what a token is, is to be changed: its picture, its colour, whose it is. */
 		onedittoken: (token: Token) => void;
-		ondeletetoken: (token: Token) => void;
-		onhidetoken: (token: Token, hidden: boolean) => void;
 		/** Where this browser is pointing on the map, or null when it is not over it. */
 		oncursor: (at: Pointing | null) => void;
 	}
@@ -79,14 +98,18 @@
 		regions,
 		markers,
 		tokens,
+		drawings,
 		cursors,
 		role,
 		userId,
 		tool,
+		ink,
 		depth,
 		selectedMarkerId = $bindable(),
 		selectedRegionId = $bindable(),
-		selectedTokenId = $bindable(),
+		selectedIds = $bindable(),
+		send,
+		ondone,
 		onplace,
 		onnote,
 		ondrawn,
@@ -96,10 +119,7 @@
 		onmove,
 		ondelete,
 		onhide,
-		onmovetoken,
 		onedittoken,
-		ondeletetoken,
-		onhidetoken,
 		oncursor
 	}: Props = $props();
 
@@ -127,23 +147,57 @@
 	let reshape = $state<{ id: string; points: Point[] } | null>(null);
 	let cardW = $state(0);
 	let cardH = $state(0);
-	let tokenCardW = $state(0);
-	let tokenCardH = $state(0);
+	let barW = $state(0);
+	let barH = $state(0);
+	let bar = $state<ReturnType<typeof SelectionBar>>();
 	/**
-	 * The token in this person's hand: where the pointer has it, and `rest`,
-	 * the spot on the grid it would come down on. Once it is let go it waits
-	 * here, no longer `held`, until the server has moved it for everyone.
+	 * What this person has in hand: one token or drawing, or a whole
+	 * selection picked up by one of its own, the `lead`. `origins` is where
+	 * each of them was when it was picked up (a drawing by its first point).
+	 * `by` is how far the pointer has taken them, and `rest` how far they
+	 * will have gone once let go: the lead token comes down on the grid, and
+	 * the others keep their places around it. Once let go they wait here, no
+	 * longer `held`, until the server has moved them for everyone.
 	 */
 	let carry = $state.raw<{
-		id: string;
-		x: number;
-		y: number;
-		from: Point;
+		lead: string;
+		origins: Record<string, Point>;
+		by: Point;
 		rest: Point;
+		/** Whether the lead is a token: then the way it has come is measured. */
+		measured: boolean;
 		held: boolean;
 	} | null>(null);
 	/** A distance being measured with the ruler tool: from, to. */
 	let measure = $state.raw<[Point, Point] | null>(null);
+	/** A line being drawn, in map space, and the ones let go that the server hasn't answered for yet. */
+	let stroke = $state.raw<Point[] | null>(null);
+	let inked = $state.raw<{ points: Point[]; color: string }[]>([]);
+	/** The box being dragged around things to select them: one corner, and the other. */
+	let marquee = $state.raw<[Point, Point] | null>(null);
+	/** A text being typed onto the map: a new one, or with an `id`, one being reworded. */
+	let writing = $state.raw<{ id: string | null; at: Point; color: string } | null>(null);
+	/** What has been typed of it so far. Kept apart, so the box has it to the last. */
+	let words = $state('');
+	/** When the box for it opened. */
+	let writingSince = 0;
+
+	/**
+	 * Puts the caret in the box the moment it is on the page. The map itself
+	 * has the focus by then, from the click that asked for the box, and the
+	 * browser only focuses a new field by itself when nothing else has it.
+	 */
+	function takeFocus(box: HTMLInputElement) {
+		box.focus();
+	}
+
+	/** The box lost the focus: what is in it is kept, as if Enter had been pressed. */
+	function leftBox(box: HTMLInputElement) {
+		// A touch screen follows a tap with a click of its own, which can land
+		// beside the box that the tap just opened. That is no reason to close it.
+		if (!words && performance.now() - writingSince < 400) box.focus();
+		else doneWriting(true);
+	}
 
 	/**
 	 * The GM selects a region with one click, and gets its corners to reshape
@@ -229,21 +283,83 @@
 		return spots;
 	});
 
-	/** Where a token is drawn: in a hand if it is in one, or where it stands. */
-	function spotOf(token: Token): Point {
-		if (carry?.id === token.id) return [carry.x, carry.y];
-		return heldByOthers.get(token.id) ?? [token.x, token.y];
+	/** How far what is in hand has been taken: with the pointer while held, onto the grid once let go. */
+	const carried = $derived(carry ? (carry.held ? carry.by : carry.rest) : null);
+
+	/** Where something in this person's hand is right now, or null if it isn't in it. */
+	function inHandAt(id: string): Point | null {
+		const from = carry?.origins[id];
+		return from && carried ? [from[0] + carried[0], from[1] + carried[1]] : null;
 	}
 
-	const selectedToken = $derived(
-		battle && tool === 'pan' ? (tokens.find((t) => t.id === selectedTokenId) ?? null) : null
+	/** Where a token is drawn: in a hand if it is in one, or where it stands. */
+	function spotOf(token: Token): Point {
+		return inHandAt(token.id) ?? heldByOthers.get(token.id) ?? [token.x, token.y];
+	}
+
+	/** How far from where it is kept a drawing is drawn, while it is in hand. */
+	function shiftOf(drawing: Drawing): Point {
+		const at = inHandAt(drawing.id);
+		return at ? [at[0] - drawing.points[0][0], at[1] - drawing.points[0][1]] : [0, 0];
+	}
+
+	const lines = $derived(battle ? drawings.filter((d) => d.kind === 'line') : []);
+	const texts = $derived(battle ? drawings.filter((d) => d.kind === 'text') : []);
+
+	/** Map space to the map's own pixels, where a line is drawn. */
+	const inPixels = (points: Point[]): Point[] => points.map(([x, y]) => [x * W, y * H]);
+	/** What goes around letters so they read on any map: dark around light ink, light around dark. */
+	const haloOf = (color: string) => (color === '#12151c' ? '#fff8e4' : '#0c0e14');
+
+	const isToken = (thing: Token | Drawing): thing is Token => 'ownerId' in thing;
+	/** A token is picked up by whoever moves it, unless it is locked. */
+	const canGrabToken = (token: Token) => !token.locked && canMoveToken(role, userId, token);
+	const canGrabDrawing = (drawing: Drawing) => canChangeDrawing(role, userId, drawing);
+	const canGrab = (thing: Token | Drawing) =>
+		isToken(thing) ? canGrabToken(thing) : canGrabDrawing(thing);
+
+	/** The hand is out on a battle map: what is on it can be selected and dragged. */
+	const selecting = $derived(battle && tool === 'pan');
+	const selectedTokens = $derived(
+		selecting ? tokens.filter((t) => selectedIds.includes(t.id)) : []
+	);
+	const selectedDrawings = $derived(
+		selecting ? drawings.filter((d) => selectedIds.includes(d.id)) : []
 	);
 
-	const tokenCardPosition = $derived.by(() => {
-		if (!selectedToken) return null;
-		const reach = (selectedToken.size * cell * view.k) / 2 + 10;
-		// Its name is written under it, so a card that goes below goes below that.
-		return cardSpot(spotOf(selectedToken), reach, reach + 18, tokenCardW, tokenCardH);
+	/** Where the buttons for the selection float: over the top of it, in the middle. */
+	const barPosition = $derived.by(() => {
+		if (carry?.held || marquee || writing) return null;
+		if (selectedTokens.length + selectedDrawings.length === 0) return null;
+		const box = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity };
+		const take = (x: number, y: number, rx: number, ry: number) => {
+			box.x0 = Math.min(box.x0, x - rx);
+			box.x1 = Math.max(box.x1, x + rx);
+			box.y0 = Math.min(box.y0, y - ry);
+			box.y1 = Math.max(box.y1, y + ry);
+		};
+		for (const token of selectedTokens) {
+			const half = (token.size * cell) / 2;
+			take(...spotOf(token), half / W, half / H);
+		}
+		for (const drawing of selectedDrawings) {
+			const [sx, sy] = shiftOf(drawing);
+			const half = (drawing.size * cell) / 2;
+			if (drawing.kind === 'line') {
+				const b = boxOf(drawing.points);
+				take(b.x0 + sx, b.y0 + sy, half / W, half / H);
+				take(b.x1 + sx, b.y1 + sy, half / W, half / H);
+			} else {
+				// A text starts at its point and runs to the right: about this far.
+				const [x, y] = drawing.points[0];
+				const long = (drawing.text.length * drawing.size * cell * 0.55) / W;
+				take(x + sx, y + sy, 0, half / H);
+				take(x + sx + long, y + sy, 0, half / H);
+			}
+		}
+		// A token's name is written under it, so buttons that go below go below that.
+		const below = (box.y1 - box.y0) * H * view.k + 12 + (selectedTokens.length ? 18 : 0);
+		return cardSpot([(box.x0 + box.x1) / 2, box.y0], 12, below, barW, barH);
 	});
 
 	interface Ruler {
@@ -260,8 +376,11 @@
 		if (!battle) return [];
 		const drawn: Omit<Ruler, 'length'>[] = [];
 		// Carrying a token measures how far it has come.
-		if (carry?.held) drawn.push({ key: 'mine', from: carry.from, to: carry.rest, tint: '#fff' });
-		else if (measure) drawn.push({ key: 'mine', from: measure[0], to: measure[1], tint: '#fff' });
+		if (carry?.held && carry.measured) {
+			const from = carry.origins[carry.lead];
+			const to: Point = [from[0] + carry.rest[0], from[1] + carry.rest[1]];
+			drawn.push({ key: 'mine', from, to, tint: '#fff' });
+		} else if (measure) drawn.push({ key: 'mine', from: measure[0], to: measure[1], tint: '#fff' });
 		for (const other of cursors) {
 			if (!other.ruler) continue;
 			const [from, to] = other.ruler;
@@ -286,16 +405,128 @@
 		return tokens.find((t) => t.id === id) ?? null;
 	}
 
+	function drawingAt(target: Element): Drawing | null {
+		const id = target.closest<HTMLElement | SVGElement>('[data-drawing-id]')?.dataset.drawingId;
+		return drawings.find((d) => d.id === id) ?? null;
+	}
+
 	/** Where a press is aiming: the middle of the cell under it, or with Alt held, the exact spot. */
 	function aim(e: PointerEvent): Point {
 		const at = clamped(toMap(e.clientX, e.clientY));
 		return e.altKey ? at : snapToGrid(map, at);
 	}
 
-	// The ruler is put away with the tool.
+	// What a tool was in the middle of is put away with the tool.
 	$effect(() => {
 		if (tool !== 'measure') measure = null;
+		if (tool !== 'sketch') stroke = null;
+		if (tool !== 'select') marquee = null;
 	});
+
+	// --------------------------------------------------- drawing and writing
+
+	/** A line was drawn: it is thinned to what gives it its shape, and kept. */
+	function keepStroke(drawn: Point[]) {
+		// Thinned in the map's pixels, to within less than a pixel on screen.
+		let points = capped(thinOut(inPixels(drawn), 0.75 / view.k), LIMITS.drawingPoints).map(
+			([x, y]): Point => [x / W, y / H]
+		);
+		// A press that never moved is a dot.
+		if (points.length === 1) points = [points[0], points[0]];
+		// It stays on the map as drawn until the server sends it back for good.
+		const pending = { points, color: ink };
+		inked = [...inked, pending];
+		send([{ t: 'drawing.create', mapId: map.id, kind: 'line', points, color: ink }]).then(() => {
+			inked = inked.filter((line) => line !== pending);
+		});
+	}
+
+	/** Starts a new text at `at`, or opens one that is there to be reworded. */
+	function write(drawing: Drawing | null, at: Point = [0, 0]) {
+		words = drawing?.text ?? '';
+		writingSince = performance.now();
+		writing = drawing
+			? { id: drawing.id, at: drawing.points[0], color: drawing.color }
+			: { id: null, at, color: ink };
+	}
+
+	/** The text is done: kept if there is any and `keep` says so, dropped otherwise. */
+	function doneWriting(keep: boolean) {
+		const written = writing;
+		if (!written) return;
+		writing = null;
+		const text = words.trim();
+		if (keep && text) {
+			if (written.id) send([{ t: 'drawing.update', id: written.id, changes: { text } }]);
+			else {
+				const { at: point, color } = written;
+				send([{ t: 'drawing.create', mapId: map.id, kind: 'text', points: [point], text, color }]);
+			}
+		}
+		if (!written.id) ondone();
+	}
+
+	/** How tall the letters of the text being typed are, on screen. */
+	const writingSize = $derived.by(() => {
+		const size = drawings.find((d) => d.id === writing?.id)?.size ?? DRAWING_SIZE.text;
+		return size * cell * view.k;
+	});
+
+	// ------------------------------------------------------------ selecting
+
+	/** A box was dragged: whatever it touches is selected, or with `add`, selected as well. */
+	function catchIn([a, b]: [Point, Point], add: boolean) {
+		const box = boxOf([a, b]);
+		const caught: string[] = [];
+		for (const token of tokens) {
+			// A disc against a box, in the map's pixels: from its middle to the
+			// nearest spot of the box is no further than its edge.
+			const nx = within(token.x, box.x0, box.x1);
+			const ny = within(token.y, box.y0, box.y1);
+			const away = Math.hypot((token.x - nx) * W, (token.y - ny) * H);
+			if (away <= (token.size * cell) / 2) caught.push(token.id);
+		}
+		for (const drawing of drawings) {
+			if (drawing.kind === 'line') {
+				if (touchesBox(drawing.points, box)) caught.push(drawing.id);
+				continue;
+			}
+			// How much room a text takes is the browser's to say.
+			const letters = world?.querySelector(`[data-drawing-id="${drawing.id}"]`);
+			if (!letters) continue;
+			const rect = letters.getBoundingClientRect();
+			const [x0, y0] = toMap(rect.left, rect.top);
+			const [x1, y1] = toMap(rect.right, rect.bottom);
+			if (x0 <= box.x1 && x1 >= box.x0 && y0 <= box.y1 && y1 >= box.y0) caught.push(drawing.id);
+		}
+		selectedIds = add ? [...new Set([...selectedIds, ...caught])] : caught;
+		selectedMarkerId = null;
+		selectedRegionId = null;
+		if (caught.length) ondone();
+	}
+
+	/** Copies of tokens were asked for. Once they are made, they are what is selected. */
+	async function copy(commands: Command[]) {
+		const had = new Set(tokens.map((t) => t.id));
+		if (await send(commands)) {
+			selectedIds = tokens.filter((t) => !had.has(t.id)).map((t) => t.id);
+		}
+	}
+
+	/** Where on the map a spot of the screen is, or null when it is off the map. */
+	export function spotAt(clientX: number, clientY: number): Point | null {
+		if (!viewport) return null;
+		const rect = viewport.getBoundingClientRect();
+		if (clientX < rect.left || clientX > rect.right) return null;
+		if (clientY < rect.top || clientY > rect.bottom) return null;
+		const at = toMap(clientX, clientY);
+		return inside(at) ? at : null;
+	}
+
+	/** The spot of the map in the middle of the view, or the nearest spot that is on the map. */
+	export function middle(): Point {
+		return clamped([(cw / 2 - view.x) / (view.k * W), (ch / 2 - view.y) / (view.k * H)]);
+	}
 
 	function boundsOf(points: Point[]) {
 		const xs = points.map((p) => p[0]);
@@ -473,6 +704,10 @@
 				clearHover();
 				carry = null;
 				measure = null;
+				stroke = null;
+				inked = [];
+				marquee = null;
+				writing = null;
 			}
 			shown = { key, id: map.id, depth };
 			ready = true;
@@ -590,21 +825,33 @@
 				moved: boolean;
 		  }
 		| {
-				type: 'token';
-				token: Token;
+				type: 'grab';
+				/** The one under the pointer. A token snaps to the grid, and the rest follow it. */
+				lead: Token | Drawing;
+				/** Where everything that comes along was when it was picked up. */
+				origins: Record<string, Point>;
+				/** How far it can all go each way before something leaves the map. */
+				room: { x0: number; x1: number; y0: number; y1: number };
 				sx: number;
 				sy: number;
-				/** From the pointer to the middle of the token, so it doesn't jump when picked up. */
-				dx: number;
-				dy: number;
 				moved: boolean;
 				target: Element;
 		  }
-		| { type: 'measure' };
+		| { type: 'measure' }
+		| { type: 'sketch' }
+		/** `add` keeps what was already selected. */
+		| { type: 'marquee'; add: boolean };
 
 	const pointers = new Map<number, { x: number; y: number }>();
 	let gesture: Gesture | null = null;
-	let lastTap = { at: 0, x: 0, y: 0, regionId: null as string | null };
+	let lastTap = {
+		at: 0,
+		x: 0,
+		y: 0,
+		regionId: null as string | null,
+		/** The token or drawing that was tapped, on a battle map. */
+		thingId: null as string | null
+	};
 	/** The last corner that was clicked without being dragged. A second click removes it. */
 	let lastCorner = { at: 0, regionId: '', index: -1 };
 
@@ -675,17 +922,22 @@
 	function reportCursor() {
 		if (!viewport || !ready) return oncursor(null);
 		// A finger leaves no pointer behind, but what it is dragging has a place.
-		const hand: Point | null = carry ? [carry.x, carry.y] : (measure?.[1] ?? null);
+		const held = carry && inHandAt(carry.lead);
+		const hand: Point | null = held ?? measure?.[1] ?? null;
 		const at = mouse ? toMap(mouse.x, mouse.y) : hand;
 		if (!at) return oncursor(null);
 
 		const pointing: Pointing = { x: at[0], y: at[1] };
-		if (carry) {
-			// A hidden token is moved in secret: nobody is shown it in the GM's hand.
-			const token = tokens.find((t) => t.id === carry!.id);
+		if (carry && held) {
+			// The table is shown the token under the pointer in this hand. The
+			// rest of a selection arrives when it is put down. A hidden token is
+			// moved in secret: nobody is shown it in the GM's hand.
+			const { lead, origins, rest } = carry;
+			const token = carry.measured ? tokens.find((t) => t.id === lead) : null;
 			if (token && !token.hidden) {
-				pointing.drag = { id: carry.id, x: carry.x, y: carry.y };
-				if (carry.held) pointing.ruler = [carry.from, carry.rest];
+				pointing.drag = { id: lead, x: held[0], y: held[1] };
+				const from = origins[lead];
+				if (carry.held) pointing.ruler = [from, [from[0] + rest[0], from[1] + rest[1]]];
 			}
 		} else if (measure) {
 			pointing.ruler = measure;
@@ -739,6 +991,8 @@
 			// A second finger makes it a pinch, and drops whatever the first one held.
 			if (carry?.held) carry = null;
 			measure = null;
+			stroke = null;
+			marquee = null;
 			const mid = midpoint();
 			gesture = {
 				type: 'pinch',
@@ -788,21 +1042,28 @@
 			return;
 		}
 
-		// A token that is this person's to move is picked up. Anyone else's
-		// is part of the map: pressing it pans, clicking it shows whose it is.
-		const token = tool === 'pan' ? tokenAt(target) : null;
-		if (token && canMoveToken(role, userId, token)) {
-			const [px, py] = toMap(e.clientX, e.clientY);
-			gesture = {
-				type: 'token',
-				token,
-				sx: e.clientX,
-				sy: e.clientY,
-				dx: token.x - px,
-				dy: token.y - py,
-				moved: false,
-				target
-			};
+		if (tool === 'sketch') {
+			stroke = [clamped(toMap(e.clientX, e.clientY))];
+			gesture = { type: 'sketch' };
+			capture(e.pointerId);
+			return;
+		}
+
+		if (tool === 'select') {
+			const at = toMap(e.clientX, e.clientY);
+			marquee = [at, at];
+			gesture = { type: 'marquee', add: e.shiftKey };
+			capture(e.pointerId);
+			return;
+		}
+
+		// A token or a drawing that is this person's to move is picked up.
+		// Anything else is part of the map: pressing it pans, clicking it
+		// selects it. With Shift held a click adds to the selection, so
+		// nothing is picked up then either.
+		const thing = selecting ? (tokenAt(target) ?? drawingAt(target)) : null;
+		if (thing && canGrab(thing) && !e.shiftKey) {
+			gesture = pickUp(thing, e, target);
 			return;
 		}
 
@@ -815,6 +1076,51 @@
 			moved: false,
 			target
 		};
+	}
+
+	/**
+	 * Picks up what was pressed. When it is part of the selection, the rest
+	 * of the selection that is this person's to move comes along.
+	 */
+	function pickUp(lead: Token | Drawing, e: PointerEvent, target: Element): Gesture {
+		const together = selectedIds.includes(lead.id);
+		const along = (thing: Token | Drawing) =>
+			thing.id === lead.id || (together && selectedIds.includes(thing.id) && canGrab(thing));
+		const origins: Record<string, Point> = {};
+		const reached: Point[] = [];
+		for (const token of tokens.filter(along)) {
+			origins[token.id] = [token.x, token.y];
+			reached.push(origins[token.id]);
+		}
+		for (const drawing of drawings.filter(along)) {
+			origins[drawing.id] = drawing.points[0];
+			reached.push(...drawing.points);
+		}
+		const box = boxOf(reached);
+		return {
+			type: 'grab',
+			lead,
+			origins,
+			room: { x0: -box.x0, x1: 1 - box.x1, y0: -box.y0, y1: 1 - box.y1 },
+			sx: e.clientX,
+			sy: e.clientY,
+			moved: false,
+			target
+		};
+	}
+
+	/** What to ask of the server once something carried has been put down. */
+	function movesOf(origins: Record<string, Point>, [dx, dy]: Point): Command[] {
+		const commands: Command[] = [];
+		for (const [id, [x, y]] of Object.entries(origins)) {
+			if (tokens.some((t) => t.id === id)) {
+				const changes = { x: within(x + dx, 0, 1), y: within(y + dy, 0, 1) };
+				commands.push({ t: 'token.update', id, changes });
+			} else {
+				commands.push({ t: 'drawing.update', id, changes: { move: [dx, dy] } });
+			}
+		}
+		return commands;
 	}
 
 	function onpointermove(e: PointerEvent) {
@@ -853,28 +1159,46 @@
 			const slack = e.pointerType === 'mouse' ? 3 : 8;
 			if (Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > slack) g.moved = true;
 			if (g.moved) reshape.points[g.index] = clamped(toMap(e.clientX, e.clientY));
-		} else if (g?.type === 'token') {
+		} else if (g?.type === 'grab') {
 			if (!g.moved && Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > (e.pointerType === 'mouse' ? 4 : 10)) {
 				g.moved = true;
 				dragging = true;
-				selectedTokenId = null;
+				// Dragging something that isn't selected lets go of what is.
+				if (!selectedIds.includes(g.lead.id)) selectedIds = [];
 				capture(e.pointerId);
 			}
 			if (g.moved) {
-				const [px, py] = toMap(e.clientX, e.clientY);
-				const at = clamped([px + g.dx, py + g.dy]);
+				const fit = ([dx, dy]: Point): Point => [
+					within(dx, g.room.x0, g.room.x1),
+					within(dy, g.room.y0, g.room.y1)
+				];
+				const by = fit([(e.clientX - g.sx) / (view.k * W), (e.clientY - g.sy) / (view.k * H)]);
+				let rest = by;
+				// A token comes down on the grid, and takes the others the same
+				// way. With Alt held it stays exactly where it is put.
+				if (isToken(g.lead) && !e.altKey) {
+					const { x, y, size } = g.lead;
+					const [rx, ry] = snapToGrid(map, [x + by[0], y + by[1]], size);
+					rest = fit([rx - x, ry - y]);
+				}
 				carry = {
-					id: g.token.id,
-					x: at[0],
-					y: at[1],
-					from: [g.token.x, g.token.y],
-					// With Alt held it stays exactly where it is put.
-					rest: e.altKey ? at : snapToGrid(map, at, g.token.size),
+					lead: g.lead.id,
+					origins: g.origins,
+					by,
+					rest,
+					measured: isToken(g.lead),
 					held: true
 				};
 			}
 		} else if (g?.type === 'measure' && measure) {
 			measure = [measure[0], aim(e)];
+		} else if (g?.type === 'sketch' && stroke) {
+			// A new point once the pointer has gone a couple of pixels on.
+			const at = clamped(toMap(e.clientX, e.clientY));
+			const [lx, ly] = stroke[stroke.length - 1];
+			if (Math.hypot((at[0] - lx) * W, (at[1] - ly) * H) * view.k >= 2) stroke = [...stroke, at];
+		} else if (g?.type === 'marquee' && marquee) {
+			marquee = [marquee[0], toMap(e.clientX, e.clientY)];
 		}
 	}
 
@@ -903,17 +1227,27 @@
 		dragging = false;
 		if (g?.type === 'pan' && !g.moved && completed) tap(e, g.target);
 		if (g?.type === 'measure') measure = null;
-		if (g?.type === 'token') {
+		if (g?.type === 'sketch') {
+			const drawn = stroke;
+			stroke = null;
+			if (drawn && completed) keepStroke(drawn);
+		}
+		if (g?.type === 'marquee') {
+			const box = marquee;
+			marquee = null;
+			if (box && completed) catchIn(box, g.add);
+		}
+		if (g?.type === 'grab') {
 			const held = carry;
 			if (!g.moved) {
 				if (completed) tap(e, g.target);
-			} else if (held && completed) {
+			} else if (held && completed && (held.rest[0] !== 0 || held.rest[1] !== 0)) {
 				// Put down where it comes to rest, and kept there until the
 				// server has moved it. The table sees it in this hand until then,
 				// so it never flickers back to where it was.
-				const settled = { ...held, x: held.rest[0], y: held.rest[1], held: false };
+				const settled = { ...held, held: false };
 				carry = settled;
-				onmovetoken(g.token, settled.x, settled.y).then(() => {
+				send(movesOf(settled.origins, settled.rest)).then(() => {
 					if (carry === settled) carry = null;
 				});
 			} else {
@@ -973,16 +1307,34 @@
 		if (tool === 'draw') {
 			if (draft.length >= 3 && (double || nearFirstCorner(e))) return finishDraft();
 			if (!double && inside(point)) draft.push(point);
-			lastTap = { at: now, x: e.clientX, y: e.clientY, regionId: null };
+			lastTap = { at: now, x: e.clientX, y: e.clientY, regionId: null, thingId: null };
 			return;
 		}
 
-		const token = tokenAt(target);
-		if (token) {
-			selectedTokenId = selectedTokenId === token.id ? null : token.id;
+		if (tool === 'text') {
+			if (inside(point)) write(null, point);
+			return;
+		}
+
+		const thing = selecting ? (tokenAt(target) ?? drawingAt(target)) : null;
+		if (thing) {
+			const again = double && lastTap.thingId === thing.id;
+			if (e.shiftKey) {
+				// With Shift, a click adds to what is selected, or takes away from it.
+				selectedIds = selectedIds.includes(thing.id)
+					? selectedIds.filter((id) => id !== thing.id)
+					: [...selectedIds, thing.id];
+			} else if (again && !isToken(thing) && thing.kind === 'text' && canGrabDrawing(thing)) {
+				// Twice on a text opens it to be reworded.
+				selectedIds = [];
+				write(thing);
+			} else {
+				const only = selectedIds.length === 1 && selectedIds[0] === thing.id;
+				selectedIds = only ? [] : [thing.id];
+			}
 			selectedMarkerId = null;
 			selectedRegionId = null;
-			lastTap.at = 0;
+			lastTap = { at: now, x: e.clientX, y: e.clientY, regionId: null, thingId: thing.id };
 			return;
 		}
 
@@ -990,7 +1342,7 @@
 		if (markerId) {
 			selectedMarkerId = selectedMarkerId === markerId ? null : markerId;
 			selectedRegionId = null;
-			selectedTokenId = null;
+			selectedIds = [];
 			lastTap.at = 0;
 			return;
 		}
@@ -998,7 +1350,7 @@
 		const regionId = target.closest<SVGElement>('[data-region-id]')?.dataset.regionId ?? null;
 		const region = regions.find((r) => r.id === regionId);
 		selectedMarkerId = null;
-		selectedTokenId = null;
+		if (!e.shiftKey) selectedIds = [];
 
 		if (region && double && lastTap.regionId === region.id) {
 			lastTap.at = 0;
@@ -1018,7 +1370,13 @@
 		selectedRegionId = region && canShape ? region.id : null;
 		// Touch has no hover, so the first tap is what names the region.
 		if (e.pointerType !== 'mouse') hoveredRegionId = region?.id ?? null;
-		lastTap = { at: now, x: e.clientX, y: e.clientY, regionId: region?.id ?? null };
+		lastTap = {
+			at: now,
+			x: e.clientX,
+			y: e.clientY,
+			regionId: region?.id ?? null,
+			thingId: null
+		};
 	}
 
 	// ------------------------------------------------------ drawing regions
@@ -1046,8 +1404,14 @@
 	});
 
 	function onkeydown(e: KeyboardEvent) {
-		if (tool !== 'draw') return;
 		if (e.target instanceof Element && e.target.closest('input, textarea, select, dialog')) return;
+		// Delete takes off the map whatever is selected on it.
+		if (selecting && selectedIds.length && (e.key === 'Delete' || e.key === 'Backspace')) {
+			e.preventDefault();
+			if (!e.repeat) bar?.remove();
+			return;
+		}
+		if (tool !== 'draw') return;
 		if (e.key === 'Enter' && draft.length >= 3) {
 			e.preventDefault();
 			finishDraft();
@@ -1109,11 +1473,12 @@
 		selectedMarkerId = selectedMarkerId === marker.id ? null : marker.id;
 	}
 
-	/** A token with the focus: Enter shows its card, the arrow keys walk it a cell at a time. */
+	/** A token with the focus: Enter selects it, the arrow keys walk it a cell at a time. */
 	function tokenKey(e: KeyboardEvent, token: Token) {
 		if (e.key === 'Enter' || e.key === ' ') {
 			e.preventDefault();
-			selectedTokenId = selectedTokenId === token.id ? null : token.id;
+			const only = selectedIds.length === 1 && selectedIds[0] === token.id;
+			selectedIds = only ? [] : [token.id];
 			return;
 		}
 		const steps: Record<string, Point> = {
@@ -1123,11 +1488,24 @@
 			ArrowDown: [0, 1]
 		};
 		const step = steps[e.key];
-		if (!step || !canMoveToken(role, userId, token)) return;
+		if (!step || !canGrabToken(token)) return;
 		e.preventDefault();
 		if (e.repeat) return;
 		const next: Point = [token.x + (step[0] * cell) / W, token.y + (step[1] * cell) / H];
-		if (inside(next)) onmovetoken(token, ...snapToGrid(map, next, token.size));
+		if (!inside(next)) return;
+		const [x, y] = snapToGrid(map, next, token.size);
+		send([{ t: 'token.update', id: token.id, changes: { x, y } }]);
+	}
+
+	/** Whose a token is, for its tooltip. */
+	function whose(token: Token): string {
+		const owner =
+			token.ownerId === userId
+				? 'Your token'
+				: token.ownerName
+					? `${token.ownerName}'s token`
+					: "The GM's token";
+		return token.locked ? `${owner} · locked` : owner;
 	}
 
 	// ---------------------------------------------------------------- looks
@@ -1172,7 +1550,13 @@
 	<div
 		class={[
 			'absolute inset-0 touch-none select-none [-webkit-touch-callout:none] focus-visible:-outline-offset-2',
-			tool !== 'pan' ? 'cursor-crosshair' : dragging ? 'cursor-grabbing' : 'cursor-grab'
+			tool === 'text'
+				? 'cursor-text'
+				: tool !== 'pan'
+					? 'cursor-crosshair'
+					: dragging
+						? 'cursor-grabbing'
+						: 'cursor-grab'
 		]}
 		data-tool={tool}
 		bind:this={surface}
@@ -1255,6 +1639,49 @@
 					<path class="fill-none stroke-[#0c0e14]/30 stroke-[3] stroke-steady" d={gridLines} />
 					<path class="fill-none stroke-[#fff8e4]/45 stroke-1 stroke-steady" d={gridLines} />
 				{/if}
+
+				<!-- What the table has drawn on a battle map, under the pieces. A line is
+				     as thick as it says in cells, so it grows and shrinks with the map. -->
+				<g class="fill-none [stroke-linecap:round] [stroke-linejoin:round]">
+					{#each lines as drawing (drawing.id)}
+						{@const d = linePath(inPixels(drawing.points))}
+						{@const [sx, sy] = shiftOf(drawing)}
+						{@const thick = drawing.size * cell}
+						<g transform="translate({sx * W} {sy * H})">
+							{#if selecting && selectedIds.includes(drawing.id)}
+								<path class="stroke-accent" {d} stroke-width={thick + 6 / view.k} />
+							{/if}
+							<path {d} stroke={drawing.color} stroke-width={thick} />
+							{#if selecting}
+								<!-- What the pointer catches it by: never thinner than a finger can find. -->
+								<path
+									class={[
+										'stroke-transparent [pointer-events:stroke]',
+										canGrabDrawing(drawing) ? 'cursor-move' : 'cursor-pointer'
+									]}
+									data-drawing-id={drawing.id}
+									{d}
+									stroke-width={Math.max(thick, (14 * grip) / view.k)}
+								/>
+							{/if}
+						</g>
+					{/each}
+					<!-- Lines this person has just drawn, and the one being drawn. -->
+					{#each inked as line (line)}
+						<path
+							d={linePath(inPixels(line.points))}
+							stroke={line.color}
+							stroke-width={DRAWING_SIZE.line * cell}
+						/>
+					{/each}
+					{#if stroke}
+						<path
+							d={linePath(inPixels(stroke))}
+							stroke={ink}
+							stroke-width={DRAWING_SIZE.line * cell}
+						/>
+					{/if}
+				</g>
 
 				{#each orderedRegions as region (region.id)}
 					<!-- A dark line under the outline, so it reads on a pale map too. -->
@@ -1355,7 +1782,51 @@
 						{/each}
 					</g>
 				{/each}
+
+				<!-- The box being dragged around things to select them. -->
+				{#if marquee}
+					{@const box = boxOf(marquee)}
+					<rect
+						class="fill-accent/12 stroke-accent stroke-[1.5] stroke-steady [stroke-dasharray:5_4]"
+						x={box.x0 * W}
+						y={box.y0 * H}
+						width={(box.x1 - box.x0) * W}
+						height={(box.y1 - box.y0) * H}
+					/>
+				{/if}
 			</svg>
+
+			<!-- What the table has written on a battle map: each text starts at its
+			     spot and runs to the right, its letters as tall as it says in cells.
+			     The one being reworded is out of sight while its words are in the box. -->
+			{#each texts as drawing (drawing.id)}
+				{@const [x, y] = drawing.points[0]}
+				{@const [sx, sy] = shiftOf(drawing)}
+				{@const halo = haloOf(drawing.color)}
+				{#if writing?.id !== drawing.id}
+					<div
+						class={[
+							'absolute -translate-y-1/2 rounded-[0.12em] leading-none font-semibold whitespace-pre',
+							!selecting
+								? 'pointer-events-none'
+								: canGrabDrawing(drawing)
+									? 'cursor-move'
+									: 'cursor-pointer',
+							selecting &&
+								selectedIds.includes(drawing.id) &&
+								'outline-[0.06em] outline-offset-[0.14em] outline-accent'
+						]}
+						data-drawing-id={drawing.id}
+						style:left="{(x + sx) * W}px"
+						style:top="{(y + sy) * H}px"
+						style:font-size="{drawing.size * cell}px"
+						style:color={drawing.color}
+						style:text-shadow="0 0 0.08em {halo}, 0 0 0.18em {halo}, 0 0 0.35em {halo}"
+					>
+						{drawing.text}
+					</div>
+				{/if}
+			{/each}
 
 			<!-- Every region wears its name, lettered straight onto the map like a place
 			     name in an atlas: quiet until the region is hovered, and never boxed in.
@@ -1402,9 +1873,9 @@
 			{#if battle}
 				{#each tokens as token (token.id)}
 					{@const [x, y] = spotOf(token)}
-					{@const mine = canMoveToken(role, userId, token)}
-					{@const inHand = carry?.id === token.id && carry.held}
-					{@const selected = selectedTokenId === token.id}
+					{@const mine = canGrabToken(token)}
+					{@const inHand = !!carry?.held && token.id in carry.origins}
+					{@const selected = selecting && selectedIds.includes(token.id)}
 					{@const across = token.size * cell}
 					<!-- Only the position glides, from one report of a drag to the next and
 					     onto the grid when it is let go. Never in the hand that holds it. -->
@@ -1433,7 +1904,9 @@
 							style:height="{across}px"
 							style:border-width="{across * 0.06}px"
 							style:font-size="{across * 0.4}px"
+							style:rotate="{token.rotation}deg"
 							style:--c={token.color}
+							title={whose(token)}
 							aria-label="Token: {token.name}{token.hidden ? ' (hidden from players)' : ''}{mine
 								? '. Arrow keys move it.'
 								: ''}"
@@ -1601,25 +2074,59 @@
 			</div>
 		{/if}
 
-		{#if selectedToken && tokenCardPosition}
+		<!-- The buttons for whatever is selected on a battle map, floating over the
+		     top of it. They stay mounted while it is off screen or in hand, out
+		     of sight, so the Delete key still has them to ask. -->
+		{#if selectedTokens.length + selectedDrawings.length > 0}
 			<div
-				class={['pointer-events-auto absolute', tokenCardW === 0 && 'invisible']}
-				style:left="{tokenCardPosition.left}px"
-				style:top="{tokenCardPosition.top}px"
-				bind:clientWidth={tokenCardW}
-				bind:clientHeight={tokenCardH}
+				class={['absolute', barPosition && barW > 0 ? 'pointer-events-auto' : 'invisible']}
+				style:left="{barPosition?.left ?? 0}px"
+				style:top="{barPosition?.top ?? 0}px"
+				bind:clientWidth={barW}
+				bind:clientHeight={barH}
 			>
-				<TokenCard
-					token={selectedToken}
-					campaignId={map.campaignId}
+				<SelectionBar
+					bind:this={bar}
+					{map}
+					tokens={selectedTokens}
+					drawings={selectedDrawings}
 					{role}
 					{userId}
-					onclose={() => (selectedTokenId = null)}
+					{send}
+					oncopy={copy}
 					onedit={onedittoken}
-					ondelete={ondeletetoken}
-					onhide={onhidetoken}
+					onwrite={(drawing) => {
+						selectedIds = [];
+						write(drawing);
+					}}
+					onclear={() => (selectedIds = [])}
 				/>
 			</div>
+		{/if}
+
+		<!-- A text being typed, right where it will stand on the map and as big. -->
+		{#if writing}
+			{@const [x, y] = writing.at}
+			<input
+				class="pointer-events-auto absolute -ml-[calc(0.2em+1px)] -translate-y-1/2 rounded-[0.15em] border border-accent bg-night/75 px-[0.2em] py-[0.1em] leading-none font-semibold outline-none"
+				style:left="{x * W * view.k + view.x}px"
+				style:top="{y * H * view.k + view.y}px"
+				style:font-size="{Math.max(13, writingSize)}px"
+				style:color={writing.color}
+				bind:value={words}
+				size={Math.max(8, words.length + 2)}
+				maxlength={LIMITS.drawingText}
+				aria-label="Text to write on the map"
+				use:takeFocus
+				onblur={(e) => leftBox(e.currentTarget)}
+				onkeydown={(e) => {
+					if (e.key === 'Enter') doneWriting(true);
+					if (e.key !== 'Escape') return;
+					// Only the text is dropped. What Escape does next is for the next press.
+					e.stopPropagation();
+					doneWriting(false);
+				}}
+			/>
 		{/if}
 
 		{#if tool === 'draw'}
@@ -1644,13 +2151,34 @@
 				Drag across the map to measure.
 				<span class={keys}>Alt measures off the grid · Esc puts the ruler away</span>
 			</p>
+		{:else if tool === 'select'}
+			<p class={hint}>
+				Drag a box around what you want to select.
+				<span class={keys}>Shift adds to the selection · Esc cancels</span>
+			</p>
+		{:else if tool === 'sketch'}
+			<p class={hint}>
+				Drag across the map to draw.
+				<span class={keys}>Esc puts the pen away</span>
+			</p>
+		{:else if tool === 'text' && !writing}
+			<p class={hint}>
+				<span class="touch:hidden">Click the map where the text goes.</span>
+				<span class="hidden touch:inline">Tap the map where the text goes.</span>
+				<span class={keys}>Esc cancels</span>
+			</p>
 		{/if}
 
 		<!-- In the bottom corner, beside the tools. A narrow screen gives the
-		     whole bottom edge to the tools, so there it sits in the top corner.
-		     Fingers zoom by pinching, which leaves only Fit to offer them. -->
+		     whole bottom edge to the tools, so there it sits in the top corner:
+		     the right one, or on a battle map, where the tools are docked in
+		     that one, the left. Fingers zoom by pinching, which leaves only Fit
+		     to offer them. -->
 		<div
-			class="pointer-events-auto absolute right-3.5 bottom-3.5 grid overflow-hidden rounded-[10px] border bg-panel max-[720px]:top-3.5 max-[720px]:bottom-auto"
+			class={[
+				'pointer-events-auto absolute right-3.5 bottom-3.5 grid overflow-hidden rounded-[10px] border bg-panel max-[720px]:top-3.5 max-[720px]:bottom-auto',
+				battle && 'max-[720px]:right-auto max-[720px]:left-3.5'
+			]}
 		>
 			<button
 				class="{zoomButton} border-b text-[19px] touch:hidden"

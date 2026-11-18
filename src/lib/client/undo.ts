@@ -70,15 +70,13 @@ export class UndoStack {
 		// refuses now, it would refuse again.
 		from.splice(index, 1);
 
-		const made: number[] = [];
-		try {
-			// Newest change first, like unwinding it.
-			for (const seq of [...step].reverse()) {
-				made.push(...(await this.#live.send({ t: 'history.revert', seq })));
-			}
-		} finally {
-			if (made.length) to.push(made);
-		}
+		// Newest change first, like unwinding it. A step of several changes,
+		// which is something done to a whole selection, goes back as one.
+		const reverts = [...step].reverse().map((seq) => ({ t: 'history.revert', seq }) as const);
+		const made = await this.#live.send(
+			reverts.length === 1 ? reverts[0] : { t: 'batch', cmds: reverts }
+		);
+		if (made.length) to.push(made);
 		return true;
 	}
 }

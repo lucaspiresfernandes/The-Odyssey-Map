@@ -3,6 +3,7 @@
 
 import type {
 	Crumb,
+	Drawing,
 	LiveEvent,
 	MapInfo,
 	MapSnapshot,
@@ -17,6 +18,7 @@ export class MapState {
 	regions = $state<Region[]>([]);
 	markers = $state<Marker[]>([]);
 	tokens = $state<Token[]>([]);
+	drawings = $state<Drawing[]>([]);
 
 	/** Events up to this sequence number are already part of the snapshot. */
 	readonly lastSeq: number;
@@ -27,6 +29,7 @@ export class MapState {
 		this.regions = snapshot.regions;
 		this.markers = snapshot.markers;
 		this.tokens = snapshot.tokens;
+		this.drawings = snapshot.drawings;
 		this.lastSeq = snapshot.lastSeq;
 	}
 
@@ -47,6 +50,12 @@ export class MapState {
 				break;
 			case 'token.remove':
 				if (patch.mapId === here) this.tokens = this.tokens.filter((t) => t.id !== patch.id);
+				break;
+			case 'drawing.upsert':
+				if (patch.drawing.mapId === here) this.drawings = upsert(this.drawings, patch.drawing);
+				break;
+			case 'drawing.remove':
+				if (patch.mapId === here) this.drawings = this.drawings.filter((d) => d.id !== patch.id);
 				break;
 			case 'region.upsert':
 				if (patch.region.mapId === here) this.regions = upsert(this.regions, patch.region);

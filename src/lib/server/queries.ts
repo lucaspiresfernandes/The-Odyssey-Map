@@ -2,10 +2,11 @@
 
 import { and, eq, isNull } from 'drizzle-orm';
 import type { Db } from './db';
-import { maps, markers, regions, tokens } from './schema';
+import { drawings, maps, markers, regions, tokens } from './schema';
 import { canSeeMarker, canSeeRegion, canSeeToken } from '../shared/rules';
 import type { Crumb, MapSnapshot, Role } from '../shared/types';
 import {
+	drawingColumns,
 	isConcealed,
 	latestSeq,
 	mapColumns,
@@ -65,12 +66,20 @@ export function getMapSnapshot(
 			.all()
 			.filter((token) => canSeeToken(role, token));
 
+		const drawingList = tx
+			.select(drawingColumns)
+			.from(drawings)
+			.where(and(eq(drawings.mapId, mapId), isNull(drawings.deletedAt)))
+			.orderBy(drawings.createdAt)
+			.all();
+
 		return {
 			map,
 			trail,
 			regions: regionList,
 			markers: markerList,
 			tokens: tokenList,
+			drawings: drawingList,
 			lastSeq: latestSeq(tx, campaignId)
 		};
 	});
