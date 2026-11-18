@@ -4,22 +4,28 @@
 	import { getLive } from '#lib/client/live.svelte.ts';
 	import { MapState } from '#lib/client/mapstate.svelte.ts';
 	import { UndoStack, type Step } from '#lib/client/undo.ts';
+	import Gallery from '#lib/components/Gallery.svelte';
 	import MapCanvas from '#lib/components/MapCanvas.svelte';
+	import MapSetup from '#lib/components/MapSetup.svelte';
 	import MarkerForm from '#lib/components/MarkerForm.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import NamePrompt from '#lib/components/NamePrompt.svelte';
+	import TokenForm from '#lib/components/TokenForm.svelte';
 	import ToolButton from '#lib/components/ToolButton.svelte';
+	import { snapToGrid } from '#lib/shared/grid.ts';
 	import { canEditWorld } from '#lib/shared/rules.ts';
 	import {
-		LIMITS,
 		type Command,
-		type CommandResponse,
+		type GalleryItem,
+		type MapKind,
 		type Marker,
 		type MarkerInput,
 		type MarkerKind,
 		type Patch,
 		type Point,
-		type Region
+		type Region,
+		type Token,
+		type TokenInput
 	} from '#lib/shared/types.ts';
 	import type { PageProps } from './$types';
 
@@ -49,10 +55,11 @@
 	/** Everyone else's mouse, for those looking at the same map. */
 	const cursors = $derived(live.cursors.filter((c) => c.mapId === world.map.id));
 
-	type Placing = { create: MarkerKind } | { move: Marker };
+	type Placing = { create: MarkerKind } | { move: Marker } | { token: true };
 	type Form =
 		| { mode: 'create'; kind: MarkerKind; x: number; y: number }
 		| { mode: 'edit'; marker: Marker };
+	type TokenEdit = { mode: 'create'; x: number; y: number } | { mode: 'edit'; token: Token };
 	type Prompt =
 		| { kind: 'region'; points: Point[] }
 		| { kind: 'rename'; mapId: string; initial: string };
@@ -64,22 +71,36 @@
 	}
 
 	let canvas = $state<ReturnType<typeof MapCanvas>>();
-	let fileInput = $state<HTMLInputElement>();
 	let placing = $state<Placing | null>(null);
 	let drawing = $state(false);
+	/** The ruler is out, on a battle map. */
+	let measuring = $state(false);
 	let form = $state<Form | null>(null);
+	let tokenForm = $state<TokenEdit | null>(null);
+	/** The GM is choosing what kind of map this is, and setting up its grid. */
+	let setup = $state(false);
+	/**
+	 * The GM is in the gallery: to choose an image to lay under this map, or
+	 * to look after the whole of it, with nothing to pick.
+	 */
+	let gallery = $state<'pick' | 'browse' | null>(null);
 	let prompt = $state<Prompt | null>(null);
 	/** The region the GM has asked to delete, while they are being asked if they mean it. */
 	let deleting = $state<Region | null>(null);
 	let selectedMarkerId = $state<string | null>(null);
 	let selectedRegionId = $state<string | null>(null);
+	let selectedTokenId = $state<string | null>(null);
 	let inviteOpen = $state(false);
-	let uploading = $state(false);
 	// Raw, because a notice's step is looked up in the undo stack by identity,
 	// and deep state would hand out a proxy of it instead.
 	let notice = $state.raw<Notice | null>(null);
 
-	const tool = $derived(placing ? 'place' : drawing ? 'draw' : 'pan');
+	const tool = $derived(placing ? 'place' : drawing ? 'draw' : measuring ? 'measure' : 'pan');
+	/**
+	 * A battle map is a table to play on: tokens and a ruler, and none of what
+	 * a world map is built from. No markers, no notes, no regions further in.
+	 */
+	const battle = $derived(world.map.kind === 'battle');
 	/** The region the GM has clicked. The region buttons under the map act on it. */
 	const selectedRegion = $derived(world.regions.find((r) => r.id === selectedRegionId) ?? null);
 	/** Why the region buttons are off, for their tooltips. */
@@ -88,8 +109,23 @@
 		data.invitePath && typeof location !== 'undefined' ? location.origin + data.invitePath : ''
 	);
 	const empty = $derived(
-		!world.map.imageFile && world.markers.length === 0 && world.regions.length === 0
+		!world.map.imageFile &&
+			world.markers.length === 0 &&
+			world.regions.length === 0 &&
+			world.tokens.length === 0
 	);
+
+	// Each kind of map has its own tools. Whichever is out when the GM turns
+	// this map into the other kind is put away.
+	$effect(() => {
+		void battle;
+		untrack(() => {
+			putAway();
+			form = null;
+			tokenForm = null;
+			prompt = null;
+		});
+	});
 
 	// Stepping into another map starts from a clean slate.
 	$effect(() => {
@@ -97,11 +133,16 @@
 		untrack(() => {
 			placing = null;
 			drawing = false;
+			measuring = false;
 			form = null;
+			tokenForm = null;
+			setup = false;
+			gallery = null;
 			prompt = null;
 			deleting = null;
 			selectedMarkerId = null;
 			selectedRegionId = null;
+			selectedTokenId = null;
 			// Undo is for the map in front of you, not one you have left.
 			undos.clear();
 		});
@@ -158,8 +199,10 @@
 
 	function startPlacing(next: Placing) {
 		drawing = false;
+		measuring = false;
 		selectedMarkerId = null;
 		selectedRegionId = null;
+		selectedTokenId = null;
 		placing = next;
 	}
 
@@ -167,7 +210,8 @@
 		const target = placing;
 		placing = null;
 		if (!target) return;
-		if ('move' in target) run({ t: 'marker.update', id: target.move.id, changes: { x, y } });
+		if ('token' in target) tokenForm = { mode: 'create', x, y };
+		else if ('move' in target) run({ t: 'marker.update', id: target.move.id, changes: { x, y } });
 		else form = { mode: 'create', kind: target.create, x, y };
 	}
 
@@ -195,6 +239,29 @@
 		if (ok) say(`Deleted “${marker.title}”.`, step);
 	}
 
+	// -------------------------------------------------------------- tokens
+
+	function saveToken(
+		values: Pick<TokenInput, 'name' | 'color' | 'image' | 'size' | 'ownerId' | 'hidden'>
+	) {
+		if (!tokenForm) return Promise.resolve(false);
+		// Who moves a token and whether it is hidden are the GM's to say.
+		const { ownerId, hidden, ...shared } = values;
+		const fields = isGm ? values : shared;
+		if (tokenForm.mode === 'edit') {
+			return run({ t: 'token.update', id: tokenForm.token.id, changes: fields });
+		}
+		// It goes down squarely on the grid, where a click rarely lands.
+		const [x, y] = snapToGrid(world.map, [tokenForm.x, tokenForm.y], values.size);
+		return run({ t: 'token.create', mapId: world.map.id, x, y, ...fields });
+	}
+
+	async function deleteToken(token: Token) {
+		selectedTokenId = null;
+		const { ok, step } = await attempt({ t: 'token.delete', id: token.id });
+		if (ok) say(`Deleted “${token.name}”.`, step);
+	}
+
 	// ------------------------------------------------------ maps & regions
 
 	async function enter(region: Region) {
@@ -206,10 +273,17 @@
 		}
 	}
 
-	function saveName(name: string, hidden: boolean) {
+	function saveName(name: string, hidden: boolean, kind: MapKind) {
 		if (!prompt) return Promise.resolve(false);
 		if (prompt.kind === 'rename') return run({ t: 'map.update', id: prompt.mapId, name });
-		return run({ t: 'region.create', mapId: world.map.id, name, points: prompt.points, hidden });
+		return run({
+			t: 'region.create',
+			mapId: world.map.id,
+			name,
+			points: prompt.points,
+			hidden,
+			kind
+		});
 	}
 
 	/**
@@ -234,30 +308,10 @@
 		}
 	}
 
-	async function upload(file: File | undefined) {
-		if (!file) return;
-		uploading = true;
-		try {
-			if (file.size > LIMITS.imageBytes) {
-				throw new Error(`Map images can be up to ${LIMITS.imageBytes / 1024 / 1024} MB.`);
-			}
-			const body = new FormData();
-			body.set('file', file);
-
-			const response = await fetch(`/c/${campaignId}/m/${world.map.id}/image`, {
-				method: 'POST',
-				body
-			});
-			const result = (await response.json().catch(() => null)) as CommandResponse | null;
-			if (!result?.ok) throw new Error(result?.error ?? "The image couldn't be uploaded.");
-			live.receive(result.events ?? []);
-			undos.did(result.undo ?? []);
-		} catch (err) {
-			say((err as Error).message);
-		} finally {
-			uploading = false;
-			if (fileInput) fileInput.value = '';
-		}
+	/** Lays an image out of the gallery under this map. Undo takes it back off. */
+	function layImage(item: GalleryItem) {
+		gallery = null;
+		run({ t: 'map.update', id: world.map.id, image: item.file });
 	}
 
 	// ---------------------------------------------------------------- misc
@@ -274,7 +328,7 @@
 	}
 
 	function onkeydown(e: KeyboardEvent) {
-		if (form || prompt || deleting) return;
+		if (form || tokenForm || setup || gallery || prompt || deleting) return;
 
 		if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'z') {
 			// In a text field, Ctrl+Z belongs to the text.
@@ -289,15 +343,22 @@
 		}
 
 		if (e.key !== 'Escape') return;
-		if (placing || drawing) {
-			placing = null;
-			drawing = false;
+		if (placing || drawing || measuring) {
+			putAway();
 		} else if (inviteOpen) {
 			inviteOpen = false;
 		} else {
 			selectedMarkerId = null;
 			selectedRegionId = null;
+			selectedTokenId = null;
 		}
+	}
+
+	/** Back to the hand: whichever tool was waiting for the map is put away. */
+	function putAway() {
+		placing = null;
+		drawing = false;
+		measuring = false;
 	}
 
 	// Looks shared by more than one element below.
@@ -387,6 +448,14 @@
 			</ul>
 
 			{#if isGm}
+				<!-- The campaign's pictures, to stock ahead of the maps and tokens that will use them. -->
+				<button
+					class="btn btn-sm"
+					onclick={() => {
+						inviteOpen = false;
+						gallery = 'browse';
+					}}>Gallery</button
+				>
 				<div class="relative">
 					<button
 						class="btn btn-sm"
@@ -422,6 +491,7 @@
 				map={world.map}
 				regions={world.regions}
 				markers={world.markers}
+				tokens={world.tokens}
 				{cursors}
 				role={data.role}
 				userId={data.me.id}
@@ -429,6 +499,7 @@
 				depth={world.trail.length}
 				bind:selectedMarkerId
 				bind:selectedRegionId
+				bind:selectedTokenId
 				onplace={placed}
 				onnote={(x, y) => (form = { mode: 'create', kind: 'player', x, y })}
 				ondrawn={(points) => {
@@ -441,14 +512,20 @@
 				onmove={(marker) => startPlacing({ move: marker })}
 				ondelete={deleteMarker}
 				onhide={(marker, hidden) => run({ t: 'marker.update', id: marker.id, changes: { hidden } })}
-				oncursor={(at) => live.point(at && { mapId: world.map.id, x: at[0], y: at[1] })}
+				onmovetoken={(token, x, y) => run({ t: 'token.update', id: token.id, changes: { x, y } })}
+				onedittoken={(token) => (tokenForm = { mode: 'edit', token })}
+				ondeletetoken={deleteToken}
+				onhidetoken={(token, hidden) => run({ t: 'token.update', id: token.id, changes: { hidden } })}
+				oncursor={(at) => live.point(at && { mapId: world.map.id, ...at })}
 			/>
 
 			{#if empty && isGm && tool === 'pan'}
 				<p
 					class="absolute top-4.5 left-1/2 w-max max-w-[calc(100%-28px)] -translate-x-1/2 rounded-full border bg-night/90 px-3.5 py-2 text-center text-sm max-[720px]:max-w-[calc(100%-136px)] max-[720px]:rounded-2xl"
 				>
-					This map is empty. Add a map image, markers and regions from the bar below.
+					{battle
+						? 'This battle map is empty. Add a map image and tokens from the bar below.'
+						: 'This map is empty. Add a map image, markers and regions from the bar below.'}
 				</p>
 			{/if}
 
@@ -481,44 +558,62 @@
 					aria-label="Map tools"
 				>
 					{#if tool !== 'pan'}
-						<button class="btn" onclick={() => ((placing = null), (drawing = false))}>Cancel</button>
+						<button class="btn" onclick={putAway}>{measuring ? 'Done measuring' : 'Cancel'}</button>
 					{:else}
 						<!-- The tools for the map. This wrapper only exists on a narrow
 						     screen, where it makes them a row of their own. -->
 						<div class="contents flex-wrap items-center justify-center gap-1.5 max-[720px]:flex">
-							<!-- Icons, each with a tooltip that names it. A player has the one
-							     tool, so theirs keeps its words. -->
-							<ToolButton
-								icon="note"
-								label={isGm ? 'Add a note' : 'Add note'}
-								named={!isGm}
-								onclick={() => startPlacing({ create: 'player' })}
-							/>
-							{#if isGm}
-								<span class="w-px self-stretch bg-line"></span>
+							<!-- Icons, each with a tooltip that names it. A player has a tool
+							     or two, so theirs keep their words. -->
+							{#if battle}
+								<!-- A battle map is played on, not written on: pieces and a
+								     ruler, for everyone at the table. -->
 								<ToolButton
-									icon="marker"
-									label="Add a world marker"
-									onclick={() => startPlacing({ create: 'world' })}
+									icon="token"
+									label={isGm ? 'Add a token' : 'Add your token'}
+									named={!isGm}
+									onclick={() => startPlacing({ token: true })}
 								/>
 								<ToolButton
-									icon="region"
-									label="Draw a region"
+									icon="ruler"
+									label={isGm ? 'Measure a distance' : 'Measure'}
+									named={!isGm}
 									onclick={() => {
-										selectedMarkerId = null;
-										selectedRegionId = null;
-										drawing = true;
+										selectedTokenId = null;
+										measuring = true;
 									}}
 								/>
+							{:else}
+								<ToolButton
+									icon="note"
+									label={isGm ? 'Add a note' : 'Add note'}
+									named={!isGm}
+									onclick={() => startPlacing({ create: 'player' })}
+								/>
+							{/if}
+							{#if isGm}
+								<span class="w-px self-stretch bg-line"></span>
+								{#if !battle}
+									<ToolButton
+										icon="marker"
+										label="Add a world marker"
+										onclick={() => startPlacing({ create: 'world' })}
+									/>
+									<ToolButton
+										icon="region"
+										label="Draw a region"
+										onclick={() => {
+											selectedMarkerId = null;
+											selectedRegionId = null;
+											selectedTokenId = null;
+											drawing = true;
+										}}
+									/>
+								{/if}
 								<ToolButton
 									icon="image"
-									label={uploading
-										? 'Uploading…'
-										: world.map.imageFile
-											? 'Replace the map image'
-											: 'Add a map image'}
-									disabled={uploading}
-									onclick={() => fileInput?.click()}
+									label={world.map.imageFile ? 'Change the map image' : 'Choose a map image'}
+									onclick={() => (gallery = 'pick')}
 								/>
 								<ToolButton
 									icon="rename"
@@ -526,13 +621,19 @@
 									onclick={() =>
 										(prompt = { kind: 'rename', mapId: world.map.id, initial: world.map.name })}
 								/>
+								<ToolButton
+									icon="grid"
+									label={battle ? 'Set up the grid' : 'Make this a battle map'}
+									onclick={() => (setup = true)}
+								/>
 							{/if}
 						</div>
-						{#if isGm}
-							<!-- What can be done with a region. Always here, so the bar keeps its
-							     shape, and live once a region on the map has been clicked. A
-							     narrow screen has no room for that: there they are a second
-							     row, which shows up with the selection. -->
+						{#if isGm && !battle}
+							<!-- What can be done with a region. Always here on a world map, so
+							     the bar keeps its shape, and live once a region on the map has
+							     been clicked. A narrow screen has no room for that: there they
+							     are a second row, which shows up with the selection. A battle
+							     map has no regions, and so none of these. -->
 							<span class="w-px self-stretch bg-line max-[720px]:hidden"></span>
 							<div
 								class={['flex items-center gap-1.5', !selectedRegion && 'max-[720px]:hidden']}
@@ -583,13 +684,6 @@
 									onclick={() => (deleting = selectedRegion)}
 								/>
 							</div>
-							<input
-								bind:this={fileInput}
-								type="file"
-								accept="image/png,image/jpeg,image/webp,image/gif,image/avif"
-								hidden
-								onchange={(e) => upload(e.currentTarget.files?.[0])}
-							/>
 						{/if}
 					{/if}
 				</div>
@@ -608,6 +702,39 @@
 	/>
 {/if}
 
+{#if tokenForm}
+	<TokenForm
+		mode={tokenForm.mode}
+		gm={isGm}
+		{campaignId}
+		members={data.members}
+		initial={tokenForm.mode === 'edit' ? tokenForm.token : {}}
+		onsubmit={saveToken}
+		onclose={() => (tokenForm = null)}
+	/>
+{/if}
+
+{#if setup}
+	<MapSetup
+		map={world.map}
+		occupied={world.markers.length > 0 || world.regions.length > 0}
+		onsubmit={(kind, grid) => run({ t: 'map.update', id: world.map.id, kind, grid })}
+		onclose={() => (setup = false)}
+	/>
+{/if}
+
+{#if gallery === 'pick'}
+	<Gallery
+		{campaignId}
+		kind="map"
+		current={world.map.imageFile}
+		onpick={layImage}
+		onclose={() => (gallery = null)}
+	/>
+{:else if gallery === 'browse'}
+	<Gallery {campaignId} onclose={() => (gallery = null)} />
+{/if}
+
 {#if prompt}
 	<NamePrompt
 		title={prompt.kind === 'region' ? 'Name this region' : 'Rename'}
@@ -618,6 +745,7 @@
 			? 'The region gets a map of its own. Double-click it to step inside and add the image.'
 			: undefined}
 		canHide={prompt.kind === 'region'}
+		canPickKind={prompt.kind === 'region'}
 		onsubmit={saveName}
 		onclose={() => (prompt = null)}
 	/>
@@ -627,10 +755,10 @@
 	{@const region = deleting}
 	<Modal title="Delete “{region.name}”?" onclose={() => (deleting = null)}>
 		<p>
-			This deletes the region and the map behind it, with everything on that map: its image,
-			its markers and notes, and every region and map further inside.
+			This deletes the region and the map behind it, with everything on that map: its markers,
+			notes and tokens, and every region and map further inside.
 		</p>
-		<p class="text-[13px] text-muted">It can't be undone.</p>
+		<p class="text-[13px] text-muted">It can't be undone. The images stay in the gallery.</p>
 		<!-- Cancel comes first, so that is where the dialog puts the focus. -->
 		<div class="flex justify-end gap-2">
 			<button class="btn btn-ghost" onclick={() => (deleting = null)}>Cancel</button>

@@ -316,31 +316,81 @@ async function run() {
 	})
 		.png()
 		.toBuffer();
-	const upload = new FormData();
-	upload.set('file', new File([pixels], 'map.png', { type: 'image/png' }));
-	const imagePath = `/c/${campaign}/m/${mapId}/image`;
-	const uploaded = await gm.request(imagePath, { method: 'POST', body: upload });
-	const uploadedMap = (await uploaded.json().catch(() => null))?.events?.[0]?.patch.map;
-	const file = uploadedMap?.imageFile;
-	check('the GM can upload a large map image', uploaded.status === 200 && !!file, `status ${uploaded.status}`);
-	check('the server measures it', uploadedMap?.width === 2400 && uploadedMap?.height === 1500);
-	const notAnImage = new FormData();
-	notAnImage.set('file', new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4])], 'map.png'));
-	check('a file that only claims to be an image is refused', (await gm.request(imagePath, { method: 'POST', body: notAnImage })).status === 415);
-	check('the player cannot upload one', (await player.request(imagePath, { method: 'POST', body: upload })).status === 403);
+	// Pictures go into the campaign's gallery first, and are put to use from there.
+	const galleryPath = `/c/${campaign}/gallery`;
+	/** A picture of the given kind, as the form the gallery takes it in. */
+	const picture = (kind: string, bytes: BlobPart, name: string) => {
+		const form = new FormData();
+		form.set('kind', kind);
+		form.set('file', new File([bytes], name, { type: 'image/png' }));
+		return form;
+	};
+	/** Adds a picture from a file of this name, and returns it as the gallery has it under `name`. */
+	const add = async (kind: string, bytes: BlobPart, fileName: string, name: string) => {
+		const response = await gm.request(galleryPath, { method: 'POST', body: picture(kind, bytes, fileName) });
+		const items: any[] = (await response.json().catch(() => null))?.items ?? [];
+		return { status: response.status, item: items.find((item) => item.name === name) };
+	};
+	const spare = (await add('map', pixels, 'Sunless_Reach.png', 'Sunless Reach')).item;
+	check('a picture is named after the file it came in', !!spare);
+	const uploaded = await add('map', pixels, 'The Reach.png', 'The Reach');
+	const file: string = uploaded.item?.file;
+	check('the GM can add a large map image to the gallery', uploaded.status === 200 && !!file, `status ${uploaded.status}`);
+	check('the server measures it', uploaded.item?.width === 2400 && uploaded.item?.height === 1500);
+	check(
+		'a file that only claims to be an image is refused',
+		(await gm.request(galleryPath, { method: 'POST', body: picture('map', new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]), 'map.png') })).status === 415
+	);
+	const imagePath = `/c/${campaign}/image/${file}`;
+	const patch = (who: Visitor, id: string, body: unknown) =>
+		who.request(`${galleryPath}/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+	/** What the player is shown of the gallery. */
+	const playersShelf = async (): Promise<any[]> => (await (await player.request(galleryPath)).json()).items;
+	check('every picture starts hidden from the player', (await playersShelf()).length === 0 && uploaded.item?.hidden === true);
+	check('and is not theirs to load', (await gm.request(imagePath)).status === 200 && (await player.request(imagePath)).status === 404);
+	check(
+		'the player cannot add to the gallery, rename in it, reveal in it or tidy it',
+		(await player.request(galleryPath, { method: 'POST', body: picture('token', pixels, 'mine.png') })).status === 403 &&
+			(await patch(player, uploaded.item?.id, { name: 'Mine' })).status === 403 &&
+			(await patch(player, uploaded.item?.id, { hidden: false })).status === 403 &&
+			(await player.request(`${galleryPath}/${uploaded.item?.id}`, { method: 'DELETE' })).status === 403 &&
+			(await playersShelf()).length === 0
+	);
+	const shown = await patch(gm, uploaded.item?.id, { hidden: false });
+	check(
+		'the GM reveals a picture, and the player has it in their gallery',
+		shown.status === 200 &&
+			(await playersShelf()).some((item) => item.id === uploaded.item?.id && item.hidden === false) &&
+			(await player.request(imagePath)).status === 200
+	);
+	await patch(gm, uploaded.item?.id, { hidden: true });
+	check('hidden again, it is gone from there', (await playersShelf()).length === 0 && (await player.request(imagePath)).status === 404);
+
+	const laid = await gm.command(campaign, { t: 'map.update', id: mapId, image: file });
+	const laidMap = laid.body.events?.[0]?.patch.map;
+	check('the GM lays it under a map, which takes its size', laidMap?.imageFile === file && laidMap?.width === 2400 && laidMap?.height === 1500, `status ${laid.status}`);
+	check('the player cannot', (await player.command(campaign, { t: 'map.update', id: mapId, image: file })).status === 403);
 	await pause(500);
 	check(
 		'the new image reaches the player live',
-		playerSocket.messages.some((m) => m.t === 'event' && m.event.patch.t === 'map.upsert')
+		playerSocket.messages.some((m) => m.t === 'event' && m.event.patch.t === 'map.upsert' && m.event.patch.map.imageFile === file)
 	);
-	const fetched = await player.request(`${imagePath}?v=${file}`);
+	const fetched = await player.request(imagePath);
 	check('the player can load the image', fetched.status === 200 && (await fetched.arrayBuffer()).byteLength === pixels.length);
 	check('a stranger cannot', (await new Visitor().request(imagePath)).status === 401);
-	const preview = await player.request(`${imagePath}?v=${file}&part=preview`);
+	const preview = await player.request(`${imagePath}?part=preview`);
 	check('a big image has a preview', preview.status === 200 && preview.headers.get('content-type') === 'image/webp');
+	const thumb = await gm.request(`${imagePath}?part=thumb`);
+	check('and a thumbnail for the gallery', thumb.status === 200 && thumb.headers.get('content-type') === 'image/webp');
 	// 2400 x 1500 in 512 pixel tiles: five across, three down.
-	check('and tiles', (await player.request(`${imagePath}?v=${file}&part=0/4/2`)).status === 200);
-	check('but none past its edge', (await player.request(`${imagePath}?v=${file}&part=0/5/0`)).status === 404);
+	check('and tiles', (await player.request(`${imagePath}?part=0/4/2`)).status === 200);
+	check('but none past its edge', (await player.request(`${imagePath}?part=0/5/0`)).status === 404);
+
+	const rename = (id: string, name: string) =>
+		gm.request(`${galleryPath}/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }) });
+	const relabelled = await rename(spare?.id, 'Spare');
+	check('the GM renames a picture', relabelled.status === 200 && (await relabelled.json()).items.some((item: any) => item.name === 'Spare'));
+	check('but not one that is not in the gallery', (await rename('nosuchpicture', 'Spare')).status === 404);
 
 	// A hidden region takes its whole map away from players: the outline, the
 	// page behind it, and the news of anything that happens in there.
@@ -381,13 +431,27 @@ async function run() {
 	);
 	check('and shuts it', (await player.request(cellarPath)).status === 404);
 
-	// Deleting a region is for good. The map behind it goes, and the files
-	// of that map's image with it.
-	const furnished = await gm.request(`${cellarPath}/image`, { method: 'POST', body: upload });
-	const cellarFile: string = (await furnished.json().catch(() => null))?.events?.[0]?.patch.map.imageFile ?? '';
-	const cellarFiles = [join(dataDir, 'uploads', cellarFile), join(dataDir, 'tiles', cellarFile.replace(/\.png$/, ''))];
+	// A picture taken out of the gallery stays for as long as a map shows it.
+	// Deleting a region is for good: the map behind it goes, and with it the
+	// last thing that held on to such a picture.
+	const cellarFile: string = spare?.file ?? '';
+	const furnished = await gm.command(campaign, { t: 'map.update', id: cellar?.targetMapId, image: cellarFile });
+	const cellarFiles = [
+		join(dataDir, 'uploads', cellarFile),
+		join(dataDir, 'tiles', cellarFile.replace(/\.png$/, '')),
+		join(dataDir, 'thumbs', cellarFile.replace(/\.png$/, '.webp'))
+	];
 	const onDisk = () => cellarFiles.filter((path) => existsSync(path)).length;
-	check('the map behind a region gets an image and tiles of its own', furnished.status === 200 && onDisk() === 2);
+	check('the map behind a region takes an image from the gallery', furnished.status === 200 && onDisk() === 3, `${onDisk()} on disk`);
+	const takenOut = await gm.request(`${galleryPath}/${spare?.id}`, { method: 'DELETE' });
+	check(
+		'taken out of the gallery, it stays on the map that shows it',
+		takenOut.status === 200 &&
+			!(await takenOut.json()).items.some((item: any) => item.id === spare?.id) &&
+			onDisk() === 3 &&
+			(await gm.request(`/c/${campaign}/image/${cellarFile}`)).status === 200
+	);
+	check('but a player is no longer shown it, on a map they cannot open', (await player.request(`/c/${campaign}/image/${cellarFile}`)).status === 404);
 	const shuts = () => playerSocket.messages.filter((m) => m.t === 'event' && m.event.patch.t === 'region.remove').length;
 	const shutsBefore = shuts();
 	gmSocket.ws.send(JSON.stringify({ t: 'cmd', id: 22, cmd: { t: 'region.delete', id: cellar?.id } }));
@@ -399,9 +463,117 @@ async function run() {
 		gmSocket.messages.some((m) => m.t === 'event' && m.event.patch.t === 'region.remove' && m.event.patch.id === cellar?.id)
 	);
 	check('its map is gone, for the GM too', (await gm.request(cellarPath)).status === 404);
-	check('and so are the image and its tiles', onDisk() === 0, `${onDisk()} left`);
+	check('and so is the picture only that map still held', onDisk() === 0, `${onDisk()} left`);
 	check('the first map keeps its own', existsSync(join(dataDir, 'uploads', file)));
 	check('a hidden region goes without a word to the player', shuts() === shutsBefore);
+
+	// A battle map: a region can lead to one, and the pieces on it are moved
+	// by whoever they belong to.
+	const field = await gm.command(campaign, {
+		t: 'region.create',
+		mapId,
+		name: 'The Bridge',
+		points: [[0.5, 0.5], [0.8, 0.5], [0.8, 0.8], [0.5, 0.8]],
+		kind: 'battle'
+	});
+	const bridge = field.body.events?.find((e: any) => e.patch.t === 'region.upsert')?.patch.region;
+	const bridgeId: string = bridge?.targetMapId;
+	check('a region can lead to a battle map', bridge?.kind === 'battle');
+	const squared = await gm.command(campaign, { t: 'map.update', id: bridgeId, grid: { size: 70 } });
+	check('the GM sets up its grid', squared.body.events?.[0]?.patch.map?.grid?.size === 70, `status ${squared.status}`);
+	check('a player cannot', (await player.command(campaign, { t: 'map.update', id: bridgeId, grid: { size: 10 } })).status === 403);
+	check('tokens stay off a world map', (await gm.command(campaign, { t: 'token.create', mapId, name: 'Lost', x: 0.5, y: 0.5 })).status === 400);
+	check(
+		'notes and markers stay off a battle map',
+		(await player.command(campaign, { t: 'marker.create', mapId: bridgeId, kind: 'player', title: 'Scribble', x: 0.5, y: 0.5 })).status === 400 &&
+			(await gm.command(campaign, { t: 'marker.create', mapId: bridgeId, kind: 'world', title: 'Trapdoor', x: 0.5, y: 0.5 })).status === 400
+	);
+	check(
+		'and so do regions: nothing leads further in',
+		(await gm.command(campaign, { t: 'region.create', mapId: bridgeId, name: 'Under the bridge', points: [[0.1, 0.1], [0.3, 0.1], [0.3, 0.3]] })).status === 400
+	);
+	check('a map with things on it cannot become a battle map', (await gm.command(campaign, { t: 'map.update', id: mapId, kind: 'battle' })).status === 409);
+
+	// A token wears a picture from the gallery, kept small however big it came.
+	const face = await add('token', pixels, 'Ogre face.png', 'Ogre face');
+	const faceFile: string = face.item?.file;
+	check('a token picture is shrunk to fit', face.status === 200 && face.item?.width === 512 && face.item?.height === 320 && faceFile?.endsWith('.webp'));
+	check('a map image is no picture for a token', (await gm.command(campaign, { t: 'token.create', mapId: bridgeId, name: 'Wrong', x: 0.5, y: 0.5, image: file })).status === 409);
+	const ogre = await gm.command(campaign, { t: 'token.create', mapId: bridgeId, name: 'Ogre', x: 0.5, y: 0.5, size: 2, image: faceFile });
+	const ogreId: string = ogre.body.events?.[0]?.patch.token?.id;
+	check('the GM gives a token its picture', ogre.body.events?.[0]?.patch.token?.image === faceFile, `status ${ogre.status}`);
+	check('and the player sees it on the token', (await player.request(`/c/${campaign}/image/${faceFile}`)).status === 200);
+
+	// A player picks from what the GM has revealed, for a token of their own.
+	const tooSoon = await player.command(campaign, { t: 'token.create', mapId: bridgeId, name: 'Hero', x: 0.4, y: 0.4, image: faceFile });
+	check('a hidden picture is not the player\'s to pick, though they see it on the ogre', tooSoon.status === 409, `status ${tooSoon.status}`);
+	await patch(gm, face.item?.id, { hidden: false });
+	const dressed = await player.command(campaign, { t: 'token.create', mapId: bridgeId, name: 'Hero', x: 0.4, y: 0.4, image: faceFile });
+	const heroId: string = dressed.body.events?.[0]?.patch.token?.id;
+	check('once the GM reveals it, a player gives their own token that picture', dressed.body.events?.[0]?.patch.token?.image === faceFile, `status ${dressed.status}`);
+	check('and takes it off again', (await player.command(campaign, { t: 'token.update', id: heroId, changes: { image: null } })).body.events?.[0]?.patch.token?.image === null);
+	check('but cannot dress the GM\'s token', (await player.command(campaign, { t: 'token.update', id: ogreId, changes: { image: null } })).status === 403);
+	// Short enough to fit in a token's name.
+	const lurker = crypto.randomUUID().slice(0, 18);
+	const lurking = await gm.command(campaign, { t: 'token.create', mapId: bridgeId, name: `Lurker ${lurker}`, x: 0.2, y: 0.2, hidden: true });
+	const lurkerId: string = lurking.body.events?.[0]?.patch.token?.id;
+	const tokenCommand = (id: number, cmd: unknown) => playerSocket.ws.send(JSON.stringify({ t: 'cmd', id, cmd }));
+	tokenCommand(30, { t: 'token.create', mapId: bridgeId, name: 'Tester', x: 0.3, y: 0.3 });
+	tokenCommand(31, { t: 'token.update', id: ogreId, changes: { x: 0.1 } });
+	tokenCommand(34, { t: 'token.update', id: lurkerId, changes: { x: 0.1 } });
+	await pause(600);
+	const tokenEvents = (socket: { messages: any[] }, id: string) =>
+		socket.messages.filter((m) => m.t === 'event' && m.event.patch.token?.id === id).map((m) => m.event.patch.token);
+	check('a token the GM adds reaches the player live', !!ogreId && tokenEvents(playerSocket, ogreId).length === 1);
+	const lurkerSeen = {
+		id: !!lurkerId,
+		gm: tokenEvents(gmSocket, lurkerId).length,
+		live: JSON.stringify(playerSocket.messages).includes(lurker),
+		page: (await (await player.request(`/c/${campaign}/m/${bridgeId}`)).text()).includes(lurker)
+	};
+	check(
+		'a hidden token never does',
+		lurkerSeen.id && lurkerSeen.gm === 1 && !lurkerSeen.live && !lurkerSeen.page,
+		JSON.stringify(lurkerSeen)
+	);
+	check('and to the player it does not exist', ack(34)?.ok === false);
+	const mine = gmSocket.messages.find((m) => m.t === 'event' && m.event.patch.token?.name === 'Tester')?.event.patch.token;
+	check('a player can add a token, and it is theirs', ack(30)?.ok === true && mine?.ownerName === 'Tester');
+	check('a player cannot move the GM\'s token', ack(31)?.ok === false);
+	tokenCommand(32, { t: 'token.update', id: mine?.id, changes: { x: 0.6, y: 0.6 } });
+	await pause(500);
+	check('but moves their own, and the GM sees it go', ack(32)?.ok === true && tokenEvents(gmSocket, mine?.id).at(-1)?.x === 0.6);
+	tokenCommand(33, { t: 'history.revert', seq: ack(32)?.undo?.[0] });
+	await pause(500);
+	check('and can undo the move', ack(33)?.ok === true && tokenEvents(gmSocket, mine?.id).at(-1)?.x === 0.3);
+	const handed = await gm.command(campaign, { t: 'token.update', id: mine?.id, changes: { x: 0.7, hidden: true } });
+	await pause(300);
+	check(
+		'the GM moves and hides anyone\'s token, and to the player it is gone',
+		handed.status === 200 &&
+			playerSocket.messages.some((m) => m.t === 'event' && m.event.patch.t === 'token.remove' && m.event.patch.id === mine?.id)
+	);
+
+	// A token in someone's hand, and a ruler, ride along with their pointer.
+	playerSocket.ws.send(
+		JSON.stringify({
+			t: 'cursor',
+			at: { mapId: bridgeId, x: 0.4, y: 0.4, drag: { id: ogreId, x: 0.45, y: 0.4 }, ruler: [[0.3, 0.3], [0.45, 0.4]] }
+		})
+	);
+	await pause(300);
+	const inHand = cursorsSeen(gmSocket).at(-1)?.cursor;
+	check(
+		'a token being dragged is shown to the table, with how far it has come',
+		inHand?.mapId === bridgeId && inHand.drag?.id === ogreId && inHand.drag.x === 0.45 && inHand.ruler?.[1]?.[0] === 0.45
+	);
+	const shownSoFar = cursorsSeen(gmSocket).length;
+	for (const extra of [{ drag: { id: '../x', x: 0.4, y: 0.4 } }, { drag: { id: ogreId, x: 'far', y: 0.4 } }, { drag: 'ogre' }, { ruler: [[0.3, 0.3]] }, { ruler: [[0.3, 0.3], [0.4, 1e9]] }]) {
+		playerSocket.ws.send(JSON.stringify({ t: 'cursor', at: { mapId: bridgeId, x: 0.4, y: 0.4, ...extra } }));
+		await pause(40);
+	}
+	await pause(200);
+	check('a malformed drag or ruler goes nowhere', cursorsSeen(gmSocket).length === shownSoFar, `${cursorsSeen(gmSocket).length - shownSoFar} delivered`);
 
 	// The app checks the login on every forwarded command, so an open socket
 	// stops working the moment its session ends.

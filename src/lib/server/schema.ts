@@ -14,14 +14,15 @@ import {
 	text,
 	type AnySQLiteColumn
 } from 'drizzle-orm/sqlite-core';
-import type {
-	EntityType,
-	EventAction,
-	MapInfo,
-	Marker,
-	MarkerType,
-	Point,
-	Region
+import {
+	DEFAULT_GRID,
+	type Entity,
+	type EntityType,
+	type EventAction,
+	type GalleryKind,
+	type Grid,
+	type MarkerType,
+	type Point
 } from '../shared/types';
 
 export const users = sqliteTable('users', {
@@ -81,6 +82,9 @@ export const maps = sqliteTable(
 			.references(() => campaigns.id, { onDelete: 'cascade' }),
 		parentId: text('parent_id').references((): AnySQLiteColumn => maps.id),
 		name: text('name').notNull(),
+		/** A battle map has a grid and tokens on top of everything a world map has. */
+		kind: text('kind', { enum: ['world', 'battle'] }).notNull().default('world'),
+		grid: text('grid', { mode: 'json' }).$type<Grid>().notNull().default(DEFAULT_GRID),
 		imageFile: text('image_file'),
 		width: integer('width').notNull(),
 		height: integer('height').notNull(),
@@ -134,6 +138,68 @@ export const markers = sqliteTable(
 	]
 );
 
+// The pieces on a battle map. Deleted like markers are: the row stays, so
+// that undoing the delete brings the same token back.
+export const tokens = sqliteTable(
+	'tokens',
+	{
+		id: text('id').primaryKey(),
+		mapId: text('map_id')
+			.notNull()
+			.references(() => maps.id, { onDelete: 'cascade' }),
+		name: text('name').notNull(),
+		color: text('color').notNull(),
+		/** File name of its picture, out of the gallery. Null for a plain disc. */
+		image: text('image'),
+		x: real('x').notNull(),
+		y: real('y').notNull(),
+		/** Cells across. */
+		size: integer('size').notNull().default(1),
+		/** The player who moves it, besides the GM. Null for the GM's own. */
+		ownerId: text('owner_id'),
+		ownerName: text('owner_name'),
+		hidden: integer('hidden', { mode: 'boolean' }).notNull().default(false),
+		createdAt: integer('created_at').notNull(),
+		updatedAt: integer('updated_at').notNull(),
+		deletedAt: integer('deleted_at')
+	},
+	(t) => [index('tokens_map').on(t.mapId)]
+);
+
+// The pictures a campaign keeps to use again: images to lay under a map, and
+// pictures to put on tokens. Maps and tokens point at one by its file name.
+// The file itself is in the uploads directory.
+export const gallery = sqliteTable(
+	'gallery',
+	{
+		id: text('id').primaryKey(),
+		campaignId: text('campaign_id')
+			.notNull()
+			.references(() => campaigns.id, { onDelete: 'cascade' }),
+		kind: text('kind').$type<GalleryKind>().notNull(),
+		name: text('name').notNull(),
+		/** Never reused, so a file name means the same bytes for good. */
+		file: text('file').notNull().unique(),
+		width: integer('width').notNull(),
+		height: integer('height').notNull(),
+		/**
+		 * Players are shown only the pictures the GM has revealed. Every picture
+		 * starts hidden, so nothing spoils a surprise by being added.
+		 */
+		hidden: integer('hidden', { mode: 'boolean' }).notNull().default(true),
+		createdAt: integer('created_at').notNull(),
+		/**
+		 * Set when the GM takes a picture out of the gallery while a map or a
+		 * token still shows it. The row and the file stay until nothing does.
+		 */
+		deletedAt: integer('deleted_at')
+	},
+	(t) => [
+		index('gallery_campaign').on(t.campaignId),
+		check('gallery_kind', sql`${t.kind} IN ('map', 'token')`)
+	]
+);
+
 // Every change to the world is one row here. Undo works from it, and the
 // same events are what the table is sent live. Rows are only ever added,
 // with one exception: deleting a region takes the events of the maps behind
@@ -151,8 +217,8 @@ export const events = sqliteTable(
 		entityId: text('entity_id').notNull(),
 		action: text('action').$type<EventAction>().notNull(),
 		/** Full snapshots of the entity, stored as JSON. */
-		before: text('before', { mode: 'json' }).$type<Marker | Region | MapInfo>(),
-		after: text('after', { mode: 'json' }).$type<Marker | Region | MapInfo>()
+		before: text('before', { mode: 'json' }).$type<Entity>(),
+		after: text('after', { mode: 'json' }).$type<Entity>()
 	},
 	(t) => [index('events_campaign').on(t.campaignId, t.seq)]
 );

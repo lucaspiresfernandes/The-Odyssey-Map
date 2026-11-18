@@ -53,6 +53,8 @@ export interface Region {
 	targetMapId: string;
 	/** Name of the target map. */
 	name: string;
+	/** What kind of map that is. */
+	kind: MapKind;
 	points: Point[];
 	/**
 	 * Only ever sent to the GM as true. To players a hidden region is not
@@ -61,29 +63,120 @@ export interface Region {
 	hidden: boolean;
 }
 
+/**
+ * A world map is a place to explore: markers, notes, regions to step into.
+ * A battle map is a table to play on as well: it has a grid, and tokens
+ * that the people at the table move around.
+ */
+export type MapKind = 'world' | 'battle';
+
+/** The square grid of a battle map, measured in the map's own pixels. */
+export interface Grid {
+	/** The side of one cell. */
+	size: number;
+	/** Where a cell starts, from the map's top left corner. Each is less than one cell. */
+	x: number;
+	y: number;
+	/** Whether the lines are drawn. A map image often brings its own. */
+	shown: boolean;
+}
+
+export const DEFAULT_GRID: Grid = { size: 50, x: 0, y: 0, shown: true };
+
+export const TOKEN_COLORS = [
+	'#e5544b',
+	'#d9783a',
+	'#e0a526',
+	'#3fae7c',
+	'#2bb8c4',
+	'#5b8def',
+	'#b072e0',
+	'#ff8ad8',
+	'#c9b891',
+	'#6b7488'
+] as const;
+
+/**
+ * A piece on a battle map: a character, a monster, anything that moves.
+ * `x` and `y` are its middle.
+ */
+export interface Token {
+	id: string;
+	mapId: string;
+	name: string;
+	color: string;
+	/** File name of its picture, out of the gallery. Null for a plain disc in its colour. */
+	image: string | null;
+	x: number;
+	y: number;
+	/** How many cells it is across. */
+	size: number;
+	/** The player who moves it, besides the GM. Null for a token that is the GM's alone. */
+	ownerId: string | null;
+	ownerName: string | null;
+	/** Only ever sent to the GM as true. */
+	hidden: boolean;
+	updatedAt: number;
+}
+
 export interface MapInfo {
 	id: string;
 	campaignId: string;
 	parentId: string | null;
 	name: string;
-	/** File name of the uploaded map image, or null for a blank map. */
+	kind: MapKind;
+	/** Kept on a world map too, so turning it into a battle map and back loses nothing. */
+	grid: Grid;
+	/** File name of the map image, out of the gallery, or null for a blank map. */
 	imageFile: string | null;
 	width: number;
 	height: number;
 }
 
+/** What a picture in the gallery is for: to lay under a map, or to put on a token. */
+export type GalleryKind = 'map' | 'token';
+
+/** A picture the campaign keeps, to use on as many maps or tokens as it likes. */
+export interface GalleryItem {
+	id: string;
+	kind: GalleryKind;
+	name: string;
+	/** What maps and tokens point at. It never changes, and neither do the bytes behind it. */
+	file: string;
+	width: number;
+	height: number;
+	/**
+	 * True until the GM reveals the picture to the players. Only ever sent to
+	 * the GM as true: to a player a hidden picture is not in the gallery.
+	 */
+	hidden: boolean;
+}
+
+/** What the gallery endpoints answer with. */
+export interface GalleryResponse {
+	ok: boolean;
+	error?: string;
+	/** The gallery as it is now, after whatever was asked for. */
+	items?: GalleryItem[];
+}
+
 /**
- * Where the browser loads a map image from. The file name doubles as a cache key.
- * `part` asks for a piece of a big image instead of the whole file: its
- * small preview, or one tile as `level/x/y` (see src/lib/shared/tiles.ts).
+ * Where the browser loads a picture from. A file name always means the same
+ * bytes, so the address can be cached for good. `part` asks for something
+ * made from the picture instead of the file itself: `thumb` for a small
+ * copy, and for a big map image its `preview` or one tile as `level/x/y`
+ * (see src/lib/shared/tiles.ts).
  */
+export function imageUrl(campaignId: string, file: string, part?: string): string {
+	const url = `/c/${campaignId}/image/${file}`;
+	return part ? `${url}?part=${part}` : url;
+}
+
 export function mapImageUrl(
-	map: Pick<MapInfo, "campaignId" | "id" | "imageFile">,
+	map: Pick<MapInfo, 'campaignId' | 'imageFile'>,
 	part?: string
 ): string | null {
-	if (!map.imageFile) return null;
-	const url = `/c/${map.campaignId}/m/${map.id}/image?v=${encodeURIComponent(map.imageFile)}`;
-	return part ? `${url}&part=${part}` : url;
+	return map.imageFile ? imageUrl(map.campaignId, map.imageFile, part) : null;
 }
 
 export interface Crumb {
@@ -97,6 +190,8 @@ export interface MapSnapshot {
 	trail: Crumb[];
 	regions: Region[];
 	markers: Marker[];
+	/** Empty on a world map. */
+	tokens: Token[];
 	/** Sequence number of the newest event already reflected in this snapshot. */
 	lastSeq: number;
 }
@@ -112,24 +207,66 @@ export interface MarkerInput {
 	hidden: boolean;
 }
 
+export interface TokenInput {
+	name: string;
+	color: string;
+	/** The file name of a token picture in the gallery, or null for none. */
+	image: string | null;
+	x: number;
+	y: number;
+	size: number;
+	/** The GM's to set. A token a player adds is their own. */
+	ownerId: string | null;
+	/** The GM's to set. */
+	hidden: boolean;
+}
+
 /** Everything a client can ask the server to change. */
 export type Command =
 	| ({ t: 'marker.create'; mapId: string; kind: MarkerKind } & Partial<MarkerInput>)
 	| { t: 'marker.update'; id: string; changes: Partial<MarkerInput> }
 	| { t: 'marker.delete'; id: string }
 	| { t: 'marker.restore'; id: string }
-	| { t: 'region.create'; mapId: string; name: string; points: Point[]; hidden?: boolean }
+	| ({ t: 'token.create'; mapId: string } & Partial<TokenInput>)
+	/** Moving a token is this, with a new `x` and `y`. */
+	| { t: 'token.update'; id: string; changes: Partial<TokenInput> }
+	| { t: 'token.delete'; id: string }
+	| { t: 'token.restore'; id: string }
+	/** `kind` is the kind of map the region leads to: a world map unless it says otherwise. */
+	| {
+			t: 'region.create';
+			mapId: string;
+			name: string;
+			points: Point[];
+			hidden?: boolean;
+			kind?: MapKind;
+	  }
 	/** Reshapes a region, hides or reveals it, or both. */
 	| { t: 'region.update'; id: string; points?: Point[]; hidden?: boolean }
 	/** For good, along with the map behind the region and everything inside it. */
 	| { t: 'region.delete'; id: string }
-	| { t: 'map.update'; id: string; name: string }
+	/**
+	 * Renames a map, changes its kind, sets up its grid, lays an image under
+	 * it: whichever are given. `image` is the file name of a map image in the
+	 * gallery.
+	 */
+	| {
+			t: 'map.update';
+			id: string;
+			name?: string;
+			kind?: MapKind;
+			grid?: Partial<Grid>;
+			image?: string;
+	  }
 	/** Takes back the change with this sequence number by performing its opposite. */
 	| { t: 'history.revert'; seq: number };
 
 // ------------------------------------------------------------------ events
 
-export type EntityType = 'marker' | 'region' | 'map';
+export type EntityType = 'marker' | 'region' | 'map' | 'token';
+
+/** A full copy of one of them, as the event log keeps it. */
+export type Entity = Marker | Region | MapInfo | Token;
 export type EventAction = 'create' | 'update' | 'delete' | 'restore';
 
 /**
@@ -147,8 +284,8 @@ export interface StoredEvent {
 	entity: EntityType;
 	entityId: string;
 	action: EventAction;
-	before: Marker | Region | MapInfo | null;
-	after: Marker | Region | MapInfo | null;
+	before: Entity | null;
+	after: Entity | null;
 }
 
 /** What a client has to do to its local copy of a map to reflect an event. */
@@ -158,7 +295,9 @@ export type Patch =
 	| { t: 'region.upsert'; region: Region }
 	/** `targetMapId` is the map that can no longer be reached through it. */
 	| { t: 'region.remove'; id: string; mapId: string; targetMapId: string }
-	| { t: 'map.upsert'; map: MapInfo };
+	| { t: 'map.upsert'; map: MapInfo }
+	| { t: 'token.upsert'; token: Token }
+	| { t: 'token.remove'; id: string; mapId: string };
 
 export interface LiveEvent {
 	seq: number;
@@ -180,6 +319,20 @@ export interface CursorSpot {
 	mapId: string;
 	x: number;
 	y: number;
+	/**
+	 * A token this person has in hand, and where they are holding it. It
+	 * only moves for good once they let go: that is a `token.update`.
+	 */
+	drag?: { id: string; x: number; y: number };
+	/** A distance they are measuring, from one spot to another. */
+	ruler?: [Point, Point];
+}
+
+/** Someone at the table, for the GM to hand a token to. */
+export interface Member {
+	id: string;
+	name: string;
+	role: Role;
 }
 
 /**
@@ -249,11 +402,22 @@ export const LIMITS = {
 	title: 120,
 	description: 4000,
 	name: 80,
+	tokenName: 40,
+	/** The most cells a token can be across. */
+	tokenSize: 6,
+	/** The smallest and the largest a grid cell can be, in map pixels. */
+	gridMin: 8,
+	gridMax: 2000,
 	regionPoints: 200,
 	// Room for a big map that has been through an upscaler.
 	imageBytes: 256 * 1024 * 1024,
 	/** The longest a map image may be on either side, in pixels. */
-	imageSide: 30000
+	imageSide: 30000,
+	/** A token's picture is made small before it is kept, so this is only what may be sent. */
+	tokenImageBytes: 32 * 1024 * 1024
 } as const;
+
+/** The longest side a token's picture is kept at, in pixels. */
+export const TOKEN_IMAGE_SIZE = 512;
 
 export const DEFAULT_MAP_SIZE = { width: 1600, height: 1000 } as const;

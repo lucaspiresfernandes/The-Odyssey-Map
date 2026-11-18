@@ -4,7 +4,8 @@
 // it is not, so the map stays usable while the connection is down. Either
 // way, changes come back as events and are handed to whoever subscribed.
 //
-// The socket also carries where everyone's pointer is. That is only ever
+// The socket also carries where everyone's pointer is, and what they are
+// doing with it: dragging a token, measuring a distance. That is only ever
 // live: nothing about it is kept, and none of it is sent while offline.
 
 import { getContext, setContext } from 'svelte';
@@ -209,8 +210,8 @@ export class Live {
 		const ws = this.#ws;
 		if (!ws || this.status !== 'open' || ws.readyState !== WebSocket.OPEN) return;
 		const spot = this.#spot;
-		const told = this.#toldSpot;
-		if (spot?.mapId === told?.mapId && spot?.x === told?.x && spot?.y === told?.y) return;
+		// Compared whole: a token in hand or a ruler can change while the pointer holds still.
+		if (JSON.stringify(spot) === JSON.stringify(this.#toldSpot)) return;
 		this.#toldSpot = spot;
 		this.#toldAt = Date.now();
 		ws.send(JSON.stringify({ t: 'cursor', at: spot } satisfies ClientMessage));

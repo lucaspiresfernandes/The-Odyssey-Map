@@ -2,7 +2,8 @@
 
 A living map you can zoom into forever. A shared, real-time campaign map where every region
 is a doorway to a map of its own, every marker explains itself on hover, and you can see
-where everyone at the table is pointing.
+where everyone at the table is pointing. At the end of the way down, a region can open
+onto a battle map: a grid, tokens the players move themselves, and a ruler.
 
 Built with SvelteKit, Bun and TypeScript. No map library, no paid platform, one SQLite file.
 
@@ -21,7 +22,7 @@ bun run dev
 ```
 
 Open http://localhost:5173. `bun run seed` is optional: it creates a demo campaign with
-five nested maps, and prints the demo GM login and a player invite link (the login is also
+five nested maps, the innermost a battle map with a fight set up on it, and prints the demo GM login and a player invite link (the login is also
 at the top of [scripts/seed.ts](scripts/seed.ts)). Skip it to start empty and create your
 own GM account.
 
@@ -31,13 +32,18 @@ on port 3001.
 ## Running a session
 
 1. Create a GM account and a campaign.
-2. Use the bar under the map to upload a map image, place world markers and draw regions.
+2. Use the bar under the map to choose a map image from the gallery, place world markers
+   and draw regions. See [The gallery](#the-gallery).
    Each region gets a name and its own map: double-click it to step inside and build that
    one too. Click a region to select it: the Region buttons in the bar then enter, hide,
    rename or delete it, and its corners reshape it. Drag a corner to move it, drag the dot in the
    middle of an edge to add a corner, double-click a corner to remove it. Deleting a region
    asks first: the map behind it goes too, with everything inside, and there is no undo.
-3. Click **Invite** and send the link to your players. They pick a name and they're in.
+3. For a fight, make a battle map. Pick **Battle map** when you name a new region, or
+   open a map with nothing on it yet and use **Make this a battle map** in the bar. Set
+   the size of a cell to match the squares of your image, then add tokens and hand each
+   player's to them. See [Battle maps](#battle-maps).
+4. Click **Invite** and send the link to your players. They pick a name and they're in.
    Players need no account.
 
 To let other devices on your network reach it:
@@ -59,18 +65,83 @@ bun run start:lan
 ```
 
 That serves the app on port 3000 (set `PORT` to change it). Everything is stored in
-`data/`: the database and the uploaded map images. Back up that folder.
+`data/`: the database and the pictures in the gallery. Back up that folder.
+
+### The gallery
+
+Every campaign has a gallery: the pictures it keeps, to use as often as you like. It has
+two shelves, map images and token pictures.
+
+**Gallery**, at the top of any map, opens both for the GM. That is the place to stock up
+before a session: add, rename, reveal and take out pictures, with no map or token
+waiting for one. Each shelf also opens from where it is used, to pick from.
+
+- **Map images.** The image button in the bar under a map opens them. Add images with the
+  first tile, or drop files on the dialog, then click one to lay it under the map. The
+  same image can lie under any number of maps, and `Ctrl+Z` takes it back off.
+- **Token pictures.** **Choose from the gallery** in a token's form opens them. A token
+  yet to be named takes the name of the picture you pick, so a goblin's picture makes a
+  Goblin. The picture is ringed in the token's colour.
+
+A picture is named after the file it came in. Click the name to change it. The **×** on a
+picture takes it out of the gallery: the maps and tokens that already show it keep it,
+and it is removed from disk once the last of them has let go of it. What happens in the
+gallery is not part of the map's history, so there is no undo for it.
+
+The gallery is the GM's. Every picture starts hidden from the players, so adding one
+never spoils a surprise. On the token shelf each picture has an eye in its corner: click
+it to reveal that picture to the table, and again to hide it. A revealed picture keeps a
+gold eye.
+
+A player opens the gallery from the form of their own token. They are shown the token
+pictures you have revealed and nothing else, and pick from those. They can't add,
+rename, reveal or take out anything.
+
+A hidden picture is, to a player, not in the gallery. They can load it only where you
+have put it in front of them: as the image of a map they can open, or on a token they
+can see. Hiding a picture again leaves it on the tokens that already wear it.
 
 ### Map images
 
 A map image can be up to 256 MB and 30000 pixels on a side. One with a side over 2048
-pixels is cut into tiles when it is uploaded, so that only the part on screen is loaded,
-at the size the zoom calls for. The tiles are kept in `data/tiles/`. That folder needs no
-backup: whatever is missing from it is made again when the map is next opened.
+pixels is cut into tiles when it is added, so that only the part on screen is loaded, at
+the size the zoom calls for. The tiles are kept in `data/tiles/` and the gallery's
+thumbnails in `data/thumbs/`. Neither folder needs a backup: whatever is missing is made
+again when it is next asked for.
+
+A token picture is made to fit in 512 pixels when it is added, however big it came.
 
 The zoom stops at twice the image's own pixels, where it would only get blurrier. For a
 map that should zoom further, enlarge the image with an upscaler such as
 [Upscayl](https://upscayl.org) and upload the result.
+
+### Battle maps
+
+A map is a world map or a battle map. A world map is for finding your way: markers,
+notes, and regions that lead further in. A battle map is a table to play on, and the end
+of the way down. It holds no markers, no notes and no regions, and the bar under it has
+none of the tools for them. What it has instead:
+
+- **A grid.** **Set up the grid** in the bar takes the size of one cell in pixels of the
+  map image, and how far to shift the grid right and down to line it up. The dialog says
+  how many cells that makes, to compare with the squares you count on the image. For an
+  image that has its own grid drawn on, turn the lines off: tokens still snap to the cells.
+- **Tokens.** A coloured disc with a name, one to six cells across. The GM adds tokens and
+  can hand each one to a player. A player can add a token of their own. Whoever a token
+  belongs to drags it, and so does the GM. Everyone sees it move while it is being
+  dragged, and it snaps to the grid when it is let go. Hold `Alt` to put it down exactly
+  where you let go. The GM can hide a token from the players until it is time.
+- **A ruler.** Dragging a token shows how many cells it has moved. **Measure a distance**
+  in the bar measures between any two spots, and the table sees your ruler while you do.
+  A diagonal step counts as one cell.
+
+The way from the world to a battle map is a region, like the way to any other map:
+double-click it and you are at the table. The GM's bar on a battle map has the token and
+the ruler, the map image, the name and the grid. A player's has the token and the ruler.
+
+A world map can be turned into a battle map only while it has no markers, notes or
+regions on it: delete them first. Turning a battle map back into a world map puts its
+tokens away without deleting them.
 
 ### On the map
 
@@ -81,7 +152,10 @@ map that should zoom further, enlarge the image with an upscaler such as
 | Click a marker | Pin its card, with edit, move and delete if it's yours to change |
 | Double-click a region | Step into its map |
 | Click a region, as the GM | Open its menu: enter, hide or reveal, rename, delete |
-| Double-click a bare spot | Start a note there |
+| Double-click a bare spot | Start a note there, on a world map |
+| Drag a token | Move it, if it's yours. It snaps to the grid, unless `Alt` is held |
+| Click a token | See whose it is, with edit, hide and delete if it's yours to change |
+| A token with the focus | Arrow keys walk it one cell at a time |
 | Breadcrumbs | Step back out |
 | Arrow keys, `+` `-` `0` | Pan, zoom and fit from the keyboard |
 | `Ctrl+Z`, `Ctrl+Shift+Z` | Undo and redo what you did on the map you're looking at |
@@ -96,15 +170,19 @@ sit in a bar along the bottom of the screen.
 
 | | GM | Player |
 |---|---|---|
-| World markers | create, edit, hide, reveal, delete | read (never the hidden ones) |
-| Table notes | create, edit, delete, anyone's | create, edit anyone's, delete their own |
-| Maps, images, regions | create, edit, hide, reveal, delete | read (never the hidden ones) |
-| Undo and redo | their own changes | their own changes to table notes |
+| World markers, on world maps | create, edit, hide, reveal, delete | read (never the hidden ones) |
+| Table notes, on world maps | create, edit, delete, anyone's | create, edit anyone's, delete their own |
+| Maps, regions | create, edit, hide, reveal, delete | read (never the hidden ones) |
+| The gallery | add, rename, reveal, hide, take out, lay an image under a map | look through what the GM has revealed, pick one of those for their own token |
+| Battle maps and grids | turn an empty map into one and back, set up the grid | read |
+| Tokens | create, move, edit, give any picture, hide, hand to a player, delete, anyone's | create their own, and move, edit, give a revealed picture, delete those |
+| Undo and redo | their own changes | their own changes to table notes and tokens |
 
 A table note can be deleted by whoever added it and by the GM, never by another player.
 
 Hidden world markers are filtered on the server. They are not in the page a player loads,
-not in the events their browser receives, and out of reach of a player's undo.
+not in the events their browser receives, and out of reach of a player's undo. Hidden
+tokens are filtered the same way, and the GM's browser doesn't show one being dragged.
 
 A hidden region works the same way, and takes its map with it: players can't open the map
 behind it or any map further inside, can't load its image, and hear nothing of what happens
@@ -118,10 +196,11 @@ src/lib/client/     the browser's side: the live connection, the map's state, un
 src/lib/server/     database, sessions, and the modules that matter most:
   schema.ts           the tables, as a Drizzle schema
   world.ts            every change: validate, check permission, write, log an event
+  gallery.ts          the campaign's pictures, and who may load which
   visibility.ts       the only path from the event log to a client, filtered by role
 drizzle/            SQL migrations generated from schema.ts
-src/routes/         the SvelteKit app: pages, plus HTTP endpoints for uploads and a
-                    command fallback
+src/routes/         the SvelteKit app: pages, plus HTTP endpoints for the gallery, its
+                    pictures and a command fallback
 src/lib/components/ the map canvas, marker cards, forms
 ws/server.ts        the WebSocket server: a bridge between browsers and the app
 scripts/            run both servers, seed a demo, end-to-end check
@@ -142,10 +221,14 @@ scripts/            run both servers, seed a demo, end-to-end check
   else. The browser remembers the numbers of the events its own commands made:
   `Ctrl+Z` asks for the latest to be taken back, and redo is undoing the undo.
 - **Deleting a region is the exception.** It removes the region, the map behind it, every
-  map further inside, their markers, their image files and their events. Nothing is kept
-  to undo it with, so the GM is asked to confirm first.
+  map further inside, their markers, their tokens and their events. Nothing is kept to
+  undo it with, so the GM is asked to confirm first. Their images stay in the gallery.
 - **Pointers skip the app.** Where each mouse is goes from browser to browser through the
   WebSocket server alone. It isn't a change to the world, so it is never stored.
+- **So does a token in someone's hand.** While a token is dragged, where it is rides
+  along with the pointer, and so does a ruler. Only letting go is a change: one
+  `token.update` command, checked, stored and undoable like any other. A browser shows a
+  token in someone's hand only if that person could really move it.
 - **One login.** When a browser connects, the WebSocket server passes its session cookie
   to the app, which says who that is. Commands are forwarded with the same cookie, so the
   app checks the login on every one.
@@ -185,8 +268,8 @@ All optional. Copy [.env.example](.env.example) to `.env` to change a default.
 bun run test
 ```
 
-Unit tests for the rules: permissions, hidden markers and regions, undo and restore, campaign
-isolation.
+Unit tests for the rules: permissions, hidden markers and regions, battle maps and tokens,
+the grid's arithmetic, undo and restore, campaign isolation.
 
 ```bash
 bun run test:e2e
@@ -211,9 +294,20 @@ Type-checks everything.
   no longer delete the notes the old one added. The GM still can.
 - Undo remembers what you did since you opened the map. It is forgotten when you step
   into another map or reload the page.
-- Replaced map images stay on disk so that undo can bring them back. They go when the
-  map itself is deleted, along with the region that leads to it.
+- Undo can't put back a map image, or a token's picture, that has since been taken out
+  of the gallery and removed from disk.
+- A player can't add a picture of their own to the gallery. They send it to the GM,
+  who adds it and reveals it.
+- Pictures are revealed one at a time, and to the whole table: not to one player only.
+- A picture in the gallery is a picture and a name. It doesn't remember a token's size
+  or colour.
 - Undoing the drawing of a region only works while the map behind it is still empty.
   After that the region has to be deleted from the bar, which asks first.
 - Everyone's pointer is shown, the GM's included, also while it hovers over something
   hidden from the players.
+- A battle map has no fog of war, no initiative order and no drawing tools.
+- The grid is square, and is lined up by typing numbers, not by dragging it over the image.
+- The ruler counts cells with a diagonal step as one. It doesn't convert to feet or metres.
+- The way into a battle map is a region. A marker can't lead to one.
+- A battle map holds no markers, notes or regions. A world map that has any can't be
+  turned into one until they are deleted, and deleting a region is for good.

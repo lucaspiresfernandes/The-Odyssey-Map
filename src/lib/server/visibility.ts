@@ -1,21 +1,30 @@
 // The only path from the event log to a client.
 //
 // Stored events hold full before/after snapshots, including hidden world
-// markers and hidden regions. Nothing leaves the app without passing through
+// markers, hidden tokens and hidden regions. Nothing leaves the app without passing through
 // the functions below, which decide what a given role is allowed to receive.
 // That includes what is handed to the WebSocket server to deliver.
 
 import type { Db } from './db';
 import { isConcealed } from './world';
-import { canSeeMarker, canSeeRegion } from '../shared/rules';
-import type { LiveEvent, MapInfo, Marker, Patch, Region, Role, StoredEvent } from '../shared/types';
+import { canSeeMarker, canSeeRegion, canSeeToken } from '../shared/rules';
+import type {
+	LiveEvent,
+	MapInfo,
+	Marker,
+	Patch,
+	Region,
+	Role,
+	StoredEvent,
+	Token
+} from '../shared/types';
 
 /**
  * Turns an event into the change a client of this role should apply, or
  * null when the role must not learn that anything happened.
  *
- * For a player, a marker or region being hidden looks exactly like a delete,
- * and one being revealed looks exactly like a create.
+ * For a player, a marker, token or region being hidden looks exactly like a
+ * delete, and one being revealed looks exactly like a create.
  */
 export function projectEvent(event: StoredEvent, role: Role): Patch | null {
 	if (event.entity === 'marker') {
@@ -24,6 +33,16 @@ export function projectEvent(event: StoredEvent, role: Role): Patch | null {
 		if (after && canSeeMarker(role, after)) return { t: 'marker.upsert', marker: after };
 		if (before && canSeeMarker(role, before)) {
 			return { t: 'marker.remove', id: event.entityId, mapId: event.mapId };
+		}
+		return null;
+	}
+
+	if (event.entity === 'token') {
+		const before = event.before as Token | null;
+		const after = event.after as Token | null;
+		if (after && canSeeToken(role, after)) return { t: 'token.upsert', token: after };
+		if (before && canSeeToken(role, before)) {
+			return { t: 'token.remove', id: event.entityId, mapId: event.mapId };
 		}
 		return null;
 	}

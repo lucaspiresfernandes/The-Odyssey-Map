@@ -4,41 +4,59 @@
 	//
 	// Markers and regions live in map space (0..1 across the image). The
 	// `view` turns map space into screen pixels: screen = map * size * k + offset.
+	//
+	// A battle map is the same sheet used as a table: a grid drawn over it,
+	// tokens to drag from cell to cell, and a ruler that counts the cells
+	// between. It holds no markers and no regions.
 
 	import { untrack } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
-	import { canEditWorld } from '#lib/shared/rules.ts';
+	import { cellCount, cellsBetween, snapToGrid } from '#lib/shared/grid.ts';
+	import { canEditWorld, canMoveToken } from '#lib/shared/rules.ts';
 	import { tileLevelFor, tileLevels, tilesIn, type Tile } from '#lib/shared/tiles.ts';
 	import {
 		LIMITS,
+		imageUrl,
 		mapImageUrl,
 		markerType,
 		type Cursor,
+		type CursorSpot,
 		type MapInfo,
 		type Marker,
 		type Point,
 		type Region,
-		type Role
+		type Role,
+		type Token
 	} from '#lib/shared/types.ts';
 	import MarkerCard from './MarkerCard.svelte';
 	import MarkerGlyph from './MarkerGlyph.svelte';
+	import TokenCard from './TokenCard.svelte';
+
+	/** Where this browser is pointing on the map in front of it, and what it has in hand. */
+	type Pointing = Omit<CursorSpot, 'mapId'>;
 
 	interface Props {
 		map: MapInfo;
 		regions: Region[];
 		markers: Marker[];
+		/** The pieces on a battle map. A world map shows none. */
+		tokens: Token[];
 		/** Where the other people looking at this map are pointing. */
 		cursors: Cursor[];
 		role: Role;
 		userId: string;
-		/** `place` waits for a click that positions a marker, `draw` outlines a region. */
-		tool: 'pan' | 'place' | 'draw';
+		/**
+		 * `place` waits for a click that positions a marker or a token, `draw`
+		 * outlines a region, `measure` drags a ruler across a battle map.
+		 */
+		tool: 'pan' | 'place' | 'draw' | 'measure';
 		/** How many maps deep this one is. Decides which way the arrival animation zooms. */
 		depth: number;
 		selectedMarkerId: string | null;
 		selectedRegionId: string | null;
+		selectedTokenId: string | null;
 		onplace: (x: number, y: number) => void;
-		/** A bare spot of the map was double-clicked: a note is wanted there. */
+		/** A bare spot of a world map was double-clicked: a note is wanted there. */
 		onnote: (x: number, y: number) => void;
 		ondrawn: (points: Point[]) => void;
 		onenter: (region: Region) => void;
@@ -47,14 +65,20 @@
 		onmove: (marker: Marker) => void;
 		ondelete: (marker: Marker) => void;
 		onhide: (marker: Marker, hidden: boolean) => void;
-		/** Where this browser's mouse is on the map, or null when it is not over it. */
-		oncursor: (at: Point | null) => void;
+		/** A token was let go somewhere new. Resolves once the server has moved it, or refused. */
+		onmovetoken: (token: Token, x: number, y: number) => Promise<boolean>;
+		onedittoken: (token: Token) => void;
+		ondeletetoken: (token: Token) => void;
+		onhidetoken: (token: Token, hidden: boolean) => void;
+		/** Where this browser is pointing on the map, or null when it is not over it. */
+		oncursor: (at: Pointing | null) => void;
 	}
 
 	let {
 		map,
 		regions,
 		markers,
+		tokens,
 		cursors,
 		role,
 		userId,
@@ -62,6 +86,7 @@
 		depth,
 		selectedMarkerId = $bindable(),
 		selectedRegionId = $bindable(),
+		selectedTokenId = $bindable(),
 		onplace,
 		onnote,
 		ondrawn,
@@ -71,6 +96,10 @@
 		onmove,
 		ondelete,
 		onhide,
+		onmovetoken,
+		onedittoken,
+		ondeletetoken,
+		onhidetoken,
 		oncursor
 	}: Props = $props();
 
@@ -98,6 +127,23 @@
 	let reshape = $state<{ id: string; points: Point[] } | null>(null);
 	let cardW = $state(0);
 	let cardH = $state(0);
+	let tokenCardW = $state(0);
+	let tokenCardH = $state(0);
+	/**
+	 * The token in this person's hand: where the pointer has it, and `rest`,
+	 * the spot on the grid it would come down on. Once it is let go it waits
+	 * here, no longer `held`, until the server has moved it for everyone.
+	 */
+	let carry = $state.raw<{
+		id: string;
+		x: number;
+		y: number;
+		from: Point;
+		rest: Point;
+		held: boolean;
+	} | null>(null);
+	/** A distance being measured with the ruler tool: from, to. */
+	let measure = $state.raw<[Point, Point] | null>(null);
 
 	/**
 	 * The GM selects a region with one click, and gets its corners to reshape
@@ -134,16 +180,121 @@
 		return markers.find((m) => m.id === id) ?? null;
 	});
 
-	const cardPosition = $derived.by(() => {
-		if (!active) return null;
-		const sx = active.x * W * view.k + view.x;
-		const sy = active.y * H * view.k + view.y;
-		if (sx < -30 || sx > cw + 30 || sy < -30 || sy > ch + PIN_HEIGHT + 30) return null;
-		const above = sy - PIN_HEIGHT - 12 - cardH >= 6;
+	/**
+	 * Where a card goes for something at this spot of the map: `above` it by
+	 * that many screen pixels when there is room, `below` it when there is not.
+	 */
+	function cardSpot([x, y]: Point, above: number, below: number, w: number, h: number) {
+		const sx = x * W * view.k + view.x;
+		const sy = y * H * view.k + view.y;
+		if (sx < -30 || sx > cw + 30 || sy < -30 || sy > ch + above + 30) return null;
+		const fits = sy - above - h >= 6;
 		return {
-			left: Math.min(Math.max(sx - cardW / 2, 8), Math.max(8, cw - cardW - 8)),
-			top: above ? sy - PIN_HEIGHT - 12 - cardH : Math.min(sy + 12, Math.max(6, ch - cardH - 6))
+			left: Math.min(Math.max(sx - w / 2, 8), Math.max(8, cw - w - 8)),
+			top: fits ? sy - above - h : Math.min(sy + below, Math.max(6, ch - h - 6))
 		};
+	}
+
+	const cardPosition = $derived(
+		active && cardSpot([active.x, active.y], PIN_HEIGHT + 12, 12, cardW, cardH)
+	);
+
+	// ---------------------------------------------------------- battle maps
+
+	const battle = $derived(map.kind === 'battle');
+	/** The side of one grid cell, in map pixels. */
+	const cell = $derived(map.grid.size);
+
+	/** Every line of the grid as one path. Empty when there is no grid to draw. */
+	const gridLines = $derived.by(() => {
+		if (!battle || !map.grid.shown) return '';
+		let d = '';
+		for (let x = map.grid.x; x <= W; x += cell) d += `M${x} 0V${H}`;
+		for (let y = map.grid.y; y <= H; y += cell) d += `M0 ${y}H${W}`;
+		return d;
+	});
+
+	/** Tokens someone else has in hand right now, and where they are holding them. */
+	const heldByOthers = $derived.by(() => {
+		const spots = new Map<string, Point>();
+		for (const other of cursors) {
+			const { drag } = other;
+			const token = drag && tokens.find((t) => t.id === drag.id);
+			// Only from someone who could really move it. A drag is one
+			// browser's word, and the server that passes it on doesn't check.
+			if (drag && token && canMoveToken(other.role, other.userId, token)) {
+				spots.set(token.id, clamped([drag.x, drag.y]));
+			}
+		}
+		return spots;
+	});
+
+	/** Where a token is drawn: in a hand if it is in one, or where it stands. */
+	function spotOf(token: Token): Point {
+		if (carry?.id === token.id) return [carry.x, carry.y];
+		return heldByOthers.get(token.id) ?? [token.x, token.y];
+	}
+
+	const selectedToken = $derived(
+		battle && tool === 'pan' ? (tokens.find((t) => t.id === selectedTokenId) ?? null) : null
+	);
+
+	const tokenCardPosition = $derived.by(() => {
+		if (!selectedToken) return null;
+		const reach = (selectedToken.size * cell * view.k) / 2 + 10;
+		// Its name is written under it, so a card that goes below goes below that.
+		return cardSpot(spotOf(selectedToken), reach, reach + 18, tokenCardW, tokenCardH);
+	});
+
+	interface Ruler {
+		key: string;
+		from: Point;
+		to: Point;
+		/** "6 cells". */
+		length: string;
+		tint: string;
+	}
+
+	/** Every distance being measured on this map right now: this person's, then everyone else's. */
+	const rulers = $derived.by(() => {
+		if (!battle) return [];
+		const drawn: Omit<Ruler, 'length'>[] = [];
+		// Carrying a token measures how far it has come.
+		if (carry?.held) drawn.push({ key: 'mine', from: carry.from, to: carry.rest, tint: '#fff' });
+		else if (measure) drawn.push({ key: 'mine', from: measure[0], to: measure[1], tint: '#fff' });
+		for (const other of cursors) {
+			if (!other.ruler) continue;
+			const [from, to] = other.ruler;
+			drawn.push({ key: other.id, from: clamped(from), to: clamped(to), tint: tintOf(other) });
+		}
+		return drawn.map(
+			(ruler): Ruler => ({ ...ruler, length: cellCount(cellsBetween(map, ruler.from, ruler.to)) })
+		);
+	});
+
+	/** The first letters of a token's name, to write on it. */
+	function initials(name: string): string {
+		return name
+			.split(/\s+/)
+			.slice(0, 2)
+			.map((word) => word[0]?.toUpperCase() ?? '')
+			.join('');
+	}
+
+	function tokenAt(target: Element): Token | null {
+		const id = target.closest<HTMLElement>('[data-token-id]')?.dataset.tokenId;
+		return tokens.find((t) => t.id === id) ?? null;
+	}
+
+	/** Where a press is aiming: the middle of the cell under it, or with Alt held, the exact spot. */
+	function aim(e: PointerEvent): Point {
+		const at = clamped(toMap(e.clientX, e.clientY));
+		return e.altKey ? at : snapToGrid(map, at);
+	}
+
+	// The ruler is put away with the tool.
+	$effect(() => {
+		if (tool !== 'measure') measure = null;
 	});
 
 	function boundsOf(points: Point[]) {
@@ -318,7 +469,11 @@
 				fadeWorld(0, 1, 350);
 				animateTo(target, 450);
 			}
-			if (shown.id !== map.id) clearHover();
+			if (shown.id !== map.id) {
+				clearHover();
+				carry = null;
+				measure = null;
+			}
 			shown = { key, id: map.id, depth };
 			ready = true;
 		});
@@ -433,7 +588,19 @@
 				sx: number;
 				sy: number;
 				moved: boolean;
-		  };
+		  }
+		| {
+				type: 'token';
+				token: Token;
+				sx: number;
+				sy: number;
+				/** From the pointer to the middle of the token, so it doesn't jump when picked up. */
+				dx: number;
+				dy: number;
+				moved: boolean;
+				target: Element;
+		  }
+		| { type: 'measure' };
 
 	const pointers = new Map<number, { x: number; y: number }>();
 	let gesture: Gesture | null = null;
@@ -506,14 +673,32 @@
 	}
 
 	function reportCursor() {
-		oncursor(mouse && viewport && ready ? toMap(mouse.x, mouse.y) : null);
+		if (!viewport || !ready) return oncursor(null);
+		// A finger leaves no pointer behind, but what it is dragging has a place.
+		const hand: Point | null = carry ? [carry.x, carry.y] : (measure?.[1] ?? null);
+		const at = mouse ? toMap(mouse.x, mouse.y) : hand;
+		if (!at) return oncursor(null);
+
+		const pointing: Pointing = { x: at[0], y: at[1] };
+		if (carry) {
+			// A hidden token is moved in secret: nobody is shown it in the GM's hand.
+			const token = tokens.find((t) => t.id === carry!.id);
+			if (token && !token.hidden) {
+				pointing.drag = { id: carry.id, x: carry.x, y: carry.y };
+				if (carry.held) pointing.ruler = [carry.from, carry.rest];
+			}
+		} else if (measure) {
+			pointing.ruler = measure;
+		}
+		oncursor(pointing);
 	}
 
 	// The map can move under a mouse that is holding still: a zoom, an
 	// arrival, stepping into another map. The mouse is then over a different
-	// spot, and the table should see that too.
+	// spot, and the table should see that too. So should it when a token is
+	// picked up or put down, or the ruler moves.
 	$effect(() => {
-		void [view, W, H, map.id, ready];
+		void [view, W, H, map.id, ready, carry, measure];
 		untrack(reportCursor);
 	});
 
@@ -551,6 +736,9 @@
 		pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
 		if (pointers.size === 2) {
+			// A second finger makes it a pinch, and drops whatever the first one held.
+			if (carry?.held) carry = null;
+			measure = null;
 			const mid = midpoint();
 			gesture = {
 				type: 'pinch',
@@ -591,6 +779,33 @@
 			capture(e.pointerId);
 			return;
 		}
+
+		if (tool === 'measure') {
+			const from = aim(e);
+			measure = [from, from];
+			gesture = { type: 'measure' };
+			capture(e.pointerId);
+			return;
+		}
+
+		// A token that is this person's to move is picked up. Anyone else's
+		// is part of the map: pressing it pans, clicking it shows whose it is.
+		const token = tool === 'pan' ? tokenAt(target) : null;
+		if (token && canMoveToken(role, userId, token)) {
+			const [px, py] = toMap(e.clientX, e.clientY);
+			gesture = {
+				type: 'token',
+				token,
+				sx: e.clientX,
+				sy: e.clientY,
+				dx: token.x - px,
+				dy: token.y - py,
+				moved: false,
+				target
+			};
+			return;
+		}
+
 		gesture = {
 			type: 'pan',
 			sx: e.clientX,
@@ -638,6 +853,28 @@
 			const slack = e.pointerType === 'mouse' ? 3 : 8;
 			if (Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > slack) g.moved = true;
 			if (g.moved) reshape.points[g.index] = clamped(toMap(e.clientX, e.clientY));
+		} else if (g?.type === 'token') {
+			if (!g.moved && Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > (e.pointerType === 'mouse' ? 4 : 10)) {
+				g.moved = true;
+				dragging = true;
+				selectedTokenId = null;
+				capture(e.pointerId);
+			}
+			if (g.moved) {
+				const [px, py] = toMap(e.clientX, e.clientY);
+				const at = clamped([px + g.dx, py + g.dy]);
+				carry = {
+					id: g.token.id,
+					x: at[0],
+					y: at[1],
+					from: [g.token.x, g.token.y],
+					// With Alt held it stays exactly where it is put.
+					rest: e.altKey ? at : snapToGrid(map, at, g.token.size),
+					held: true
+				};
+			}
+		} else if (g?.type === 'measure' && measure) {
+			measure = [measure[0], aim(e)];
 		}
 	}
 
@@ -665,6 +902,24 @@
 		gesture = null;
 		dragging = false;
 		if (g?.type === 'pan' && !g.moved && completed) tap(e, g.target);
+		if (g?.type === 'measure') measure = null;
+		if (g?.type === 'token') {
+			const held = carry;
+			if (!g.moved) {
+				if (completed) tap(e, g.target);
+			} else if (held && completed) {
+				// Put down where it comes to rest, and kept there until the
+				// server has moved it. The table sees it in this hand until then,
+				// so it never flickers back to where it was.
+				const settled = { ...held, x: held.rest[0], y: held.rest[1], held: false };
+				carry = settled;
+				onmovetoken(g.token, settled.x, settled.y).then(() => {
+					if (carry === settled) carry = null;
+				});
+			} else {
+				carry = null;
+			}
+		}
 		if (g?.type === 'vertex') {
 			const pending = reshape;
 			const now = performance.now();
@@ -722,10 +977,20 @@
 			return;
 		}
 
+		const token = tokenAt(target);
+		if (token) {
+			selectedTokenId = selectedTokenId === token.id ? null : token.id;
+			selectedMarkerId = null;
+			selectedRegionId = null;
+			lastTap.at = 0;
+			return;
+		}
+
 		const markerId = target.closest<HTMLElement>('[data-marker-id]')?.dataset.markerId;
 		if (markerId) {
 			selectedMarkerId = selectedMarkerId === markerId ? null : markerId;
 			selectedRegionId = null;
+			selectedTokenId = null;
 			lastTap.at = 0;
 			return;
 		}
@@ -733,6 +998,7 @@
 		const regionId = target.closest<SVGElement>('[data-region-id]')?.dataset.regionId ?? null;
 		const region = regions.find((r) => r.id === regionId);
 		selectedMarkerId = null;
+		selectedTokenId = null;
 
 		if (region && double && lastTap.regionId === region.id) {
 			lastTap.at = 0;
@@ -741,8 +1007,9 @@
 			onenter(region);
 			return;
 		}
-		// The same goes for a bare spot of the map: twice, and a note starts there.
-		if (!region && double && lastTap.regionId === null && inside(point)) {
+		// The same goes for a bare spot of a world map: twice, and a note starts
+		// there. A battle map takes no notes.
+		if (!battle && !region && double && lastTap.regionId === null && inside(point)) {
 			lastTap.at = 0;
 			selectedRegionId = null;
 			onnote(point[0], point[1]);
@@ -840,6 +1107,27 @@
 		if (e.key !== 'Enter' && e.key !== ' ') return;
 		e.preventDefault();
 		selectedMarkerId = selectedMarkerId === marker.id ? null : marker.id;
+	}
+
+	/** A token with the focus: Enter shows its card, the arrow keys walk it a cell at a time. */
+	function tokenKey(e: KeyboardEvent, token: Token) {
+		if (e.key === 'Enter' || e.key === ' ') {
+			e.preventDefault();
+			selectedTokenId = selectedTokenId === token.id ? null : token.id;
+			return;
+		}
+		const steps: Record<string, Point> = {
+			ArrowLeft: [-1, 0],
+			ArrowRight: [1, 0],
+			ArrowUp: [0, -1],
+			ArrowDown: [0, 1]
+		};
+		const step = steps[e.key];
+		if (!step || !canMoveToken(role, userId, token)) return;
+		e.preventDefault();
+		if (e.repeat) return;
+		const next: Point = [token.x + (step[0] * cell) / W, token.y + (step[1] * cell) / H];
+		if (inside(next)) onmovetoken(token, ...snapToGrid(map, next, token.size));
 	}
 
 	// ---------------------------------------------------------------- looks
@@ -943,7 +1231,11 @@
 				{/if}
 			{:else}
 				<div
-					class="grid h-full w-full place-content-center gap-2.5 rounded-[3px] bg-parchment text-center text-[#6d5f43] shadow-map"
+					class={[
+						'grid h-full w-full place-content-center gap-2.5 rounded-[3px] text-center text-[#6d5f43] shadow-map',
+						// A battle map draws a grid of its own over the paper.
+						battle ? 'bg-parchment-plain' : 'bg-parchment'
+					]}
 				>
 					<strong class="font-serif text-[64px] font-semibold text-[#4d4129]">{map.name}</strong>
 					<span class="text-[22px]">No map image yet</span>
@@ -957,6 +1249,13 @@
 				height={H}
 				aria-hidden="true"
 			>
+				<!-- The grid of a battle map: a pale line on a dark one, to read on any
+				     map. Left out once the cells are too small to tell apart. -->
+				{#if gridLines && cell * view.k >= 6}
+					<path class="fill-none stroke-[#0c0e14]/30 stroke-[3] stroke-steady" d={gridLines} />
+					<path class="fill-none stroke-[#fff8e4]/45 stroke-1 stroke-steady" d={gridLines} />
+				{/if}
+
 				{#each orderedRegions as region (region.id)}
 					<!-- A dark line under the outline, so it reads on a pale map too. -->
 					<polygon
@@ -1026,6 +1325,36 @@
 						</circle>
 					{/each}
 				{/if}
+
+				<!-- What is being measured, each ruler in the colour (--c) of whoever holds it. -->
+				{#each rulers as ruler (ruler.key)}
+					{@const [x1, y1] = ruler.from}
+					{@const [x2, y2] = ruler.to}
+					<g style:--c={ruler.tint}>
+						<line
+							class="stroke-[#0c0e14]/60 stroke-[5] stroke-steady [stroke-linecap:round]"
+							x1={x1 * W}
+							y1={y1 * H}
+							x2={x2 * W}
+							y2={y2 * H}
+						/>
+						<line
+							class="stroke-(--c) stroke-[2.5] stroke-steady [stroke-dasharray:7_5]"
+							x1={x1 * W}
+							y1={y1 * H}
+							x2={x2 * W}
+							y2={y2 * H}
+						/>
+						{#each [ruler.from, ruler.to] as [x, y], i (i)}
+							<circle
+								class="fill-(--c) stroke-[#12151c] stroke-[1.5] stroke-steady"
+								cx={x * W}
+								cy={y * H}
+								r={4 / view.k}
+							/>
+						{/each}
+					</g>
+				{/each}
 			</svg>
 
 			<!-- Every region wears its name, lettered straight onto the map like a place
@@ -1056,6 +1385,7 @@
 								<span class="font-semibold text-[#f2c14e]">Hidden{lit ? ' ·' : ' from players'}</span>
 							{/if}
 							{#if lit}
+								{#if region.kind === 'battle'}Battle map ·{/if}
 								<span class="touch:hidden">Double-click to enter</span>
 								<span class="hidden touch:inline">Double-tap to enter</span>
 							{/if}
@@ -1063,6 +1393,77 @@
 					{/if}
 				</div>
 			{/each}
+
+			<!-- The pieces on a battle map. Each is as many cells across as it says, so
+			     unlike a pin it grows and shrinks with the map. It is a disc in its own
+			     colour (--c) with its initials on it, or with its picture, ringed in
+			     that colour. Its name is lettered underneath once it is big enough on
+			     screen to tell from its neighbours. -->
+			{#if battle}
+				{#each tokens as token (token.id)}
+					{@const [x, y] = spotOf(token)}
+					{@const mine = canMoveToken(role, userId, token)}
+					{@const inHand = carry?.id === token.id && carry.held}
+					{@const selected = selectedTokenId === token.id}
+					{@const across = token.size * cell}
+					<!-- Only the position glides, from one report of a drag to the next and
+					     onto the grid when it is let go. Never in the hand that holds it. -->
+					<div
+						class={[
+							'absolute top-0 left-0 size-0',
+							inHand
+								? 'z-2'
+								: 'transition-[translate] duration-100 ease-linear motion-reduce:transition-none',
+							selected && 'z-1'
+						]}
+						style:translate="{x * W}px {y * H}px"
+					>
+						<button
+							class={[
+								'absolute grid -translate-1/2 place-items-center overflow-hidden rounded-full bg-(--c) leading-none font-semibold text-[#12151c] [-webkit-tap-highlight-color:transparent]',
+								token.image ? 'border-(--c)' : 'border-[#12151c]',
+								inHand ? 'cursor-grabbing' : mine ? 'cursor-grab' : 'cursor-pointer',
+								selected ? 'token-selected' : inHand ? 'token-lifted' : 'token-shadow',
+								// Only the GM ever has a hidden one to draw.
+								token.hidden && 'border-dashed opacity-55',
+								tool !== 'pan' && 'pointer-events-none'
+							]}
+							data-token-id={token.id}
+							style:width="{across}px"
+							style:height="{across}px"
+							style:border-width="{across * 0.06}px"
+							style:font-size="{across * 0.4}px"
+							style:--c={token.color}
+							aria-label="Token: {token.name}{token.hidden ? ' (hidden from players)' : ''}{mine
+								? '. Arrow keys move it.'
+								: ''}"
+							aria-pressed={selected}
+							tabindex={tool === 'pan' ? 0 : -1}
+							onkeydown={(e) => tokenKey(e, token)}
+						>
+							{initials(token.name)}
+							{#if token.image}
+								<!-- Over the initials, which show through if the picture can't be loaded. -->
+								<img
+									class="pointer-events-none absolute inset-0 size-full object-cover"
+									src={imageUrl(map.campaignId, token.image)}
+									alt=""
+									draggable="false"
+									onerror={(e) => ((e.currentTarget as HTMLImageElement).hidden = true)}
+								/>
+							{/if}
+						</button>
+						{#if across * view.k >= 26 || selected}
+							<span
+								class="pointer-events-none absolute left-0 w-max max-w-[160px] origin-top -translate-x-1/2 scale-(--inv) truncate pt-0.5 text-xs font-semibold text-[#fff8e4] text-shadow-map"
+								style:top="{across / 2}px"
+							>
+								{token.name}
+							</span>
+						{/if}
+					</div>
+				{/each}
+			{/if}
 
 			<!-- Pins live in the scaled layer, so they follow the map for free. World
 			     markers are teardrops in their type's colour (--c). Table notes look
@@ -1154,6 +1555,23 @@
 					>
 				</div>
 			{/each}
+
+			<!-- How long each ruler is, written at the end it is being pulled to. -->
+			{#each rulers as ruler (ruler.key)}
+				{#if ruler.from[0] !== ruler.to[0] || ruler.from[1] !== ruler.to[1]}
+					<div
+						class="pointer-events-none absolute top-0 left-0 z-3 size-0 origin-top-left scale-(--inv)"
+						style:translate="{ruler.to[0] * W}px {ruler.to[1] * H}px"
+						style:--c={ruler.tint}
+					>
+						<span
+							class="absolute bottom-3 left-0 -translate-x-1/2 rounded-full border border-(--c) bg-night/90 px-2 py-0.5 text-xs font-semibold whitespace-nowrap"
+						>
+							{ruler.length}
+						</span>
+					</div>
+				{/if}
+			{/each}
 		</div>
 	</div>
 
@@ -1183,6 +1601,27 @@
 			</div>
 		{/if}
 
+		{#if selectedToken && tokenCardPosition}
+			<div
+				class={['pointer-events-auto absolute', tokenCardW === 0 && 'invisible']}
+				style:left="{tokenCardPosition.left}px"
+				style:top="{tokenCardPosition.top}px"
+				bind:clientWidth={tokenCardW}
+				bind:clientHeight={tokenCardH}
+			>
+				<TokenCard
+					token={selectedToken}
+					campaignId={map.campaignId}
+					{role}
+					{userId}
+					onclose={() => (selectedTokenId = null)}
+					onedit={onedittoken}
+					ondelete={ondeletetoken}
+					onhide={onhidetoken}
+				/>
+			</div>
+		{/if}
+
 		{#if tool === 'draw'}
 			<p class={hint}>
 				{#if draft.length < 3}
@@ -1199,6 +1638,11 @@
 				<span class="touch:hidden">Click the map where it belongs.</span>
 				<span class="hidden touch:inline">Tap the map where it belongs.</span>
 				<span class={keys}>Esc cancels</span>
+			</p>
+		{:else if tool === 'measure'}
+			<p class={hint}>
+				Drag across the map to measure.
+				<span class={keys}>Alt measures off the grid · Esc puts the ruler away</span>
 			</p>
 		{/if}
 

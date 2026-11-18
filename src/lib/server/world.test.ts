@@ -2,6 +2,17 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { createGuest, createSession, getSessionUser, registerUser, verifyLogin } from './auth';
 import { actorFor, createCampaign, getMembership, joinCampaign } from './campaigns';
 import { openDb, type Db } from './db';
+import {
+	addToGallery,
+	canLoadImage,
+	hideInGallery,
+	listGallery,
+	nameFromFile,
+	newImageFile,
+	removeFromGallery,
+	renameInGallery,
+	sweepGallery
+} from './gallery';
 import { getMapSnapshot } from './queries';
 import { toLiveEvent } from './visibility';
 import {
@@ -9,11 +20,19 @@ import {
 	deletedMaps,
 	eventsAfter,
 	perform,
-	setMapImage,
 	undoable,
 	type Actor
 } from './world';
-import type { Marker, Point, Region, StoredEvent } from '../shared/types';
+import {
+	type GalleryItem,
+	type GalleryKind,
+	type MapInfo,
+	type Marker,
+	type Point,
+	type Region,
+	type StoredEvent,
+	type Token
+} from '../shared/types';
 
 let db: Db;
 let gm: Actor;
@@ -81,6 +100,18 @@ function note(by: Actor = player): Marker {
 }
 
 /** Everything a player's browser would be sent for these events. */
+/** Puts a picture in the gallery, as the upload endpoint does once the file is saved. */
+function picture(kind: GalleryKind = 'map', name = 'A picture', by: Actor = gm): GalleryItem {
+	return addToGallery(db, by, { kind, name, file: newImageFile('png'), width: 640, height: 480 });
+}
+
+/** A picture in the gallery that the GM has revealed to the players. */
+function revealed(kind: GalleryKind = 'map', name = 'A picture'): GalleryItem {
+	const item = picture(kind, name);
+	hideInGallery(db, gm, item.id, false);
+	return { ...item, hidden: false };
+}
+
 function sentToPlayer(events: StoredEvent[]): string {
 	return JSON.stringify(events.map((e) => toLiveEvent(db, e, 'player')).filter(Boolean));
 }
@@ -317,7 +348,7 @@ describe('nested maps', () => {
 	test('only the GM shapes maps and regions', () => {
 		expect(refusal(() => perform(db, player, { t: 'region.create', mapId, name: 'x', points: SQUARE }))).toBe('forbidden');
 		expect(refusal(() => perform(db, player, { t: 'map.update', id: mapId, name: 'x' }))).toBe('forbidden');
-		expect(refusal(() => setMapImage(db, player, mapId, { file: `${mapId}-abc.png`, width: 10, height: 10 }))).toBe('forbidden');
+		expect(refusal(() => perform(db, player, { t: 'map.update', id: mapId, image: picture().file }))).toBe('forbidden');
 	});
 
 	test('deleting a region deletes everything inside it, for good', () => {
@@ -329,7 +360,7 @@ describe('nested maps', () => {
 		const kept = draw(mapId, 'The Ashen Wood');
 		const outside = note();
 		const [inside] = perform(db, player, { t: 'marker.create', mapId: cellar.targetMapId, kind: 'player', title: 'Dock 9', x: 0.5, y: 0.5 });
-		setMapImage(db, gm, tavern.targetMapId, { file: `${tavern.targetMapId}-abc.png`, width: 10, height: 10 });
+		perform(db, gm, { t: 'map.update', id: tavern.targetMapId, image: picture().file });
 
 		expect(refusal(() => perform(db, player, { t: 'region.delete', id: city.id }))).toBe('forbidden');
 		const made = perform(db, gm, { t: 'region.delete', id: city.id });
@@ -446,7 +477,7 @@ describe('hidden regions', () => {
 			...perform(db, gm, { t: 'marker.create', mapId: inside, kind: 'world', title: 'SECRET altar', x: 0.5, y: 0.5 }),
 			...perform(db, gm, { t: 'marker.create', mapId: inside, kind: 'player', title: 'SECRET note', x: 0.5, y: 0.5 }),
 			...perform(db, gm, { t: 'region.create', mapId: inside, name: 'SECRET vault', points: SQUARE }),
-			...setMapImage(db, gm, inside, { file: `${inside}-abc.png`, width: 10, height: 10 })
+			...perform(db, gm, { t: 'map.update', id: inside, image: picture().file })
 		];
 		expect(events).toHaveLength(6);
 		expect(sentToPlayer(events)).toBe('[]');
@@ -486,6 +517,460 @@ describe('hidden regions', () => {
 		expect(refusal(() => perform(db, player, { t: 'region.update', id: region.id, hidden: true }))).toBe('forbidden');
 		expect(refusal(() => perform(db, gm, { t: 'region.update', id: region.id, hidden: 'yes' }))).toBe('invalid');
 		expect(perform(db, gm, { t: 'region.update', id: region.id, hidden: false })).toHaveLength(0);
+	});
+});
+
+describe('battle maps', () => {
+	/** A battle map behind a region of the first map, and that region. */
+	function battlefield(extra: Record<string, unknown> = {}) {
+		const events = perform(db, gm, { t: 'region.create', mapId, name: 'The Bridge', points: SQUARE, kind: 'battle', ...extra });
+		const region = events[1].after as Region;
+		return { region, id: region.targetMapId };
+	}
+
+	function token(by: Actor, on: string, extra: Record<string, unknown> = {}): Token {
+		const [event] = perform(db, by, { t: 'token.create', mapId: on, name: 'Goblin', x: 0.5, y: 0.5, ...extra });
+		return event.after as Token;
+	}
+
+	const sees = (id: string, role: 'gm' | 'player' = 'player') => getMapSnapshot(db, gm.campaignId, id, role)!;
+
+	test('a region can lead to one, and says so', () => {
+		const { region, id } = battlefield();
+		expect(region.kind).toBe('battle');
+		expect(sees(id).map.kind).toBe('battle');
+		expect(sees(mapId).regions[0].kind).toBe('battle');
+		// A region leads to a world map unless it is asked for otherwise.
+		const [, plain] = perform(db, gm, { t: 'region.create', mapId, name: 'The Marsh', points: SQUARE });
+		expect((plain.after as Region).kind).toBe('world');
+	});
+
+	test('the GM turns any map into one and back, and sets up its grid', () => {
+		const [made] = perform(db, gm, { t: 'map.update', id: mapId, kind: 'battle', grid: { size: 70, x: 80, y: -10 } });
+		expect(sees(mapId).map).toMatchObject({ kind: 'battle', grid: { size: 70, x: 10, y: 60, shown: true } });
+		expect(perform(db, gm, { t: 'map.update', id: mapId, grid: { shown: false } })).toHaveLength(1);
+		expect(sees(mapId).map.grid).toEqual({ size: 70, x: 10, y: 60, shown: false });
+
+		expect(refusal(() => perform(db, player, { t: 'map.update', id: mapId, kind: 'world' }))).toBe('forbidden');
+		for (const grid of [{ size: 2 }, { size: 'big' }, { x: Infinity }, { shown: 1 }, 'square']) {
+			expect(refusal(() => perform(db, gm, { t: 'map.update', id: mapId, grid }))).toBe('invalid');
+		}
+		expect(refusal(() => perform(db, gm, { t: 'map.update', id: mapId, kind: 'hex' }))).toBe('invalid');
+		expect(refusal(() => perform(db, gm, { t: 'map.update', id: mapId }))).toBe('invalid');
+
+		// Undoing the change puts the world map back, grid and all.
+		perform(db, gm, { t: 'history.revert', seq: made.seq });
+		expect(sees(mapId).map).toMatchObject({ kind: 'world', grid: { size: 50, x: 0, y: 0 } });
+	});
+
+	test('it holds no markers, no notes and no regions', () => {
+		const { id } = battlefield();
+		const marker = { t: 'marker.create', mapId: id, title: 'Trapdoor', x: 0.5, y: 0.5 };
+		expect(refusal(() => perform(db, gm, { ...marker, kind: 'world' }))).toBe('invalid');
+		expect(refusal(() => perform(db, player, { ...marker, kind: 'player' }))).toBe('invalid');
+		// Nothing leads further in from a battle map.
+		expect(refusal(() => perform(db, gm, { t: 'region.create', mapId: id, name: 'The Vault', points: SQUARE }))).toBe('invalid');
+		expect(sees(id, 'gm')).toMatchObject({ markers: [], regions: [] });
+	});
+
+	test('a map with markers or regions on it has to be cleared first', () => {
+		const pinned = note();
+		const toBattle = () => perform(db, gm, { t: 'map.update', id: mapId, kind: 'battle' });
+		expect(refusal(toBattle)).toBe('conflict');
+		const [gone] = perform(db, gm, { t: 'marker.delete', id: pinned.id });
+		const { region } = battlefield();
+		expect(refusal(toBattle)).toBe('conflict');
+		perform(db, gm, { t: 'region.delete', id: region.id });
+		expect(toBattle()).toHaveLength(1);
+
+		// The note that was deleted to make room stays deleted while this is a battle map.
+		expect(refusal(() => perform(db, gm, { t: 'history.revert', seq: gone.seq }))).toBe('conflict');
+		expect(refusal(() => perform(db, gm, { t: 'marker.restore', id: pinned.id }))).toBe('conflict');
+
+		// Undo is held to the same rule: back to a world map, a note goes on, and
+		// undoing the way back would make it a battle map with a note.
+		const [back] = perform(db, gm, { t: 'map.update', id: mapId, kind: 'world' });
+		perform(db, gm, { t: 'marker.restore', id: pinned.id });
+		expect(refusal(() => perform(db, gm, { t: 'history.revert', seq: back.seq }))).toBe('conflict');
+		expect(sees(mapId).map.kind).toBe('world');
+	});
+
+	test('tokens go on battle maps only', () => {
+		expect(refusal(() => token(gm, mapId))).toBe('invalid');
+		const { id } = battlefield();
+		expect(token(gm, id)).toMatchObject({ name: 'Goblin', size: 1, ownerId: null, hidden: false });
+		// Back to a world map, the tokens wait out of sight for the next fight.
+		perform(db, gm, { t: 'map.update', id, kind: 'world' });
+		expect(refusal(() => token(gm, id))).toBe('invalid');
+		expect(sees(id).tokens).toHaveLength(1);
+	});
+
+	test('a player adds their own token, and moves that one only', () => {
+		const { id } = battlefield();
+		const goblin = token(gm, id);
+		// Whatever a player asks for, the token they add is theirs and in plain sight.
+		const mine = token(player, id, { name: 'Mira', ownerId: other.userId, hidden: true });
+		expect(mine).toMatchObject({ ownerId: player.userId, ownerName: 'Mira', hidden: false });
+
+		const [move] = perform(db, player, { t: 'token.update', id: mine.id, changes: { x: 0.1, y: 0.2 } });
+		expect(move.after).toMatchObject({ x: 0.1, y: 0.2 });
+		expect(refusal(() => perform(db, player, { t: 'token.update', id: goblin.id, changes: { x: 0.1 } }))).toBe('forbidden');
+		expect(refusal(() => perform(db, other, { t: 'token.update', id: mine.id, changes: { x: 0.9 } }))).toBe('forbidden');
+		expect(refusal(() => perform(db, other, { t: 'token.delete', id: mine.id }))).toBe('forbidden');
+		// The GM moves anything.
+		expect(perform(db, gm, { t: 'token.update', id: mine.id, changes: { x: 0.3 } })).toHaveLength(1);
+	});
+
+	test('only the GM hides a token or hands it to someone', () => {
+		const { id } = battlefield();
+		const mine = token(player, id);
+		expect(refusal(() => perform(db, player, { t: 'token.update', id: mine.id, changes: { hidden: true } }))).toBe('forbidden');
+		expect(refusal(() => perform(db, player, { t: 'token.update', id: mine.id, changes: { ownerId: other.userId } }))).toBe('forbidden');
+
+		const [given] = perform(db, gm, { t: 'token.update', id: mine.id, changes: { ownerId: other.userId } });
+		expect(given.after).toMatchObject({ ownerId: other.userId, ownerName: 'Tovin' });
+		expect(refusal(() => perform(db, player, { t: 'token.update', id: mine.id, changes: { x: 0.9 } }))).toBe('forbidden');
+		expect(perform(db, other, { t: 'token.update', id: mine.id, changes: { x: 0.9 } })).toHaveLength(1);
+
+		const [kept] = perform(db, gm, { t: 'token.update', id: mine.id, changes: { ownerId: null } });
+		expect(kept.after).toMatchObject({ ownerId: null, ownerName: null });
+		expect(refusal(() => perform(db, gm, { t: 'token.update', id: mine.id, changes: { ownerId: 'nobody' } }))).toBe('invalid');
+	});
+
+	test('a hidden token reaches the GM only', () => {
+		const { id } = battlefield();
+		const ambush = token(gm, id, { name: 'SECRET assassin', hidden: true });
+		const events = [
+			...eventsAfter(db, 0).filter((e) => e.entity === 'token'),
+			...perform(db, gm, { t: 'token.update', id: ambush.id, changes: { x: 0.7 } })
+		];
+		expect(sentToPlayer(events)).toBe('[]');
+		expect(JSON.stringify(sees(id))).not.toContain('SECRET');
+		expect(sees(id, 'gm').tokens).toHaveLength(1);
+		expect(refusal(() => perform(db, player, { t: 'token.update', id: ambush.id, changes: { x: 0.1 } }))).toBe('not_found');
+
+		// Stepping out of the shadows looks like a token being added, and back like one being taken away.
+		const [reveal] = perform(db, gm, { t: 'token.update', id: ambush.id, changes: { hidden: false } });
+		expect(toLiveEvent(db, reveal, 'player')!.patch.t).toBe('token.upsert');
+		const [hide] = perform(db, gm, { t: 'token.update', id: ambush.id, changes: { hidden: true } });
+		expect(toLiveEvent(db, hide, 'player')!.patch).toEqual({ t: 'token.remove', id: ambush.id, mapId: id });
+	});
+
+	test('nothing on a battle map behind a hidden region reaches a player', () => {
+		const { id } = battlefield({ hidden: true });
+		const events = perform(db, gm, { t: 'token.create', mapId: id, name: 'SECRET ogre', x: 0.5, y: 0.5 });
+		expect(sentToPlayer(events)).toBe('[]');
+		expect(refusal(() => token(player, id))).toBe('not_found');
+		expect(refusal(() => perform(db, player, { t: 'token.update', id: events[0].entityId, changes: { x: 0.1 } }))).toBe('not_found');
+	});
+
+	test('a move is undone, a delete too, each by whoever made it', () => {
+		const { id } = battlefield();
+		const mine = token(player, id);
+		const [move] = perform(db, player, { t: 'token.update', id: mine.id, changes: { x: 0.1, y: 0.1 } });
+		perform(db, player, { t: 'token.update', id: mine.id, changes: { name: 'Mira the Bold' } });
+
+		// Only the move goes back. The rename made since stays.
+		perform(db, player, { t: 'history.revert', seq: move.seq });
+		expect(sees(id).tokens[0]).toMatchObject({ x: 0.5, y: 0.5, name: 'Mira the Bold' });
+
+		const [gone] = perform(db, player, { t: 'token.delete', id: mine.id });
+		expect(undoable([gone])).toEqual([gone.seq]);
+		expect(sees(id).tokens).toHaveLength(0);
+		perform(db, player, { t: 'history.revert', seq: gone.seq });
+		expect(sees(id).tokens).toHaveLength(1);
+
+		// A player's undo reaches their own moves, not the GM's, nor another player's.
+		const [gmMove] = perform(db, gm, { t: 'token.update', id: mine.id, changes: { x: 0.8 } });
+		expect(refusal(() => perform(db, player, { t: 'history.revert', seq: gmMove.seq }))).toBe('not_found');
+		expect(refusal(() => perform(db, other, { t: 'history.revert', seq: move.seq }))).toBe('not_found');
+	});
+
+	test('deleting the region takes the battle map and its tokens along', () => {
+		const { region, id } = battlefield();
+		const goblin = token(gm, id);
+		perform(db, gm, { t: 'region.delete', id: region.id });
+		expect(getMapSnapshot(db, gm.campaignId, id, 'gm')).toBeNull();
+		expect(refusal(() => perform(db, gm, { t: 'token.update', id: goblin.id, changes: { x: 0.1 } }))).toBe('not_found');
+	});
+
+	test('malformed tokens are refused', () => {
+		const { id } = battlefield();
+		const base = { t: 'token.create', mapId: id, name: 'Goblin', x: 0.5, y: 0.5 };
+		for (const extra of [{ name: ' ' }, { x: 2 }, { size: 0 }, { size: 1.5 }, { size: 99 }, { color: 'red' }, { ownerId: 7 }, { hidden: 'no' }]) {
+			expect(refusal(() => perform(db, gm, { ...base, ...extra }))).toBe('invalid');
+		}
+		expect(sees(id, 'gm').tokens).toHaveLength(0);
+	});
+});
+
+describe('the gallery', () => {
+	/** A battle map behind a region of the first map, and that region. */
+	function battlefield(extra: Record<string, unknown> = {}) {
+		const events = perform(db, gm, { t: 'region.create', mapId, name: 'The Bridge', points: SQUARE, kind: 'battle', ...extra });
+		const region = events[1].after as Region;
+		return { region, id: region.targetMapId };
+	}
+
+	function token(on: string, extra: Record<string, unknown> = {}, by: Actor = gm): Token {
+		const [event] = perform(db, by, { t: 'token.create', mapId: on, name: 'Goblin', x: 0.5, y: 0.5, ...extra });
+		return event.after as Token;
+	}
+
+	const mapNow = (id: string) => getMapSnapshot(db, gm.campaignId, id, 'gm')!.map;
+	const names = (who: Actor = gm) => listGallery(db, who).map((item) => item.name);
+	const playerLoads = (file: string) => canLoadImage(db, gm.campaignId, 'player', file);
+
+	test('the GM fills it, renames what is in it and tidies it', () => {
+		const coast = picture('map', 'the coast');
+		picture('token', 'Goblin');
+		picture('map', 'Ashen Wood');
+		// By name, whatever the case and whatever it is for.
+		expect(names()).toEqual(['Ashen Wood', 'Goblin', 'the coast']);
+
+		renameInGallery(db, gm, coast.id, '  The Sunless Coast ');
+		expect(names()).toContain('The Sunless Coast');
+		expect(refusal(() => renameInGallery(db, gm, coast.id, ' '))).toBe('invalid');
+	});
+
+	test('every picture starts hidden, and a player is shown only what the GM reveals', () => {
+		const coast = picture('map', 'SECRET coast');
+		const goblin = picture('token', 'SECRET goblin');
+		const knight = picture('token', 'Knight');
+		expect(coast.hidden).toBe(true);
+		expect(names(player)).toEqual([]);
+
+		hideInGallery(db, gm, knight.id, false);
+		expect(listGallery(db, player)).toEqual([{ ...knight, hidden: false }]);
+		expect(JSON.stringify(listGallery(db, player))).not.toContain('SECRET');
+		// The GM sees the lot, and which of them are out in the open.
+		expect(listGallery(db, gm).map((item) => [item.name, item.hidden])).toEqual([
+			['Knight', false],
+			['SECRET coast', true],
+			['SECRET goblin', true]
+		]);
+
+		// Hidden again, it is gone from the player's gallery.
+		hideInGallery(db, gm, knight.id, true);
+		expect(names(player)).toEqual([]);
+		void goblin;
+	});
+
+	test('a player changes nothing in it, and reveals nothing', () => {
+		const knight = revealed('token', 'Knight');
+		const goblin = picture('token', 'Goblin');
+
+		expect(refusal(() => picture('token', 'Mine', player))).toBe('forbidden');
+		expect(refusal(() => picture('map', 'My map', player))).toBe('forbidden');
+		expect(refusal(() => renameInGallery(db, player, knight.id, 'x'))).toBe('forbidden');
+		expect(refusal(() => removeFromGallery(db, player, knight.id))).toBe('forbidden');
+		expect(refusal(() => hideInGallery(db, player, goblin.id, false))).toBe('forbidden');
+		expect(refusal(() => hideInGallery(db, player, knight.id, true))).toBe('forbidden');
+		expect(refusal(() => hideInGallery(db, gm, goblin.id, 'no'))).toBe('invalid');
+		expect(names()).toEqual(['Goblin', 'Knight']);
+		expect(names(player)).toEqual(['Knight']);
+	});
+
+	test('a picture is named after the file it came in', () => {
+		expect(nameFromFile('ancient_red  dragon.final.PNG')).toBe('ancient red dragon.final');
+		expect(nameFromFile('.png')).toBe('Untitled');
+		expect(nameFromFile(`${'x'.repeat(200)}.webp`)).toHaveLength(80);
+	});
+
+	test('a map image is laid under as many maps as the GM likes', () => {
+		const coast = picture();
+		const { id: second } = battlefield();
+		const [laid] = perform(db, gm, { t: 'map.update', id: mapId, image: coast.file });
+		perform(db, gm, { t: 'map.update', id: second, image: coast.file });
+
+		// Each map takes the size of the picture.
+		expect(laid.after as MapInfo).toMatchObject({ imageFile: coast.file, width: 640, height: 480 });
+		expect(mapNow(second)).toMatchObject({ imageFile: coast.file, width: 640, height: 480 });
+		// Laying the same one again changes nothing.
+		expect(perform(db, gm, { t: 'map.update', id: mapId, image: coast.file })).toEqual([]);
+		// Looking through the gallery is not laying an image: that stays the GM's.
+		expect(refusal(() => perform(db, player, { t: 'map.update', id: mapId, image: coast.file }))).toBe('forbidden');
+
+		// Undo takes it back off this map, and leaves the other alone.
+		perform(db, gm, { t: 'history.revert', seq: laid.seq });
+		expect(mapNow(mapId)).toMatchObject({ imageFile: null, width: 1600, height: 1000 });
+		expect(mapNow(second).imageFile).toBe(coast.file);
+	});
+
+	test('a token wears a token picture', () => {
+		const { id } = battlefield();
+		const face = picture('token', 'Goblin');
+		const goblin = token(id, { image: face.file });
+		expect(goblin.image).toBe(face.file);
+
+		// Taking the picture off is undone like any other edit.
+		const [bare] = perform(db, gm, { t: 'token.update', id: goblin.id, changes: { image: null } });
+		expect((bare.after as Token).image).toBeNull();
+		const [again] = perform(db, gm, { t: 'history.revert', seq: bare.seq });
+		expect((again.after as Token).image).toBe(face.file);
+	});
+
+	test('a player dresses their own token from what the GM has revealed', () => {
+		const { id } = battlefield();
+		const hero = revealed('token', 'Hero');
+		const knight = revealed('token', 'Knight');
+		const foe = token(id);
+
+		const me = token(id, { name: 'Mira', image: hero.file }, player);
+		expect(me).toMatchObject({ image: hero.file, ownerId: player.userId });
+
+		// They change it, take it off, and undo that, all on their own token.
+		const [changed] = perform(db, player, { t: 'token.update', id: me.id, changes: { image: knight.file } });
+		expect((changed.after as Token).image).toBe(knight.file);
+		const [back] = perform(db, player, { t: 'history.revert', seq: changed.seq });
+		expect((back.after as Token).image).toBe(hero.file);
+		const [bare] = perform(db, player, { t: 'token.update', id: me.id, changes: { image: null } });
+		expect((bare.after as Token).image).toBeNull();
+
+		// Nobody else's token, the GM's included.
+		expect(refusal(() => perform(db, player, { t: 'token.update', id: foe.id, changes: { image: hero.file } }))).toBe('forbidden');
+		expect(refusal(() => perform(db, other, { t: 'token.update', id: me.id, changes: { image: hero.file } }))).toBe('forbidden');
+		// The GM dresses anyone's.
+		expect(perform(db, gm, { t: 'token.update', id: me.id, changes: { image: knight.file } })).toHaveLength(1);
+	});
+
+	test('a hidden picture is not a player\'s to pick, even knowing its file', () => {
+		const { id } = battlefield();
+		const dragon = picture('token', 'SECRET dragon');
+		const hero = revealed('token', 'Hero');
+		const gone = revealed('token', 'Gone');
+		removeFromGallery(db, gm, gone.id);
+
+		// The same answer as for a picture that was never there.
+		expect(refusal(() => token(id, { image: dragon.file }, player))).toBe('conflict');
+		const me = token(id, { name: 'Mira' }, player);
+		expect(refusal(() => perform(db, player, { t: 'token.update', id: me.id, changes: { image: dragon.file } }))).toBe('conflict');
+		expect(refusal(() => perform(db, player, { t: 'token.update', id: me.id, changes: { image: 'never-uploaded.png' } }))).toBe('conflict');
+
+		// The GM can put a hidden picture on the player's token, and it stays
+		// there while the player does anything else with the token.
+		perform(db, gm, { t: 'token.update', id: me.id, changes: { image: dragon.file } });
+		expect(perform(db, player, { t: 'token.update', id: me.id, changes: { x: 0.2, name: 'Mira the Bold' } })).toHaveLength(1);
+
+		// Swapping it for a revealed one is undone like anything else: undo
+		// hands the token back what it wore. That is no way to pick it afresh.
+		const [swapped] = perform(db, player, { t: 'token.update', id: me.id, changes: { image: hero.file } });
+		const [back] = perform(db, player, { t: 'history.revert', seq: swapped.seq });
+		expect((back.after as Token).image).toBe(dragon.file);
+		perform(db, player, { t: 'token.update', id: me.id, changes: { image: null } });
+		expect(refusal(() => perform(db, player, { t: 'token.update', id: me.id, changes: { image: dragon.file } }))).toBe('conflict');
+
+		// Once hidden again, a picture stays on the tokens that wear it and is no longer there to pick.
+		const mine = token(id, { name: 'Second', image: hero.file }, player);
+		hideInGallery(db, gm, hero.id, true);
+		expect((getMapSnapshot(db, gm.campaignId, id, 'player')!.tokens.find((t) => t.id === mine.id) as Token).image).toBe(hero.file);
+		expect(refusal(() => token(id, { image: hero.file }, player))).toBe('conflict');
+	});
+
+	test('each kind of picture has its use, and no other', () => {
+		const { id } = battlefield();
+		const face = picture('token');
+		const coast = picture('map');
+		expect(refusal(() => perform(db, gm, { t: 'map.update', id: mapId, image: face.file }))).toBe('conflict');
+		expect(refusal(() => token(id, { image: coast.file }))).toBe('conflict');
+		expect(refusal(() => token(id, { image: coast.file }, player))).toBe('conflict');
+		expect(refusal(() => token(id, { image: 'never-uploaded.png' }))).toBe('conflict');
+		expect(refusal(() => token(id, { image: '../../etc/passwd' }))).toBe('invalid');
+		expect(refusal(() => perform(db, gm, { t: 'map.update', id: mapId, image: null }))).toBe('invalid');
+	});
+
+	test('a picture taken out of the gallery stays where it is shown', () => {
+		const { region, id } = battlefield();
+		const coast = picture('map', 'Coast');
+		const face = picture('token', 'Goblin');
+		perform(db, gm, { t: 'map.update', id, image: coast.file });
+		const goblin = token(id, { image: face.file });
+
+		// Nothing is removed from disk yet: both are still in front of the table.
+		expect(removeFromGallery(db, gm, coast.id)).toEqual([]);
+		expect(removeFromGallery(db, gm, face.id)).toEqual([]);
+		expect(names()).toEqual([]);
+		expect(names(player)).toEqual([]);
+		expect(mapNow(id).imageFile).toBe(coast.file);
+		expect(canLoadImage(db, gm.campaignId, 'gm', coast.file)).toBe(true);
+		expect(refusal(() => removeFromGallery(db, gm, coast.id))).toBe('not_found');
+
+		// A deleted token can come back, so it holds on to its picture too.
+		perform(db, gm, { t: 'token.delete', id: goblin.id });
+		expect(sweepGallery(db, gm.campaignId)).toEqual([]);
+
+		// Once the map is gone, and its tokens with it, nothing holds either.
+		perform(db, gm, { t: 'region.delete', id: region.id });
+		expect(sweepGallery(db, gm.campaignId).sort()).toEqual([coast.file, face.file].sort());
+		expect(canLoadImage(db, gm.campaignId, 'gm', coast.file)).toBe(false);
+	});
+
+	test('one that nothing shows goes at once, and undo does not bring it back', () => {
+		const first = picture('map', 'First');
+		const second = picture('map', 'Second');
+		perform(db, gm, { t: 'map.update', id: mapId, image: first.file });
+		const [replaced] = perform(db, gm, { t: 'map.update', id: mapId, image: second.file });
+
+		expect(removeFromGallery(db, gm, first.id)).toEqual([first.file]);
+		expect(refusal(() => perform(db, gm, { t: 'history.revert', seq: replaced.seq }))).toBe('conflict');
+		expect(mapNow(mapId).imageFile).toBe(second.file);
+	});
+
+	test('a player loads what the GM has revealed, used or not', () => {
+		const knight = revealed('token');
+		expect(playerLoads(knight.file)).toBe(true);
+		expect(playerLoads('never-uploaded.png')).toBe(false);
+
+		// Hidden again, or taken out of the gallery, it is no longer on show.
+		hideInGallery(db, gm, knight.id, true);
+		expect(playerLoads(knight.file)).toBe(false);
+		hideInGallery(db, gm, knight.id, false);
+		removeFromGallery(db, gm, knight.id);
+		expect(playerLoads(knight.file)).toBe(false);
+	});
+
+	test('a hidden picture they load only where it is in front of them', () => {
+		const coast = picture('map');
+		const unused = picture('map');
+		const face = picture('token');
+		const mask = picture('token');
+		const { region, id } = battlefield();
+		perform(db, gm, { t: 'map.update', id, image: coast.file });
+		token(id, { image: face.file });
+		const lurker = token(id, { image: mask.file, hidden: true });
+
+		expect(playerLoads(coast.file)).toBe(true);
+		expect(playerLoads(face.file)).toBe(true);
+		// Not what is only in the gallery, nor the face of a token they can't see.
+		expect(playerLoads(unused.file)).toBe(false);
+		expect(playerLoads(mask.file)).toBe(false);
+		expect(canLoadImage(db, gm.campaignId, 'gm', mask.file)).toBe(true);
+
+		perform(db, gm, { t: 'token.update', id: lurker.id, changes: { hidden: false } });
+		expect(playerLoads(mask.file)).toBe(true);
+		perform(db, gm, { t: 'token.delete', id: lurker.id });
+		expect(playerLoads(mask.file)).toBe(false);
+
+		// Behind a hidden region, the map keeps its picture and its tokens' to itself.
+		perform(db, gm, { t: 'region.update', id: region.id, hidden: true });
+		expect(playerLoads(coast.file)).toBe(false);
+		expect(playerLoads(face.file)).toBe(false);
+		// Unless the same picture is also somewhere they can go.
+		perform(db, gm, { t: 'map.update', id: mapId, image: coast.file });
+		expect(playerLoads(coast.file)).toBe(true);
+	});
+
+	test('one campaign cannot use, see or tidy another\'s pictures', async () => {
+		const coast = picture('map');
+		const rival = await registerUser(db, 'rival', 'another long password');
+		const elsewhere = createCampaign(db, rival, 'Elsewhere');
+		const outsider = actorFor(rival, getMembership(db, elsewhere.id, rival.id)!);
+
+		expect(listGallery(db, outsider)).toEqual([]);
+		expect(refusal(() => perform(db, outsider, { t: 'map.update', id: elsewhere.rootMapId, image: coast.file }))).toBe('conflict');
+		expect(refusal(() => removeFromGallery(db, outsider, coast.id))).toBe('not_found');
+		expect(canLoadImage(db, elsewhere.id, 'gm', coast.file)).toBe(false);
+		expect(canLoadImage(db, elsewhere.id, 'player', coast.file)).toBe(false);
 	});
 });
 

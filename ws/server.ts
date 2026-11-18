@@ -11,8 +11,10 @@
 //   - After every change the app tells this server what to deliver, already
 //     filtered for each role.
 //   - Where each browser's pointer is goes straight from one browser to the
-//     others. That is not a change to the world, so the app never hears of
-//     it, and nothing about it is kept once the browser disconnects.
+//     others, along with the token it is dragging or the distance it is
+//     measuring. None of that is a change to the world, so the app never
+//     hears of it, and nothing about it is kept once the browser disconnects.
+//     A token only moves for good when it is let go: that is a command.
 
 import type { ServerWebSocket } from 'bun';
 import type {
@@ -230,6 +232,22 @@ function point(ws: Socket, at: unknown) {
 	}
 	if (!nearMap(spot.x) || !nearMap(spot.y)) return;
 
+	// What they have in hand comes along: a token being dragged, a distance
+	// being measured. Whether that token is theirs to move is not known
+	// here. The browsers that are shown this know the token, and decide.
+	const { drag, ruler } = spot;
+	if (drag !== undefined) {
+		if (typeof drag !== 'object' || drag === null) return;
+		if (typeof drag.id !== 'string' || !ID_SHAPE.test(drag.id)) return;
+		if (!nearMap(drag.x) || !nearMap(drag.y)) return;
+	}
+	if (ruler !== undefined) {
+		const ends = Array.isArray(ruler) && ruler.length === 2 ? ruler : [];
+		const sound = (end: unknown) =>
+			Array.isArray(end) && end.length === 2 && nearMap(end[0]) && nearMap(end[1]);
+		if (!sound(ends[0]) || !sound(ends[1])) return;
+	}
+
 	// A browser sends about twenty of these a second. Much faster is dropped.
 	const now = Date.now();
 	if (now - ws.data.pointedAt < 15) return;
@@ -246,6 +264,8 @@ function point(ws: Socket, at: unknown) {
 		x: spot.x,
 		y: spot.y
 	};
+	if (drag) cursor.drag = { id: drag.id, x: drag.x, y: drag.y };
+	if (ruler) cursor.ruler = [[ruler[0][0], ruler[0][1]], [ruler[1][0], ruler[1][1]]];
 	ws.data.cursor = cursor;
 	relay(ws, { t: 'cursor', cursor });
 }

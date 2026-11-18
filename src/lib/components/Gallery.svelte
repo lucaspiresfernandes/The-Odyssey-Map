@@ -1,0 +1,381 @@
+<script lang="ts">
+	// The campaign's gallery, one shelf of it at a time: the map images, or
+	// the pictures for tokens. Opened from where a picture is wanted, it
+	// shows that shelf, and whoever opened it picks one to use. The GM can
+	// also add to the shelf, rename what is on it and take things off while
+	// here, and decides which token pictures the players get to see: every
+	// picture starts hidden from them. A player only looks at what has been
+	// revealed, and picks.
+	//
+	// Opened on its own, with no `kind`, it is the GM's storeroom: both
+	// shelves, to stock and tidy ahead of the session. Nothing is picked.
+
+	import {
+		LIMITS,
+		imageUrl,
+		type GalleryItem,
+		type GalleryKind,
+		type GalleryResponse
+	} from '#lib/shared/types.ts';
+	import Modal from './Modal.svelte';
+
+	interface Props {
+		campaignId: string;
+		/** The shelf to pick from. Left out, both shelves are here to look after. */
+		kind?: GalleryKind;
+		/** The file in use where this was opened from, to mark it on the shelf. */
+		current?: string | null;
+		/** For a player: the shelf is there to pick from, and nothing on it can be changed. */
+		readonly?: boolean;
+		/** What to do with the picture that is picked, when there is a `kind` to pick from. */
+		onpick?: (item: GalleryItem) => void;
+		onclose: () => void;
+	}
+
+	let { campaignId, kind, current = null, readonly = false, onpick, onclose }: Props = $props();
+
+	const ACCEPT = 'image/png,image/jpeg,image/webp,image/gif,image/avif';
+	const SHELVES: { kind: GalleryKind; title: string }[] = [
+		{ kind: 'map', title: 'Map images' },
+		{ kind: 'token', title: 'Token pictures' }
+	];
+
+	/** The shelf on show while both are open. */
+	let tab = $state<GalleryKind>('map');
+	const shown = $derived(kind ?? tab);
+	const maps = $derived(shown === 'map');
+
+	/** Null until the gallery has been read. */
+	let items = $state<GalleryItem[] | null>(null);
+	let error = $state('');
+	/** How far a batch of uploads has come. */
+	let uploading = $state<{ done: number; of: number } | null>(null);
+	/** The picture the GM has asked to take out, while they are asked if they mean it. */
+	let removing = $state<string | null>(null);
+	/** Files are being held over the dialog, about to be dropped. */
+	let over = $state(false);
+	let fileInput = $state<HTMLInputElement>();
+
+	const shelf = $derived(items?.filter((item) => item.kind === shown) ?? []);
+
+	/** Asks the gallery for something. Every answer is the gallery as it is afterwards. */
+	async function ask(path: string, init?: RequestInit): Promise<boolean> {
+		try {
+			const response = await fetch(`/c/${campaignId}/gallery${path}`, init);
+			const result = (await response.json().catch(() => null)) as GalleryResponse | null;
+			if (!result?.ok || !result.items) {
+				throw new Error(result?.error ?? "The gallery couldn't be reached.");
+			}
+			items = result.items;
+			return true;
+		} catch (err) {
+			error = (err as Error).message;
+			return false;
+		}
+	}
+
+	$effect(() => {
+		ask('');
+	});
+
+	async function upload(files: File[]) {
+		if (readonly || uploading || files.length === 0) return;
+		error = '';
+		// The whole batch goes on the shelf that was open when it was dropped.
+		const onto = shown;
+		const most = onto === 'map' ? LIMITS.imageBytes : LIMITS.tokenImageBytes;
+		uploading = { done: 0, of: files.length };
+		for (const file of files) {
+			if (file.size > most) {
+				const what = onto === 'map' ? 'Map images' : 'Token pictures';
+				error = `${what} can be up to ${most / 1024 / 1024} MB. “${file.name}” is bigger.`;
+			} else {
+				const body = new FormData();
+				body.set('kind', onto);
+				body.set('file', file);
+				await ask('', { method: 'POST', body });
+			}
+			uploading.done++;
+		}
+		uploading = null;
+		if (fileInput) fileInput.value = '';
+	}
+
+	async function rename(item: GalleryItem, input: HTMLInputElement) {
+		const name = input.value.trim();
+		if (name === item.name) return;
+		error = '';
+		const renamed =
+			name !== '' &&
+			(await ask(`/${item.id}`, {
+				method: 'PATCH',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ name })
+			}));
+		// A name that didn't take is put back as it was.
+		if (!renamed) input.value = item.name;
+	}
+
+	/** Reveals a picture to the players, or hides it from them again. */
+	async function reveal(item: GalleryItem) {
+		error = '';
+		await ask(`/${item.id}`, {
+			method: 'PATCH',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ hidden: !item.hidden })
+		});
+	}
+
+	// An eye, and a line to strike it through.
+	const EYE = 'M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0';
+	const STRUCK = `${EYE} M4 3l16 18`;
+
+	async function remove(item: GalleryItem) {
+		removing = null;
+		error = '';
+		await ask(`/${item.id}`, { method: 'DELETE' });
+	}
+
+	function dropped(event: DragEvent) {
+		event.preventDefault();
+		over = false;
+		upload([...(event.dataTransfer?.files ?? [])].filter((file) => file.type.startsWith('image/')));
+	}
+</script>
+
+<Modal title={kind ? (maps ? 'Map images' : 'Token pictures') : 'Gallery'} wide {onclose}>
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
+		class="grid gap-4"
+		ondragover={(e) => {
+			e.preventDefault();
+			over = !readonly;
+		}}
+		ondragleave={() => (over = false)}
+		ondrop={dropped}
+	>
+		{#if !kind}
+			<div class="-mt-1 flex gap-1.5" role="tablist" aria-label="Shelves of the gallery">
+				{#each SHELVES as each (each.kind)}
+					<button
+						class={['btn btn-sm', tab === each.kind && 'btn-active']}
+						role="tab"
+						aria-selected={tab === each.kind}
+						onclick={() => {
+							tab = each.kind;
+							removing = null;
+						}}
+					>
+						{each.title}
+						{#if items}
+							<span class="text-muted">
+								{items.filter((item) => item.kind === each.kind).length}
+							</span>
+						{/if}
+					</button>
+				{/each}
+			</div>
+		{/if}
+
+		<p class={['text-[13px] text-muted', kind && '-mt-2']}>
+			{#if readonly}
+				Pick a picture for your token, from the ones the GM has shared with the table.
+			{:else if maps}
+				{kind ? 'Pick an image to lay under this map.' : 'The images to lay under your maps.'}
+				What you add here is kept for the whole campaign, to use on any of its maps.
+			{:else}
+				{kind ? 'Pick a picture for this token.' : 'The pictures for your tokens.'}
+				What you add here is kept for the whole campaign, to use on any of its tokens. Your players
+				see none of it until you reveal a picture with its eye: those they can pick for their own tokens.
+			{/if}
+		</p>
+
+		{#if error}
+			<p class="rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-sm" role="alert">
+				{error}
+			</p>
+		{/if}
+
+		<ul
+			class={[
+				'grid content-start gap-3',
+				maps
+					? 'grid-cols-[repeat(auto-fill,minmax(150px,1fr))]'
+					: 'grid-cols-[repeat(auto-fill,minmax(104px,1fr))]'
+			]}
+		>
+			<!-- The first place on the shelf is the way to add to it. -->
+			{#if !readonly}
+				<li class="grid content-start gap-1.5">
+					<button
+						class={[
+							'grid w-full cursor-pointer place-items-center border-2 border-dashed text-muted transition-colors hover:border-accent hover:text-accent disabled:cursor-default disabled:opacity-60',
+							maps ? 'aspect-4/3 rounded-lg' : 'aspect-square rounded-full',
+							over && 'border-accent text-accent'
+						]}
+						disabled={uploading !== null}
+						onclick={() => fileInput?.click()}
+					>
+						<span class="grid justify-items-center gap-1 px-2 text-center text-[13px]">
+							<svg
+								width="22"
+								height="22"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2"
+								stroke-linecap="round"
+								aria-hidden="true"
+							>
+								<path d="M12 5v14 M5 12h14" />
+							</svg>
+							{#if uploading}
+								Adding {Math.min(uploading.done + 1, uploading.of)} of {uploading.of}…
+							{:else}
+								Add {maps ? 'images' : 'pictures'}
+							{/if}
+						</span>
+					</button>
+				</li>
+			{/if}
+
+			{#each shelf as item (item.id)}
+				<li class="group relative grid content-start gap-1.5">
+					{#if kind}
+						<button
+							class={[
+								'block w-full cursor-pointer overflow-hidden border-2 bg-night transition-colors hover:border-accent',
+								maps ? 'aspect-4/3 rounded-lg' : 'aspect-square rounded-full',
+								item.file === current ? 'border-accent' : 'border-line'
+							]}
+							aria-label="Use {item.name}{item.file === current ? ' (in use here)' : ''}"
+							aria-current={item.file === current || undefined}
+							onclick={() => onpick?.(item)}
+						>
+							<img
+								class="size-full object-cover"
+								src={imageUrl(campaignId, item.file, 'thumb')}
+								alt=""
+								loading="lazy"
+								draggable="false"
+							/>
+						</button>
+					{:else}
+						<!-- Nothing to pick it for: the picture is only on show. -->
+						<img
+							class={[
+								'block w-full border-2 border-line bg-night object-cover',
+								maps ? 'aspect-4/3 rounded-lg' : 'aspect-square rounded-full'
+							]}
+							src={imageUrl(campaignId, item.file, 'thumb')}
+							alt={item.name}
+							loading="lazy"
+							draggable="false"
+						/>
+					{/if}
+
+					{#if readonly}
+						<span class="truncate px-1 py-0.5 text-center text-[13px]">{item.name}</span>
+					{:else}
+						<!-- The name is its own field: change it and leave, and it is renamed. -->
+						<input
+							class="w-full min-w-0 truncate rounded-md border border-transparent bg-transparent px-1 py-0.5 text-center text-[13px] hover:border-line focus:border-line focus:bg-[#12161e] touch:text-base"
+							value={item.name}
+							maxlength={LIMITS.name}
+							aria-label="Name of {item.name}"
+							onchange={(e) => rename(item, e.currentTarget)}
+							onkeydown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+						/>
+					{/if}
+
+					{#if !readonly}
+						{#if removing === item.id}
+							<div
+								class="absolute inset-x-0 top-0 grid place-content-center gap-1.5 bg-night/92 p-2 text-center text-[13px] {maps
+									? 'aspect-4/3 rounded-lg'
+									: 'aspect-square rounded-full'}"
+							>
+								<span>Take it out?</span>
+								<span class="flex justify-center gap-1.5">
+									<button class="btn btn-sm btn-danger" onclick={() => remove(item)}>Yes</button>
+									<button class="btn btn-sm" onclick={() => (removing = null)}>No</button>
+								</span>
+							</div>
+						{:else}
+							<button
+								class="absolute top-1 right-1 grid size-6.5 cursor-pointer place-items-center rounded-full border bg-night/85 text-base leading-none text-muted opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 hover:text-danger touch:size-9 touch:opacity-100 align-baseline"
+								aria-label="Remove {item.name} from the gallery"
+								title="Remove from the gallery"
+								onclick={() => (removing = item.id)}>x</button
+							>
+							{#if !maps}
+								<!-- Who gets to see it. A revealed picture keeps its eye in view, in
+								     gold. A hidden one, which is most of them, shows a struck-out
+								     eye only when the pointer or the focus is on its card. -->
+								<button
+									class={[
+										'absolute top-1 left-1 grid size-6.5 cursor-pointer place-items-center rounded-full border bg-night/85 transition-opacity touch:size-9',
+										item.hidden
+											? 'text-muted opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 hover:text-cream touch:opacity-100'
+											: 'border-accent text-accent'
+									]}
+									aria-label="Show {item.name} to the players"
+									aria-pressed={!item.hidden}
+									title={item.hidden
+										? 'Hidden from players. Click to reveal it to them.'
+										: 'Players can see and pick this. Click to hide it.'}
+									onclick={() => reveal(item)}
+								>
+									<svg
+										width="15"
+										height="15"
+										viewBox="0 0 24 24"
+										fill="none"
+										stroke="currentColor"
+										stroke-width="2"
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										aria-hidden="true"
+									>
+										<path d={item.hidden ? STRUCK : EYE} />
+									</svg>
+								</button>
+							{/if}
+						{/if}
+					{/if}
+				</li>
+			{/each}
+		</ul>
+
+		{#if items === null && !error}
+			<p class="text-sm text-muted">Opening the gallery…</p>
+		{:else if items && shelf.length === 0}
+			<p class="text-sm text-muted">
+				{#if readonly}
+					Nothing here yet. The GM hasn't shared any pictures with the table.
+				{:else}
+					Nothing here yet. Add {maps ? 'an image' : 'a picture'} with the button above, or drop
+					files anywhere on this box.
+				{/if}
+			</p>
+		{:else if shelf.length > 0 && !readonly}
+			<p class="text-[13px] text-muted">
+				Taking a picture out of the gallery leaves it on the {maps ? 'maps' : 'tokens'} that already
+				use it.
+			</p>
+		{/if}
+
+		<input
+			bind:this={fileInput}
+			type="file"
+			accept={ACCEPT}
+			multiple
+			hidden
+			onchange={(e) => upload([...(e.currentTarget.files ?? [])])}
+		/>
+
+		<div class="flex justify-end">
+			<button class="btn" onclick={onclose}>Close</button>
+		</div>
+	</div>
+</Modal>

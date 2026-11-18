@@ -115,6 +115,28 @@
 		radial-gradient(ellipse at center, #e9dcbd 0%, #d6c59c 70%, #bfab7e 100%);
 }
 
+/* The same paper without the lines, for a battle map: it draws its own grid. */
+@utility bg-parchment-plain {
+	background: radial-gradient(ellipse at center, #e9dcbd 0%, #d6c59c 70%, #bfab7e 100%);
+}
+
+/* A token on a battle map. These are in em, and a token's font size follows
+   its width, so the shadow grows and shrinks with the token: resting on the
+   map, lifted off it while it is dragged, lit when it is selected. */
+@utility token-shadow {
+	box-shadow: 0 0.05em 0.12em rgb(0 0 0 / 0.6);
+}
+
+@utility token-lifted {
+	box-shadow: 0 0.2em 0.45em rgb(0 0 0 / 0.55);
+}
+
+@utility token-selected {
+	box-shadow:
+		0 0 0 0.07em #fff,
+		0 0 0.4em 0.14em var(--color-accent);
+}
+
 /* The shadow under a pin, and the glows it gets when selected or focused. */
 @utility pin-shadow {
 	filter: drop-shadow(0 2px 3px rgb(0 0 0 / 0.55));

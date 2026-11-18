@@ -6,8 +6,9 @@
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { announce } from '#lib/server/bridge.ts';
 import { getDb } from '#lib/server/db.ts';
+import { sweepGallery } from '#lib/server/gallery.ts';
 import { requireMemberApi } from '#lib/server/session.ts';
-import { dropImagesOf } from '#lib/server/tiles.ts';
+import { dropImages } from '#lib/server/tiles.ts';
 import { toLiveEvent } from '#lib/server/visibility.ts';
 import {
 	ActionError,
@@ -44,10 +45,9 @@ export const POST: RequestHandler = async (event) => {
 		// Deliver the change before answering, so the sender has already seen
 		// its effect by the time their request resolves.
 		await announce(db, events);
-		// The database has let go of a deleted map already. Its images are
-		// files, so they are taken away here.
-		const gone = deletedMaps(events);
-		if (gone.length) await dropImagesOf(gone);
+		// A deleted map may have been the last thing showing a picture that
+		// was taken out of the gallery. Nothing holds that one any more.
+		if (deletedMaps(events).length) await dropImages(sweepGallery(db, actor.campaignId));
 		return json({
 			ok: true,
 			events: events.map((e) => toLiveEvent(db, e, actor.role)).filter((e) => e !== null),

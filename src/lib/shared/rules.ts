@@ -3,7 +3,7 @@
 // The server enforces these in `server/world.ts` and `server/visibility.ts`.
 // The browser imports the same functions only to decide which buttons to show.
 
-import type { Marker, MarkerKind, Region, Role, StoredEvent } from './types';
+import type { Marker, MarkerKind, Region, Role, StoredEvent, Token } from './types';
 
 /** The GM owns world markers. Anyone at the table can add notes and edit them. */
 export function canEditMarkerKind(role: Role, kind: MarkerKind): boolean {
@@ -42,12 +42,32 @@ export function canSeeRegion(role: Role, region: Pick<Region, 'hidden'>): boolea
 }
 
 /**
- * Which past changes a role may undo. Players get the changes to the table's
- * own notes. Everything else is the GM's: the past of a world marker can
- * hold text from before it was revealed.
+ * A token is moved, renamed, resized and taken off the map by the GM and by
+ * the player it belongs to. Hiding it and handing it to someone else are
+ * the GM's alone: the server checks those two apart.
  */
-export function canSeeEvent(role: Role, event: Pick<StoredEvent, 'entity' | 'before' | 'after'>) {
+export function canMoveToken(role: Role, userId: string, token: Pick<Token, 'ownerId'>): boolean {
+	return role === 'gm' || token.ownerId === userId;
+}
+
+/** Hidden tokens exist only for the GM: the ambush waiting behind the door. */
+export function canSeeToken(role: Role, token: Pick<Token, 'hidden'>): boolean {
+	return role === 'gm' || !token.hidden;
+}
+
+/**
+ * Which past changes someone may undo. Players get the changes to the
+ * table's own notes, and what they themselves did to a token. Everything
+ * else is the GM's: the past of a world marker can hold text from before it
+ * was revealed.
+ */
+export function canSeeEvent(
+	role: Role,
+	userId: string,
+	event: Pick<StoredEvent, 'entity' | 'actorId' | 'before' | 'after'>
+) {
 	if (role === 'gm') return true;
+	if (event.entity === 'token') return event.actorId === userId;
 	if (event.entity !== 'marker') return false;
 	const marker = (event.after ?? event.before) as Marker | null;
 	return marker?.kind === 'player';

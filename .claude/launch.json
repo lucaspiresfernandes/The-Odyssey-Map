@@ -6,6 +6,15 @@
 			"runtimeExecutable": "bun",
 			"runtimeArgs": ["scripts/run.ts", "dev"],
 			"port": 5173
+		},
+		{
+			"name": "odyssey-preview",
+			"runtimeExecutable": "cmd",
+			"runtimeArgs": [
+				"/c",
+				"set DATA_DIR=data/preview&& set PORT=4273&& set WS_PORT=3201&& bun scripts/run.ts start"
+			],
+			"port": 4273
 		}
 	]
 }

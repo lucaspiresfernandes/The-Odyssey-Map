@@ -4,10 +4,10 @@ import { and, desc, eq, sql } from 'drizzle-orm';
 import type { User } from './auth';
 import type { Db } from './db';
 import { newId, newToken } from './ids';
-import { campaigns, members } from './schema';
+import { campaigns, members, users } from './schema';
 import type { Actor } from './world';
 import { insertMap } from './world';
-import { LIMITS, type Role } from '../shared/types';
+import { LIMITS, type Member, type Role } from '../shared/types';
 
 export interface Campaign {
 	id: string;
@@ -74,6 +74,17 @@ export function getMembership(db: Db, campaignId: string, userId: string): Campa
 /** Who a member is when they act on a campaign. */
 export function actorFor(user: User, membership: CampaignSummary): Actor {
 	return { userId: user.id, name: user.name, campaignId: membership.id, role: membership.role };
+}
+
+/** Everyone at the table: the GM first, then the players in the order they joined. */
+export function listMembers(db: Db, campaignId: string): Member[] {
+	return db
+		.select({ id: users.id, name: users.name, role: members.role })
+		.from(members)
+		.innerJoin(users, eq(users.id, members.userId))
+		.where(eq(members.campaignId, campaignId))
+		.orderBy(members.role, members.joinedAt)
+		.all();
 }
 
 export function getInviteToken(db: Db, campaignId: string): string {

@@ -13,7 +13,11 @@
 		reveal: 'M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0',
 		hide: 'M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0 M4 3l16 18',
 		delete:
-			'M3 6h18 M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2 M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6 M10 11v6 M14 11v6'
+			'M3 6h18 M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2 M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6 M10 11v6 M14 11v6',
+		// A playing piece: a head on a foot.
+		token: 'M9.4 10.4a4 4 0 1 1 5.2 0 M9.4 10.4 7.5 18h9l-1.9-7.6 M5.5 21h13 M7.5 18l-2 3 M16.5 18l2 3',
+		ruler: 'M16 3l5 5L8 21l-5-5Z M7 12l2 2 M10 9l2 2 M13 6l2 2',
+		grid: 'M3 3h18v18H3Z M3 9h18 M3 15h18 M9 3v18 M15 3v18'
 	};
 
 	export type ToolIcon = keyof typeof ICONS;
@@ -33,18 +37,30 @@
 		named?: boolean;
 		disabled?: boolean;
 		danger?: boolean;
+		/** A tool that is switched on. */
+		active?: boolean;
 		onclick: () => void;
 	}
 
-	let { icon, label, hint, named = false, disabled = false, danger = false, onclick }: Props = $props();
+	let {
+		icon,
+		label,
+		hint,
+		named = false,
+		disabled = false,
+		danger = false,
+		active = false,
+		onclick
+	}: Props = $props();
 </script>
 
 <!-- The tooltip hangs off this wrapper and not the button, because a disabled
      button is the one that most needs explaining. -->
 <span class="group relative flex">
 	<button
-		class={['btn', !named && 'w-9 px-0 touch:w-11', danger && 'btn-danger']}
+		class={['btn', !named && 'w-9 px-0 touch:w-11', danger && 'btn-danger', active && 'btn-active']}
 		aria-label={named ? undefined : label}
+		aria-pressed={active || undefined}
 		{disabled}
 		{onclick}
 	>

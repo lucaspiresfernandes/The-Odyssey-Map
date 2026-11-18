@@ -1,9 +1,13 @@
-// Cuts uploaded map images into the preview and tiles described in
-// src/lib/shared/tiles.ts. They are made once per image and kept in
-// `data/tiles/`, which can be deleted at any time: whatever is missing is
-// made again the next time someone opens the map.
+// What is made from the pictures in the uploads directory.
+//
+// A big map image is cut into the preview and tiles described in
+// src/lib/shared/tiles.ts. Every picture gets a thumbnail, for the gallery.
+// They are made once per picture and kept in `data/tiles/` and
+// `data/thumbs/`, which can be deleted at any time: whatever is missing is
+// made again the next time someone asks for it.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { rename } from 'node:fs/promises';
 import { rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import sharp from 'sharp';
@@ -14,6 +18,13 @@ import { LIMITS } from '#lib/shared/types.ts';
 export function tilesDir(): string {
 	return resolve(dataDir(), 'tiles');
 }
+
+export function thumbsDir(): string {
+	return resolve(dataDir(), 'thumbs');
+}
+
+/** A file name without its extension: what the things made from a picture are filed under. */
+const stem = (file: string) => file.slice(0, file.lastIndexOf('.'));
 
 /** Opens an image the way a browser shows it: turned upright if a camera stored it sideways. */
 function open(input: string | Uint8Array) {
@@ -34,6 +45,21 @@ export async function imageSize(
 }
 
 const WEBP = { quality: 90, smartSubsample: true } as const;
+
+/**
+ * A picture made to fit inside a square of `side` pixels, as WebP. One that
+ * fits already is not made bigger. Throws if it can't be read.
+ */
+export async function shrunk(
+	input: string | Uint8Array,
+	side: number
+): Promise<{ bytes: Uint8Array; width: number; height: number }> {
+	const { data, info } = await open(input)
+		.resize({ width: side, height: side, fit: 'inside', withoutEnlargement: true })
+		.webp(WEBP)
+		.toBuffer({ resolveWithObject: true });
+	return { bytes: data, width: info.width, height: info.height };
+}
 
 /**
  * Written last, so its presence says the directory is complete. It holds the
@@ -74,7 +100,7 @@ const building = new Map<string, Promise<void>>();
 export async function tilesOf(
 	file: string
 ): Promise<{ preview: string; tile: (level: number, x: number, y: number) => string }> {
-	const dir = join(tilesDir(), file.slice(0, file.lastIndexOf('.')));
+	const dir = join(tilesDir(), stem(file));
 	if (!existsSync(join(dir, DONE))) {
 		let job = building.get(file);
 		if (!job) {
@@ -90,28 +116,62 @@ export async function tilesOf(
 	};
 }
 
+/** The longest side of a thumbnail: a card in the gallery, on a sharp screen. */
+const THUMB_SIZE = 360;
+
+const thumbing = new Map<string, Promise<void>>();
+
 /**
- * Removes every image that was uploaded for these maps, with its preview
- * and tiles. For maps that have been deleted: nothing can ask for these
- * files again. A file that won't go is left behind with a warning, since
- * the maps are gone from the database either way.
+ * Where the thumbnail of a picture is, made first if it isn't there yet.
+ * `file` is a name from the uploads directory.
  */
-export async function dropImagesOf(mapIds: string[]): Promise<void> {
-	const gone = new Set(mapIds);
-	// An upload is `<mapId>-<random>.<ext>` and its tiles are in a folder of
-	// the same name without the extension. Ids have no dash in them.
-	const theirs = (name: string) => gone.has(name.slice(0, Math.max(0, name.indexOf('-'))));
+export async function thumbOf(file: string): Promise<string> {
+	const path = join(thumbsDir(), `${stem(file)}.webp`);
+	if (!existsSync(path)) {
+		let job = thumbing.get(file);
+		if (!job) {
+			job = (async () => {
+				// A big map has a preview already, far quicker to read than the map.
+				const preview = join(tilesDir(), stem(file), 'preview.webp');
+				const tiled = existsSync(join(tilesDir(), stem(file), DONE));
+				// Read here and handed over as bytes: given a path, sharp can keep
+				// the file open on Windows, and then it can't be removed.
+				const source = Bun.file(tiled ? preview : join(uploadsDir(), file));
+				const small = await shrunk(await source.bytes(), THUMB_SIZE);
+				mkdirSync(thumbsDir(), { recursive: true });
+				// Written under another name first, so a thumbnail that is there is whole.
+				const draft = `${path}.${process.pid}.tmp`;
+				await Bun.write(draft, small.bytes);
+				await rename(draft, path);
+			})().finally(() => thumbing.delete(file));
+			thumbing.set(file, job);
+		}
+		await job;
+	}
+	return path;
+}
 
-	// Tiles still being cut would be written back after their folder went.
-	await Promise.allSettled([...building].filter(([file]) => theirs(file)).map(([, job]) => job));
+/**
+ * Removes pictures from the uploads directory, each with its thumbnail,
+ * preview and tiles. For pictures the gallery has let go of: nothing can
+ * ask for these files again. A file that won't go is left behind with a
+ * warning, since the database has forgotten it either way.
+ */
+export async function dropImages(files: string[]): Promise<void> {
+	// Whatever is still being made would be written back after it went.
+	await Promise.allSettled(files.flatMap((file) => [building.get(file), thumbing.get(file)]));
 
-	for (const dir of [uploadsDir(), tilesDir()]) {
-		if (!existsSync(dir)) continue;
-		for (const name of readdirSync(dir).filter(theirs)) {
+	for (const file of files) {
+		const made = [
+			join(uploadsDir(), file),
+			join(tilesDir(), stem(file)),
+			join(thumbsDir(), `${stem(file)}.webp`)
+		];
+		for (const path of made) {
 			try {
-				await rm(join(dir, name), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+				await rm(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 			} catch (err) {
-				console.warn(`Could not remove ${join(dir, name)}:`, err);
+				console.warn(`Could not remove ${path}:`, err);
 			}
 		}
 	}

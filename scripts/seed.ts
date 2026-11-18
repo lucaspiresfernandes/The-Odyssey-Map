@@ -13,11 +13,11 @@ import { join } from 'node:path';
 import { createGuest, registerUser } from '#lib/server/auth.ts';
 import { actorFor, createCampaign, getInviteToken, getMembership, joinCampaign } from '#lib/server/campaigns.ts';
 import { openDb, uploadsDir } from '#lib/server/db.ts';
-import { newId } from '#lib/server/ids.ts';
+import { addToGallery, newImageFile } from '#lib/server/gallery.ts';
 import { getMapSnapshot } from '#lib/server/queries.ts';
 import { users } from '#lib/server/schema.ts';
-import { perform, setMapImage, type Actor } from '#lib/server/world.ts';
-import type { Marker, Point } from '#lib/shared/types.ts';
+import { perform, type Actor } from '#lib/server/world.ts';
+import { TOKEN_COLORS, type Marker, type Point } from '#lib/shared/types.ts';
 import { interior, terrain, type Painting } from './demo-art.ts';
 
 export const DEMO_USERNAME = 'demo';
@@ -40,10 +40,13 @@ const mira = actorFor(guest, getMembership(db, campaign.id, guest.id)!);
 
 mkdirSync(uploadsDir(), { recursive: true });
 
+/** Puts a painting in the gallery under the name of the map it is for, and lays it under that map. */
 async function paint(mapId: string, painting: Painting) {
-	const file = `${mapId}-${newId(12)}.png`;
+	const file = newImageFile('png');
 	await Bun.write(join(uploadsDir(), file), painting.png);
-	setMapImage(db, gm, mapId, { file, width: painting.width, height: painting.height });
+	const name = getMapSnapshot(db, campaign.id, mapId, 'gm')!.map.name;
+	addToGallery(db, gm, { kind: 'map', name, file, width: painting.width, height: painting.height });
+	perform(db, gm, { t: 'map.update', id: mapId, image: file });
 }
 
 /** Draws a region on `mapId` and returns the id of the map behind it. */
@@ -100,6 +103,30 @@ const cellar = region(tavern, 'The Cellar', [
 	[0.62, 0.86]
 ]);
 await paint(cellar, interior({ seed: 11, rooms: 3, dark: true }));
+
+// The cellar is where the fight breaks out: a battle map with the pieces
+// already on it. The painted rooms start 90 pixels in, and so does the grid.
+const CELL = 50;
+const EDGE = 90 % CELL;
+perform(db, gm, { t: 'map.update', id: cellar, kind: 'battle', grid: { size: CELL, x: EDGE, y: EDGE } });
+
+/** Puts a token on the cellar's grid, in the cell that many across and down. */
+function piece(by: Actor, name: string, column: number, row: number, extra: Record<string, unknown> = {}) {
+	perform(db, by, {
+		t: 'token.create',
+		mapId: cellar,
+		name,
+		x: (EDGE + (column + 0.5) * CELL) / 1400,
+		y: (EDGE + (row + 0.5) * CELL) / 1000,
+		...extra
+	});
+}
+
+piece(mira, 'Mira', 4, 13, { color: TOKEN_COLORS[5] });
+piece(gm, 'Smuggler', 9, 6);
+piece(gm, 'Smuggler 2', 11, 9);
+piece(gm, 'Brute', 17.5, 11.5, { size: 2, color: TOKEN_COLORS[1] });
+piece(gm, 'Lookout', 21, 3, { color: TOKEN_COLORS[6], hidden: true });
 
 mark(gm, world, {
 	type: 'quest',

@@ -2,8 +2,8 @@
 
 import { and, eq, isNull } from 'drizzle-orm';
 import type { Db } from './db';
-import { maps, markers, regions } from './schema';
-import { canSeeMarker, canSeeRegion } from '../shared/rules';
+import { maps, markers, regions, tokens } from './schema';
+import { canSeeMarker, canSeeRegion, canSeeToken } from '../shared/rules';
 import type { Crumb, MapSnapshot, Role } from '../shared/types';
 import {
 	isConcealed,
@@ -11,7 +11,8 @@ import {
 	mapColumns,
 	markerColumns,
 	regionColumns,
-	targetMap
+	targetMap,
+	tokenColumns
 } from './world';
 
 /** A map with everything on it that `role` may see, or null if it isn't in this campaign. */
@@ -56,11 +57,20 @@ export function getMapSnapshot(
 			.all()
 			.filter((marker) => canSeeMarker(role, marker));
 
+		const tokenList = tx
+			.select(tokenColumns)
+			.from(tokens)
+			.where(and(eq(tokens.mapId, mapId), isNull(tokens.deletedAt)))
+			.orderBy(tokens.createdAt)
+			.all()
+			.filter((token) => canSeeToken(role, token));
+
 		return {
 			map,
 			trail,
 			regions: regionList,
 			markers: markerList,
+			tokens: tokenList,
 			lastSeq: latestSeq(tx, campaignId)
 		};
 	});
