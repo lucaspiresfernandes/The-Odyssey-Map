@@ -421,7 +421,7 @@
 	const tints = new Map<string, string>();
 
 	function tintOf(other: Cursor): string {
-		if (other.role === 'gm') return 'var(--accent)';
+		if (other.role === 'gm') return 'var(--color-accent)';
 		let tint = tints.get(other.userId);
 		if (!tint) tints.set(other.userId, (tint = TINTS[tints.size % TINTS.length]));
 		return tint;
@@ -687,16 +687,45 @@
 		e.preventDefault();
 		selectedMarkerId = selectedMarkerId === marker.id ? null : marker.id;
 	}
+
+	// ---------------------------------------------------------------- looks
+
+	// How a region's outline is drawn. One of these at a time: selected beats
+	// hovered, hovered beats the rest.
+	const OUTLINE = {
+		idle: 'fill-transparent stroke-[#fff8e4]/90 stroke-[1.5] [stroke-dasharray:7_6]',
+		editing: 'fill-transparent stroke-[#f2c14e] stroke-[1.5] [stroke-dasharray:7_6]',
+		hover: 'fill-accent/22 stroke-accent stroke-[2.5]',
+		selected: 'fill-accent/14 stroke-white stroke-[2.5]'
+	};
+
+	function outlineOf(region: Region): string {
+		if (selectedRegionId === region.id) return OUTLINE.selected;
+		if (hoveredRegionId === region.id) return OUTLINE.hover;
+		return editing ? OUTLINE.editing : OUTLINE.idle;
+	}
+
+	/** The instruction shown at the top while a tool is waiting for a click. */
+	const hint =
+		'absolute top-3.5 left-1/2 w-max max-w-[calc(100%-24px)] -translate-x-1/2 rounded-full border border-accent bg-night/90 px-3.5 py-2 text-center text-sm';
+	const zoomButton = 'h-9 w-9.5 cursor-pointer hover:bg-panel-2';
 </script>
 
 <svelte:window {onkeydown} />
 
-<div class="viewport" class:ready bind:this={viewport} bind:clientWidth={cw} bind:clientHeight={ch}>
+<div
+	class="relative h-full w-full overflow-hidden bg-[#0b0d12] bg-[radial-gradient(ellipse_at_center,#1a2030_0%,#0b0d12_75%)]"
+	bind:this={viewport}
+	bind:clientWidth={cw}
+	bind:clientHeight={ch}
+>
 	<!-- The map is a custom widget: it takes focus so it can be panned and zoomed from the keyboard. -->
 	<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 	<div
-		class="surface"
-		class:dragging
+		class={[
+			'absolute inset-0 touch-none select-none focus-visible:-outline-offset-2',
+			tool !== 'pan' ? 'cursor-crosshair' : dragging ? 'cursor-grabbing' : 'cursor-grab'
+		]}
 		data-tool={tool}
 		bind:this={surface}
 		role="application"
@@ -713,8 +742,10 @@
 			reportCursor();
 		}}
 	>
+		<!-- Everything inside scales with the map. --inv undoes that scale, for
+		     the things that should stay the same size on screen: scale-(--inv). -->
 		<div
-			class="world"
+			class={['absolute top-0 left-0 origin-top-left', !ready && 'invisible']}
 			bind:this={world}
 			style:width="{W}px"
 			style:height="{H}px"
@@ -722,32 +753,58 @@
 			style:--inv={1 / view.k}
 		>
 			{#if image}
-				<img src={image} alt="" width={W} height={H} draggable="false" />
+				<img
+					class="block h-full w-full rounded-[3px] shadow-map [-webkit-user-drag:none]"
+					src={image}
+					alt=""
+					width={W}
+					height={H}
+					draggable="false"
+				/>
 			{:else}
-				<div class="blank">
-					<strong>{map.name}</strong>
-					<span>No map image yet</span>
+				<div
+					class="grid h-full w-full place-content-center gap-2.5 rounded-[3px] bg-parchment text-center text-[#6d5f43] shadow-map"
+				>
+					<strong class="font-serif text-[64px] font-semibold text-[#4d4129]">{map.name}</strong>
+					<span class="text-[22px]">No map image yet</span>
 				</div>
 			{/if}
 
-			<svg class="regions" viewBox="0 0 {W} {H}" width={W} height={H} aria-hidden="true">
+			<svg
+				class="pointer-events-none absolute inset-0 overflow-visible"
+				viewBox="0 0 {W} {H}"
+				width={W}
+				height={H}
+				aria-hidden="true"
+			>
 				{#each orderedRegions as region (region.id)}
-					<polygon class="halo" points={svgPoints(pointsOf(region))} />
+					<!-- A dark line under the outline, so it reads on a pale map too. -->
+					<polygon
+						class="fill-none stroke-[#0c0e14]/50 stroke-[4] stroke-steady"
+						points={svgPoints(pointsOf(region))}
+					/>
 					<polygon
 						data-region-id={region.id}
 						points={svgPoints(pointsOf(region))}
-						class:hover={hoveredRegionId === region.id}
-						class:selected={selectedRegionId === region.id}
-						class:editing
+						class={[
+							'stroke-steady transition-[fill,stroke] duration-150',
+							tool === 'pan' ? 'cursor-pointer [pointer-events:visible]' : 'pointer-events-none',
+							outlineOf(region)
+						]}
 					/>
 				{/each}
 
 				{#if draft.length}
-					<polyline class="draft" points={svgPoints(cursor ? [...draft, cursor] : draft)} />
+					<polyline
+						class="fill-accent/15 stroke-accent stroke-2 stroke-steady"
+						points={svgPoints(cursor ? [...draft, cursor] : draft)}
+					/>
 					{#each draft as [x, y], i (i)}
 						<circle
-							class="corner"
-							class:first={i === 0 && draft.length >= 3}
+							class={[
+								'stroke-accent-ink stroke-[1.5] stroke-steady',
+								i === 0 && draft.length >= 3 ? 'fill-white' : 'fill-accent'
+							]}
 							cx={x * W}
 							cy={y * H}
 							r={(i === 0 ? 7 : 4) / view.k}
@@ -757,31 +814,65 @@
 
 				{#if editing && selectedRegion && tool === 'pan'}
 					{#each pointsOf(selectedRegion) as [x, y], i (i)}
-						<circle class="vertex" data-vertex={i} cx={x * W} cy={y * H} r={7 / view.k} />
+						<circle
+							class="cursor-move fill-white stroke-accent-ink stroke-[1.5] stroke-steady [pointer-events:visible]"
+							data-vertex={i}
+							cx={x * W}
+							cy={y * H}
+							r={7 / view.k}
+						/>
 					{/each}
 				{/if}
 			</svg>
 
-			<!-- Every region wears its name. It comes before the markers, so it is never drawn over one. -->
+			<!-- Every region wears its name, lettered straight onto the map like a place
+			     name in an atlas: quiet until the region is hovered, and never boxed in.
+			     It comes before the markers, so it is never drawn over one, and it never
+			     takes the pointer, so the outline beneath it still does. -->
 			{#each orderedRegions as region (region.id)}
 				{@const [x, y] = labelSpot(pointsOf(region))}
 				{@const lit = litRegionId === region.id}
-				<div class="region-label" class:lit style:left="{x * W}px" style:top="{y * H}px">
-					<strong>{region.name}</strong>
+				<div
+					class="pointer-events-none absolute w-max max-w-[300px] -translate-1/2 scale-(--inv) text-center text-shadow-map"
+					style:left="{x * W}px"
+					style:top="{y * H}px"
+				>
+					<strong
+						class={[
+							'block font-serif text-[17px] leading-[1.2] font-semibold tracking-[0.02em] wrap-anywhere transition-[opacity,color] duration-150',
+							lit ? 'text-white' : 'text-[#fff8e4] opacity-55'
+						]}>{region.name}</strong
+					>
 					{#if lit}
-						<span class="mouse">Double-click to enter</span>
-						<span class="touch">Double-tap to enter</span>
+						<!-- How to get in. Out of the flow, so the name does not jump when it appears. -->
+						<span
+							class="absolute top-[calc(100%+2px)] left-1/2 -translate-x-1/2 text-xs whitespace-nowrap text-[#e4dcc6]"
+						>
+							<span class="touch:hidden">Double-click to enter</span>
+							<span class="hidden touch:inline">Double-tap to enter</span>
+						</span>
 					{/if}
 				</div>
 			{/each}
 
+			<!-- Pins live in the scaled layer, so they follow the map for free. World
+			     markers are teardrops in their type's colour (--c). Table notes look
+			     like paper tags, so the two can be told apart at a glance. -->
 			{#each orderedMarkers as marker (marker.id)}
 				{@const type = markerType(marker.type)}
+				{@const selected = selectedMarkerId === marker.id}
+				{@const raised = active?.id === marker.id}
+				{@const shape = [
+					'block',
+					selected ? 'pin-selected' : 'pin-shadow group-focus-visible:pin-focused',
+					marker.hidden && 'opacity-55'
+				]}
 				<button
-					class="pin {marker.kind}"
-					class:secret={marker.hidden}
-					class:selected={selectedMarkerId === marker.id}
-					class:raised={active?.id === marker.id}
+					class={[
+						'group absolute origin-bottom -translate-x-1/2 -translate-y-full scale-(--inv) cursor-pointer text-[#12151c] [-webkit-tap-highlight-color:transparent] focus-visible:outline-none',
+						(selected || raised) && 'z-1',
+						tool !== 'pan' && 'pointer-events-none opacity-60'
+					]}
 					data-marker-id={marker.id}
 					style:left="{marker.x * W}px"
 					style:top="{marker.y * H}px"
@@ -793,45 +884,77 @@
 					onblur={() => hoveredMarkerId === marker.id && (hoveredMarkerId = null)}
 					onkeydown={(e) => toggleMarker(e, marker)}
 				>
-					<span class="body">
+					<span
+						class={[
+							'relative block origin-bottom transition-transform duration-120 group-hover:scale-115',
+							raised && 'scale-115'
+						]}
+					>
 						{#if marker.kind === 'world'}
-							<svg class="shape" viewBox="0 0 32 42" width="32" height="42" aria-hidden="true">
-								<path d="M16 41C16 41 3 26.5 3 15.5a13 13 0 0 1 26 0C29 26.5 16 41 16 41Z" />
+							<svg class={shape} viewBox="0 0 32 42" width="32" height="42" aria-hidden="true">
+								<path
+									class={['fill-(--c) stroke-[#12151c] stroke-[1.5]', marker.hidden && '[stroke-dasharray:3_2.5]']}
+									d="M16 41C16 41 3 26.5 3 15.5a13 13 0 0 1 26 0C29 26.5 16 41 16 41Z"
+								/>
 							</svg>
 						{:else}
-							<svg class="shape" viewBox="0 0 34 38" width="34" height="38" aria-hidden="true">
-								<path d="M7 2h20a5 5 0 0 1 5 5v17a5 5 0 0 1-5 5h-5.5L17 37l-4.5-8H7a5 5 0 0 1-5-5V7a5 5 0 0 1 5-5Z" />
+							<svg class={shape} viewBox="0 0 34 38" width="34" height="38" aria-hidden="true">
+								<path
+									class="fill-[#f4e7c3] stroke-(color:--c) stroke-[2.5]"
+									d="M7 2h20a5 5 0 0 1 5 5v17a5 5 0 0 1-5 5h-5.5L17 37l-4.5-8H7a5 5 0 0 1-5-5V7a5 5 0 0 1 5-5Z"
+								/>
 							</svg>
 						{/if}
-						<span class="glyph"><MarkerGlyph type={marker.type} size={16} /></span>
+						<span
+							class={[
+								'absolute top-[7.5px] left-1/2 flex -translate-x-1/2',
+								marker.kind === 'player' && 'text-[#4a3b18]'
+							]}
+						>
+							<MarkerGlyph type={marker.type} size={16} />
+						</span>
 					</span>
 				</button>
 			{/each}
 
-			<!-- Everyone else's mouse. On top of the map, and never in the way of your own. -->
+			<!-- Everyone else's mouse, each in its own colour (--c). On top of the map,
+			     and never in the way of your own. Only the position glides from one
+			     report to the next, not the size in a zoom. -->
 			{#each cursors as other (other.id)}
 				<div
-					class="cursor"
+					class="pointer-events-none absolute top-0 left-0 z-3 flex origin-top-left scale-(--inv) items-start transition-[translate] duration-80 ease-linear motion-reduce:transition-none"
 					style:translate="{other.x * W}px {other.y * H}px"
 					style:--c={tintOf(other)}
 					aria-hidden="true"
 				>
-					<svg viewBox="0 0 18 22" width="18" height="22">
-						<path d="M2 1.5v16l4.4-4 2.9 6.6 2.7-1.2-2.9-6.5h6Z" />
+					<!-- The negative margins put the tip of the arrow exactly on the spot. -->
+					<svg
+						class="-mt-[1.5px] -ml-0.5 shrink-0 drop-shadow-[0_1px_2px_rgb(0_0_0/0.6)]"
+						viewBox="0 0 18 22"
+						width="18"
+						height="22"
+					>
+						<path
+							class="fill-(--c) stroke-[#12151c] stroke-[1.5] [stroke-linejoin:round]"
+							d="M2 1.5v16l4.4-4 2.9 6.6 2.7-1.2-2.9-6.5h6Z"
+						/>
 					</svg>
-					<span>{other.name}</span>
+					<span
+						class="mt-[17px] -ml-[3px] max-w-[150px] truncate rounded-[3px_9px_9px_9px] bg-(--c) px-[7px] text-xs leading-[1.6] font-semibold text-[#12151c] shadow-[0_1px_3px_rgb(0_0_0/0.5)]"
+						>{other.name}</span
+					>
 				</div>
 			{/each}
 		</div>
 	</div>
 
-	<div class="overlay">
+	<!-- What floats over the map. Only the parts that ask for the pointer get it. -->
+	<div class="pointer-events-none absolute inset-0">
 		{#if active && cardPosition}
 			{@const pinned = active.id === selectedMarkerId}
+			<!-- Kept out of sight until its size is known, so it never flashes in the wrong place. -->
 			<div
-				class="card-holder"
-				class:pinned
-				class:measured={cardW > 0}
+				class={['absolute', cardW === 0 && 'invisible', pinned && 'pointer-events-auto']}
 				style:left="{cardPosition.left}px"
 				style:top="{cardPosition.top}px"
 				bind:clientWidth={cardW}
@@ -852,471 +975,34 @@
 		{/if}
 
 		{#if tool === 'draw'}
-			<p class="hint">
+			<p class={hint}>
 				{#if draft.length < 3}
 					Click to mark the corners of the region.
 				{:else}
 					Click the first corner or press Enter to finish.
 				{/if}
-				<span>Backspace removes a corner · Esc cancels</span>
+				<span class="ml-1.5 text-muted">Backspace removes a corner · Esc cancels</span>
 			</p>
 		{:else if tool === 'place'}
-			<p class="hint">Click the map where it belongs. <span>Esc cancels</span></p>
+			<p class={hint}>
+				Click the map where it belongs. <span class="ml-1.5 text-muted">Esc cancels</span>
+			</p>
 		{/if}
 
-		<div class="zoom">
-			<button aria-label="Zoom in" onclick={() => zoomBy(1.6)}>+</button>
-			<button aria-label="Zoom out" onclick={() => zoomBy(1 / 1.6)}>−</button>
-			<button aria-label="Fit the whole map" class="fit" onclick={fit}>
-				Fit
+		<div
+			class="pointer-events-auto absolute right-3.5 bottom-3.5 grid overflow-hidden rounded-[10px] border bg-panel"
+		>
+			<button class="{zoomButton} border-b text-[19px]" aria-label="Zoom in" onclick={() => zoomBy(1.6)}>
+				+
 			</button>
+			<button
+				class="{zoomButton} border-b text-[19px]"
+				aria-label="Zoom out"
+				onclick={() => zoomBy(1 / 1.6)}
+			>
+				−
+			</button>
+			<button class="{zoomButton} text-xs" aria-label="Fit the whole map" onclick={fit}>Fit</button>
 		</div>
 	</div>
 </div>
-
-<style>
-	.viewport {
-		position: relative;
-		width: 100%;
-		height: 100%;
-		overflow: hidden;
-		background:
-			radial-gradient(ellipse at center, #1a2030 0%, #0b0d12 75%),
-			#0b0d12;
-	}
-
-	.surface {
-		position: absolute;
-		inset: 0;
-		touch-action: none;
-		user-select: none;
-		-webkit-user-select: none;
-		cursor: grab;
-	}
-
-	.surface:focus-visible {
-		outline: 2px solid var(--accent);
-		outline-offset: -2px;
-	}
-
-	.surface.dragging {
-		cursor: grabbing;
-	}
-
-	.surface[data-tool='place'],
-	.surface[data-tool='draw'] {
-		cursor: crosshair;
-	}
-
-	.world {
-		position: absolute;
-		left: 0;
-		top: 0;
-		transform-origin: 0 0;
-		visibility: hidden;
-	}
-
-	.ready .world {
-		visibility: visible;
-	}
-
-	img,
-	.blank {
-		display: block;
-		width: 100%;
-		height: 100%;
-		border-radius: 3px;
-		box-shadow:
-			0 0 0 1px #000,
-			0 24px 80px rgb(0 0 0 / 0.6);
-	}
-
-	img {
-		-webkit-user-drag: none;
-	}
-
-	.blank {
-		display: grid;
-		place-content: center;
-		gap: 10px;
-		text-align: center;
-		color: #6d5f43;
-		background:
-			linear-gradient(rgb(90 70 40 / 0.1) 1px, transparent 1px) 0 0 / 80px 80px,
-			linear-gradient(90deg, rgb(90 70 40 / 0.1) 1px, transparent 1px) 0 0 / 80px 80px,
-			radial-gradient(ellipse at center, #e9dcbd 0%, #d6c59c 70%, #bfab7e 100%);
-	}
-
-	.blank strong {
-		font-family: var(--serif);
-		font-size: 64px;
-		font-weight: 600;
-		color: #4d4129;
-	}
-
-	.blank span {
-		font-size: 22px;
-	}
-
-	/* ---- regions ---- */
-
-	.regions {
-		position: absolute;
-		inset: 0;
-		overflow: visible;
-		pointer-events: none;
-	}
-
-	polygon.halo {
-		fill: none;
-		stroke: rgb(12 14 20 / 0.5);
-		stroke-width: 4;
-		stroke-dasharray: none;
-		pointer-events: none;
-	}
-
-	polygon {
-		fill: transparent;
-		stroke: rgb(255 248 228 / 0.9);
-		stroke-width: 1.5;
-		stroke-dasharray: 7 6;
-		stroke-linejoin: round;
-		vector-effect: non-scaling-stroke;
-		pointer-events: visible;
-		cursor: pointer;
-		transition:
-			fill 0.15s,
-			stroke 0.15s;
-	}
-
-	polygon.editing {
-		stroke: #f2c14e;
-	}
-
-	polygon.hover {
-		fill: rgb(224 165 38 / 0.22);
-		stroke: var(--accent);
-		stroke-width: 2.5;
-		stroke-dasharray: none;
-	}
-
-	polygon.selected {
-		fill: rgb(224 165 38 / 0.14);
-		stroke: #fff;
-		stroke-width: 2.5;
-		stroke-dasharray: none;
-	}
-
-	.surface[data-tool='place'] polygon,
-	.surface[data-tool='draw'] polygon {
-		pointer-events: none;
-	}
-
-	.draft {
-		fill: rgb(224 165 38 / 0.15);
-		stroke: var(--accent);
-		stroke-width: 2;
-		stroke-linejoin: round;
-		vector-effect: non-scaling-stroke;
-	}
-
-	.corner {
-		fill: var(--accent);
-		stroke: #1c1503;
-		stroke-width: 1.5;
-		vector-effect: non-scaling-stroke;
-	}
-
-	.corner.first {
-		fill: #fff;
-	}
-
-	.vertex {
-		fill: #fff;
-		stroke: #1c1503;
-		stroke-width: 1.5;
-		vector-effect: non-scaling-stroke;
-		pointer-events: visible;
-		cursor: move;
-	}
-
-	/* A region's name is lettered straight onto the map, like a place name in
-	   an atlas: quiet until the region is hovered, and never boxed in. It
-	   never takes the pointer, so the outline beneath it still does. */
-	.region-label {
-		position: absolute;
-		transform: translate(-50%, -50%) scale(var(--inv));
-		width: max-content;
-		max-width: 300px;
-		text-align: center;
-		pointer-events: none;
-		text-shadow:
-			0 0 2px rgb(8 10 15 / 0.95),
-			0 0 5px rgb(8 10 15 / 0.85),
-			0 1px 10px rgb(8 10 15 / 0.6);
-	}
-
-	.region-label strong {
-		display: block;
-		font-family: var(--serif);
-		font-size: 17px;
-		font-weight: 600;
-		line-height: 1.2;
-		letter-spacing: 0.02em;
-		color: #fff8e4;
-		opacity: 0.55;
-		overflow-wrap: anywhere;
-		transition:
-			opacity 0.15s,
-			color 0.15s;
-	}
-
-	.region-label.lit strong {
-		opacity: 1;
-		color: #fff;
-	}
-
-	/* How to get in, said under the name while the region is hovered. Out of
-	   the flow, so the name does not jump when it appears. */
-	.region-label span {
-		position: absolute;
-		left: 50%;
-		top: calc(100% + 2px);
-		transform: translateX(-50%);
-		white-space: nowrap;
-		font-size: 12px;
-		color: #e4dcc6;
-	}
-
-	.region-label .touch {
-		display: none;
-	}
-
-	@media (hover: none) {
-		.region-label .mouse {
-			display: none;
-		}
-
-		.region-label .touch {
-			display: inline;
-		}
-	}
-
-	/* ---- markers ---- */
-
-	/* Pins live in the scaled layer, so they follow the map for free, and
-	   undo its scale so they stay the same size on screen. */
-	.pin {
-		position: absolute;
-		padding: 0;
-		border: 0;
-		background: none;
-		color: #12151c;
-		transform: translate(-50%, -100%) scale(var(--inv));
-		transform-origin: 50% 100%;
-		cursor: pointer;
-		-webkit-tap-highlight-color: transparent;
-	}
-
-	.pin.raised,
-	.pin.selected {
-		z-index: 1;
-	}
-
-	.pin:focus-visible {
-		outline: none;
-	}
-
-	.pin:focus-visible .shape {
-		filter: drop-shadow(0 0 0 #fff) drop-shadow(0 0 5px #fff);
-	}
-
-	.body {
-		position: relative;
-		display: block;
-		transform-origin: 50% 100%;
-		transition: transform 0.12s;
-	}
-
-	.pin:hover .body,
-	.pin.raised .body {
-		transform: scale(1.15);
-	}
-
-	.shape {
-		display: block;
-		filter: drop-shadow(0 2px 3px rgb(0 0 0 / 0.55));
-	}
-
-	.shape path {
-		fill: var(--c);
-		stroke: #12151c;
-		stroke-width: 1.5;
-	}
-
-	.glyph {
-		position: absolute;
-		left: 50%;
-		top: 7.5px;
-		transform: translateX(-50%);
-		display: flex;
-	}
-
-	/* Table notes look like paper tags, so the GM's world and the table's
-	   own annotations can be told apart at a glance. */
-	.pin.player .shape path {
-		fill: #f4e7c3;
-		stroke: var(--c);
-		stroke-width: 2.5;
-	}
-
-	.pin.player .glyph {
-		color: #4a3b18;
-	}
-
-	.pin.secret .shape {
-		opacity: 0.55;
-	}
-
-	.pin.secret .shape path {
-		stroke-dasharray: 3 2.5;
-	}
-
-	.pin.selected .shape {
-		filter: drop-shadow(0 0 2px #fff) drop-shadow(0 0 7px var(--accent));
-	}
-
-	.surface[data-tool='place'] .pin,
-	.surface[data-tool='draw'] .pin {
-		pointer-events: none;
-		opacity: 0.6;
-	}
-
-	/* ---- pointers ---- */
-
-	/* Other people's mice. Like pins they live in the scaled layer and undo
-	   its scale. Position and scale are separate properties so that only the
-	   position glides from one report to the next, not the size in a zoom. */
-	.cursor {
-		position: absolute;
-		left: 0;
-		top: 0;
-		z-index: 3;
-		display: flex;
-		align-items: flex-start;
-		scale: var(--inv);
-		transform-origin: 0 0;
-		pointer-events: none;
-		transition: translate 0.08s linear;
-	}
-
-	/* The tip of the arrow sits exactly on the spot. */
-	.cursor svg {
-		flex-shrink: 0;
-		margin: -1.5px 0 0 -2px;
-		filter: drop-shadow(0 1px 2px rgb(0 0 0 / 0.6));
-	}
-
-	.cursor path {
-		fill: var(--c);
-		stroke: #12151c;
-		stroke-width: 1.5;
-		stroke-linejoin: round;
-	}
-
-	.cursor span {
-		margin: 17px 0 0 -3px;
-		max-width: 150px;
-		padding: 0 7px;
-		border-radius: 3px 9px 9px 9px;
-		background: var(--c);
-		color: #12151c;
-		font-size: 12px;
-		font-weight: 600;
-		line-height: 1.6;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		box-shadow: 0 1px 3px rgb(0 0 0 / 0.5);
-	}
-
-	@media (prefers-reduced-motion: reduce) {
-		.cursor {
-			transition: none;
-		}
-	}
-
-	/* ---- overlay ---- */
-
-	.overlay {
-		position: absolute;
-		inset: 0;
-		pointer-events: none;
-	}
-
-	.card-holder {
-		position: absolute;
-		visibility: hidden;
-	}
-
-	.card-holder.measured {
-		visibility: visible;
-	}
-
-	.card-holder.pinned {
-		pointer-events: auto;
-	}
-
-	.hint {
-		position: absolute;
-		left: 50%;
-		top: 14px;
-		transform: translateX(-50%);
-		max-width: calc(100% - 24px);
-		padding: 8px 14px;
-		border-radius: 999px;
-		background: rgb(16 19 26 / 0.9);
-		border: 1px solid var(--accent);
-		font-size: 14px;
-		text-align: center;
-	}
-
-	.hint span {
-		color: var(--muted);
-		margin-left: 6px;
-	}
-
-	.zoom {
-		position: absolute;
-		right: 14px;
-		bottom: 14px;
-		display: grid;
-		border: 1px solid var(--line);
-		border-radius: 10px;
-		overflow: hidden;
-		background: var(--panel);
-		pointer-events: auto;
-	}
-
-	.zoom button {
-		width: 38px;
-		height: 36px;
-		border: 0;
-		border-bottom: 1px solid var(--line);
-		background: none;
-		font-size: 19px;
-		cursor: pointer;
-	}
-
-	.zoom button:last-child {
-		border-bottom: 0;
-	}
-
-	.zoom button:hover {
-		background: var(--panel-2);
-	}
-
-	.zoom .fit {
-		font-size: 12px;
-	}
-</style>

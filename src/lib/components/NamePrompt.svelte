@@ -30,33 +30,16 @@
 </script>
 
 <Modal {title} {onclose}>
-	<form onsubmit={submit}>
+	<form class="grid gap-3.5" onsubmit={submit}>
 		<label class="field">
 			<span>{label}</span>
 			<!-- svelte-ignore a11y_autofocus -->
 			<input class="input" bind:value={name} maxlength={LIMITS.name} required autofocus />
 		</label>
-		{#if hint}<p class="muted hint">{hint}</p>{/if}
-		<div class="actions">
-			<button type="button" class="btn ghost" onclick={onclose}>Cancel</button>
-			<button class="btn primary" disabled={saving}>{confirm}</button>
+		{#if hint}<p class="text-[13px] text-muted">{hint}</p>{/if}
+		<div class="flex justify-end gap-2">
+			<button type="button" class="btn btn-ghost" onclick={onclose}>Cancel</button>
+			<button class="btn btn-primary" disabled={saving}>{confirm}</button>
 		</div>
 	</form>
 </Modal>
-
-<style>
-	form {
-		display: grid;
-		gap: 14px;
-	}
-
-	.hint {
-		font-size: 13px;
-	}
-
-	.actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: 8px;
-	}
-</style>

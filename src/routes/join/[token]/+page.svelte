@@ -9,11 +9,11 @@
 	<title>Join {data.campaignName} · The Odyssey Map</title>
 </svelte:head>
 
-<main>
-	<p class="muted">You've been invited to</p>
-	<h1>{data.campaignName}</h1>
+<main class="mx-auto grid max-w-105 gap-2.5 px-5 pt-[16vh] pb-10 text-center">
+	<p class="text-muted">You've been invited to</p>
+	<h1 class="mb-4.5 text-[34px]">{data.campaignName}</h1>
 
-	<form method="POST" class="panel" use:enhance>
+	<form method="POST" class="grid gap-3.5 rounded-[14px] border bg-panel p-5.5 text-left" use:enhance>
 		{#if data.user}
 			<p>Join as <strong>{data.user.name}</strong>?</p>
 		{:else}
@@ -23,33 +23,7 @@
 				<input class="input" name="name" maxlength="40" placeholder="Your name" required autofocus />
 			</label>
 		{/if}
-		{#if form?.message}<p class="error-text">{form.message}</p>{/if}
-		<button class="btn primary">Open the map</button>
+		{#if form?.message}<p class="text-sm text-danger">{form.message}</p>{/if}
+		<button class="btn btn-primary">Open the map</button>
 	</form>
 </main>
-
-<style>
-	main {
-		max-width: 420px;
-		margin: 0 auto;
-		padding: 16vh 20px 40px;
-		display: grid;
-		gap: 10px;
-		text-align: center;
-	}
-
-	h1 {
-		font-size: 34px;
-		margin-bottom: 18px;
-	}
-
-	.panel {
-		background: var(--panel);
-		border: 1px solid var(--line);
-		border-radius: 14px;
-		padding: 22px;
-		display: grid;
-		gap: 14px;
-		text-align: left;
-	}
-</style>

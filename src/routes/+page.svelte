@@ -7,37 +7,47 @@
 	let mode = $state<'login' | 'register'>('login');
 	const shown = $derived(form?.form === 'register' || form?.form === 'login' ? form.form : mode);
 	const query = $derived(data.next ? `&next=${encodeURIComponent(data.next)}` : '');
+
+	const panel = 'grid gap-4 rounded-[14px] border bg-panel p-5.5';
+	const tab = '-mb-px cursor-pointer border-b-2 px-3 py-2';
+	const tabOn = 'border-accent text-cream';
+	const tabOff = 'border-transparent text-muted';
 </script>
 
-<main>
-	<header>
-		<h1>The Odyssey Map</h1>
-		<p class="muted">A living map you can zoom into forever.</p>
+<main class="mx-auto grid max-w-130 gap-7 px-5 pt-[12vh] pb-10">
+	<header class="grid gap-1.5 text-center">
+		<h1 class="text-[40px] tracking-[0.01em]">The Odyssey Map</h1>
+		<p class="text-muted">A living map you can zoom into forever.</p>
 	</header>
 
 	{#if data.user}
-		<section class="panel">
-			<div class="row">
-				<h2>Your campaigns</h2>
-				<form method="POST" action="?/logout" use:enhance>
-					<span class="muted">{data.user.name}</span>
-					<button class="btn small ghost">Log out</button>
+		<section class={panel}>
+			<div class="flex items-center justify-between gap-3">
+				<h2 class="text-xl/tight">Your campaigns</h2>
+				<form method="POST" action="?/logout" class="flex items-center gap-2 text-sm" use:enhance>
+					<span class="text-muted">{data.user.name}</span>
+					<button class="btn btn-sm btn-ghost">Log out</button>
 				</form>
 			</div>
 
 			{#if data.campaigns.length}
-				<ul class="campaigns">
+				<ul class="grid gap-2">
 					{#each data.campaigns as campaign (campaign.id)}
 						<li>
-							<a href="/c/{campaign.id}">
-								<strong>{campaign.name}</strong>
-								<span class="tag">{campaign.role === 'gm' ? 'Game master' : 'Player'}</span>
+							<a
+								href="/c/{campaign.id}"
+								class="flex items-center justify-between gap-3 rounded-[10px] border bg-panel-2 px-3.5 py-3 text-cream no-underline hover:border-accent"
+							>
+								<strong class="font-serif text-[17px] font-semibold">{campaign.name}</strong>
+								<span class="text-xs text-muted">
+									{campaign.role === 'gm' ? 'Game master' : 'Player'}
+								</span>
 							</a>
 						</li>
 					{/each}
 				</ul>
 			{:else}
-				<p class="muted">
+				<p class="text-muted">
 					Nothing here yet.
 					{data.user.isGuest
 						? 'Open an invite link from your GM to join a campaign.'
@@ -46,34 +56,34 @@
 			{/if}
 
 			{#if !data.user.isGuest}
-				<form method="POST" action="?/create" class="create" use:enhance>
-					<label class="field">
+				<form method="POST" action="?/create" class="flex items-end gap-2" use:enhance>
+					<label class="field flex-1">
 						<span>New campaign</span>
 						<input class="input" name="name" placeholder="Name of your world" maxlength="80" required />
 					</label>
-					<button class="btn primary">Create</button>
+					<button class="btn btn-primary">Create</button>
 				</form>
-				{#if form?.form === 'create'}<p class="error-text">{form.message}</p>{/if}
+				{#if form?.form === 'create'}<p class="text-sm text-danger">{form.message}</p>{/if}
 			{/if}
 		</section>
 	{:else}
-		<section class="panel">
-			<div class="tabs" role="tablist">
+		<section class={panel}>
+			<div class="flex gap-1 border-b" role="tablist">
 				<button
 					role="tab"
 					aria-selected={shown === 'login'}
-					class:on={shown === 'login'}
+					class={[tab, shown === 'login' ? tabOn : tabOff]}
 					onclick={() => ((mode = 'login'), (form = null))}>Log in</button
 				>
 				<button
 					role="tab"
 					aria-selected={shown === 'register'}
-					class:on={shown === 'register'}
+					class={[tab, shown === 'register' ? tabOn : tabOff]}
 					onclick={() => ((mode = 'register'), (form = null))}>Create a GM account</button
 				>
 			</div>
 
-			<form method="POST" action="?/{shown}{query}" class="auth" use:enhance>
+			<form method="POST" action="?/{shown}{query}" class="grid gap-3.5" use:enhance>
 				<label class="field">
 					<span>Username</span>
 					<input
@@ -95,137 +105,15 @@
 						required
 					/>
 				</label>
-				{#if form?.message && form.form === shown}<p class="error-text">{form.message}</p>{/if}
-				<button class="btn primary">{shown === 'login' ? 'Log in' : 'Create account'}</button>
+				{#if form?.message && form.form === shown}
+					<p class="text-sm text-danger">{form.message}</p>
+				{/if}
+				<button class="btn btn-primary">{shown === 'login' ? 'Log in' : 'Create account'}</button>
 			</form>
 
-			<p class="muted hint">
+			<p class="text-[13px] text-muted">
 				Players don't need an account. They join with the invite link their GM shares.
 			</p>
 		</section>
 	{/if}
 </main>
-
-<style>
-	main {
-		max-width: 520px;
-		margin: 0 auto;
-		padding: 12vh 20px 40px;
-		display: grid;
-		gap: 28px;
-	}
-
-	header {
-		text-align: center;
-		display: grid;
-		gap: 6px;
-	}
-
-	h1 {
-		font-size: 40px;
-		letter-spacing: 0.01em;
-	}
-
-	h2 {
-		font-size: 20px;
-	}
-
-	.panel {
-		background: var(--panel);
-		border: 1px solid var(--line);
-		border-radius: 14px;
-		padding: 22px;
-		display: grid;
-		gap: 16px;
-	}
-
-	.row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-	}
-
-	.row form {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		font-size: 14px;
-	}
-
-	.campaigns {
-		list-style: none;
-		margin: 0;
-		padding: 0;
-		display: grid;
-		gap: 8px;
-	}
-
-	.campaigns a {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-		padding: 12px 14px;
-		border: 1px solid var(--line);
-		border-radius: var(--radius);
-		background: var(--panel-2);
-		color: var(--text);
-		text-decoration: none;
-	}
-
-	.campaigns a:hover {
-		border-color: var(--accent);
-	}
-
-	.campaigns strong {
-		font-family: var(--serif);
-		font-size: 17px;
-		font-weight: 600;
-	}
-
-	.tag {
-		font-size: 12px;
-		color: var(--muted);
-	}
-
-	.create {
-		display: flex;
-		align-items: end;
-		gap: 8px;
-	}
-
-	.create .field {
-		flex: 1;
-	}
-
-	.tabs {
-		display: flex;
-		gap: 4px;
-		border-bottom: 1px solid var(--line);
-	}
-
-	.tabs button {
-		padding: 8px 12px;
-		border: 0;
-		border-bottom: 2px solid transparent;
-		margin-bottom: -1px;
-		background: none;
-		color: var(--muted);
-		cursor: pointer;
-	}
-
-	.tabs button.on {
-		color: var(--text);
-		border-bottom-color: var(--accent);
-	}
-
-	.auth {
-		display: grid;
-		gap: 14px;
-	}
-
-	.hint {
-		font-size: 13px;
-	}
-</style>

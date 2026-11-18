@@ -48,13 +48,29 @@
 </script>
 
 <Modal title={heading} {onclose}>
-	<form onsubmit={submit}>
-		<fieldset>
-			<legend>Type</legend>
-			<div class="types">
+	<form class="grid gap-3.5" onsubmit={submit}>
+		<fieldset class="grid gap-[0.3em]">
+			<legend class="text-[13px] text-muted">Type</legend>
+			<div class="mt-1 flex flex-wrap gap-1.5">
 				{#each MARKER_TYPES as option (option.id)}
-					<label class:on={type === option.id} style:--c={option.color}>
-						<input type="radio" name="type" value={option.id} bind:group={type} />
+					<!-- Each type is a pill in its own colour, which arrives as --c. -->
+					<label
+						class={[
+							'inline-flex cursor-pointer items-center gap-[5px] rounded-full border py-1 pr-2.5 pl-2 text-[13px]',
+							'has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-accent',
+							type === option.id
+								? 'border-(color:--c) bg-(--c)/18 text-[color-mix(in_srgb,var(--c)_70%,white)]'
+								: 'text-muted'
+						]}
+						style:--c={option.color}
+					>
+						<input
+							class="pointer-events-none absolute opacity-0"
+							type="radio"
+							name="type"
+							value={option.id}
+							bind:group={type}
+						/>
 						<MarkerGlyph type={option.id} size={15} />
 						{option.label}
 					</label>
@@ -75,106 +91,22 @@
 		</label>
 
 		{#if kind === 'world'}
-			<label class="check">
-				<input type="checkbox" bind:checked={hidden} />
+			<label class="flex cursor-pointer items-start gap-2.5">
+				<input class="mt-[3px] accent-accent" type="checkbox" bind:checked={hidden} />
 				<span>
 					Hidden from players
-					<small>Only you see it until you reveal it.</small>
+					<small class="block text-muted">Only you see it until you reveal it.</small>
 				</span>
 			</label>
 		{:else}
-			<p class="muted small">Everyone at the table can see and edit this note.</p>
+			<p class="text-[13px] text-muted">Everyone at the table can see and edit this note.</p>
 		{/if}
 
-		<div class="actions">
-			<button type="button" class="btn ghost" onclick={onclose}>Cancel</button>
-			<button class="btn primary" disabled={saving}>
+		<div class="flex justify-end gap-2">
+			<button type="button" class="btn btn-ghost" onclick={onclose}>Cancel</button>
+			<button class="btn btn-primary" disabled={saving}>
 				{mode === 'create' ? 'Place marker' : 'Save'}
 			</button>
 		</div>
 	</form>
 </Modal>
-
-<style>
-	form {
-		display: grid;
-		gap: 14px;
-	}
-
-	fieldset {
-		border: 0;
-		margin: 0;
-		padding: 0;
-		display: grid;
-		gap: 0.3em;
-	}
-
-	legend {
-		padding: 0;
-		font-size: 13px;
-		color: var(--muted);
-	}
-
-	.types {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 6px;
-		margin-top: 4px;
-	}
-
-	.types label {
-		display: inline-flex;
-		align-items: center;
-		gap: 5px;
-		padding: 4px 10px 4px 8px;
-		border: 1px solid var(--line);
-		border-radius: 999px;
-		font-size: 13px;
-		cursor: pointer;
-		color: var(--muted);
-	}
-
-	.types label.on {
-		border-color: var(--c);
-		background: color-mix(in srgb, var(--c) 18%, transparent);
-		color: color-mix(in srgb, var(--c) 70%, white);
-	}
-
-	.types label:has(:focus-visible) {
-		outline: 2px solid var(--accent);
-		outline-offset: 2px;
-	}
-
-	.types input {
-		position: absolute;
-		opacity: 0;
-		pointer-events: none;
-	}
-
-	.check {
-		display: flex;
-		gap: 10px;
-		align-items: flex-start;
-		cursor: pointer;
-	}
-
-	.check input {
-		margin-top: 3px;
-		accent-color: var(--accent);
-	}
-
-	.check small {
-		display: block;
-		color: var(--muted);
-	}
-
-	.small {
-		font-size: 13px;
-	}
-
-	.actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: 8px;
-	}
-</style>

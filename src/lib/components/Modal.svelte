@@ -15,38 +15,13 @@
 
 <dialog
 	bind:this={dialog}
+	class="m-auto w-[min(440px,calc(100vw-24px))] rounded-[14px] border bg-panel text-cream shadow-pop backdrop:bg-[rgb(6_8_12/0.6)]"
 	aria-label={title}
 	oncancel={(e) => (e.preventDefault(), onclose())}
 	onclick={(e) => e.target === dialog && onclose()}
 >
-	<div class="content">
-		<h2>{title}</h2>
+	<div class="grid gap-4 p-5">
+		<h2 class="text-xl/tight">{title}</h2>
 		{@render children()}
 	</div>
 </dialog>
-
-<style>
-	dialog {
-		width: min(440px, calc(100vw - 24px));
-		padding: 0;
-		border: 1px solid var(--line);
-		border-radius: 14px;
-		background: var(--panel);
-		color: var(--text);
-		box-shadow: var(--shadow);
-	}
-
-	dialog::backdrop {
-		background: rgb(6 8 12 / 0.6);
-	}
-
-	.content {
-		padding: 20px;
-		display: grid;
-		gap: 16px;
-	}
-
-	h2 {
-		font-size: 20px;
-	}
-</style>

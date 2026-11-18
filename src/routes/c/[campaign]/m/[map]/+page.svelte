@@ -280,6 +280,11 @@
 		}
 	}
 
+	// Looks shared by more than one element below.
+	const crumbLink = 'text-muted no-underline hover:text-accent';
+	/** A bar that floats over the map. */
+	const floating = 'rounded-xl border bg-panel/94 shadow-pop';
+
 	function initials(name: string): string {
 		return name
 			.split(/\s+/)
@@ -299,27 +304,32 @@
 	</title>
 </svelte:head>
 
-<div class="app">
-	<header class="bar">
-		<nav class="trail" aria-label="Breadcrumb">
-			<a class="home" href="/" aria-label="All campaigns" title="All campaigns">
+<div class="flex h-dvh flex-col">
+	<header
+		class="flex min-h-12 items-center justify-between gap-3 border-b bg-panel px-3 py-1.5 max-[720px]:flex-wrap"
+	>
+		<nav
+			class="flex min-w-0 items-center gap-2 overflow-x-auto font-serif text-[17px] whitespace-nowrap scrollbar-none"
+			aria-label="Breadcrumb"
+		>
+			<a class="flex p-1 {crumbLink}" href="/" aria-label="All campaigns" title="All campaigns">
 				<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
 					<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" />
 					<path d="M12 5.5 14 12l-2 6.5L10 12Z" fill="currentColor" />
 				</svg>
 			</a>
 			{#each world.trail as crumb, i (crumb.id)}
-				<span class="sep" aria-hidden="true">›</span>
+				<span class="text-[#5c667a]" aria-hidden="true">›</span>
 				{#if i < world.trail.length - 1}
-					<a href="/c/{campaignId}/m/{crumb.id}">{crumb.name}</a>
+					<a class={crumbLink} href="/c/{campaignId}/m/{crumb.id}">{crumb.name}</a>
 				{:else}
-					<span class="here" aria-current="page">{crumb.name}</span>
+					<span class="font-semibold" aria-current="page">{crumb.name}</span>
 				{/if}
 			{/each}
 			{#if world.regions.length}
 				<!-- The same doorways as on the map, for keyboards and screen readers. -->
 				<select
-					class="places"
+					class="ml-1.5 cursor-pointer rounded-lg border bg-panel-2 px-1.5 py-0.75 font-sans text-[13px] text-muted"
 					aria-label="Step into a region of this map"
 					onchange={(e) => {
 						const region = world.regions.find((r) => r.id === e.currentTarget.value);
@@ -335,14 +345,17 @@
 			{/if}
 		</nav>
 
-		<div class="tools">
+		<div class="flex shrink-0 items-center gap-2">
 			{#if live.status === 'offline'}
-				<span class="status" role="status">Reconnecting…</span>
+				<span class="text-xs text-[#e8b85a]" role="status">Reconnecting…</span>
 			{/if}
-			<ul class="online" aria-label="At the table now">
+			<ul class="mr-1 flex" aria-label="At the table now">
 				{#each live.online as person (person.id)}
 					<li
-						class:gm={person.role === 'gm'}
+						class={[
+							'-ml-1.5 grid size-6.5 cursor-default place-items-center rounded-full border-2 border-panel text-[11px] font-semibold',
+							person.role === 'gm' ? 'bg-accent text-accent-ink' : 'bg-[#3a465c]'
+						]}
 						title="{person.name}{person.role === 'gm' ? ' (GM)' : ''}{person.id === data.me.id
 							? ' (you)'
 							: ''}"
@@ -354,8 +367,7 @@
 
 			{#if isGm}
 				<button
-					class="btn small"
-					class:active={editing}
+					class={['btn btn-sm', editing && 'btn-active']}
 					aria-pressed={editing}
 					onclick={() => {
 						editing = !editing;
@@ -368,24 +380,26 @@
 				>
 					{editing ? 'Editing world' : 'Edit world'}
 				</button>
-				<div class="invite">
+				<div class="relative">
 					<button
-						class="btn small"
+						class="btn btn-sm"
 						aria-expanded={inviteOpen}
 						onclick={() => (inviteOpen = !inviteOpen)}>Invite</button
 					>
 					{#if inviteOpen}
-						<div class="popover">
+						<div
+							class="absolute top-[calc(100%+8px)] right-0 z-5 grid w-[min(340px,calc(100vw-24px))] gap-2.5 rounded-xl border bg-panel p-3.5 text-[13px] shadow-pop"
+						>
 							<p>Share this link. Anyone who opens it joins as a player.</p>
-							<div class="copy">
+							<div class="flex gap-1.5">
 								<input
-									class="input"
+									class="input min-h-7 text-[13px]"
 									readonly
 									value={inviteUrl}
 									aria-label="Invite link"
 									onfocus={(e) => e.currentTarget.select()}
 								/>
-								<button class="btn small primary" onclick={copyInvite}>
+								<button class="btn btn-sm btn-primary" onclick={copyInvite}>
 									{copied ? 'Copied' : 'Copy'}
 								</button>
 							</div>
@@ -396,8 +410,8 @@
 		</div>
 	</header>
 
-	<div class="stage">
-		<main class="canvas">
+	<div class="flex min-h-0 flex-1">
+		<main class="relative min-w-0 flex-1">
 			<MapCanvas
 				bind:this={canvas}
 				map={world.map}
@@ -426,11 +440,13 @@
 			/>
 
 			{#if selectedRegion && editing && tool === 'pan'}
-				<div class="region-bar">
-					<span>Region <strong>{selectedRegion.name}</strong></span>
-					<button class="btn small" onclick={() => enter(selectedRegion)}>Enter</button>
+				<div
+					class="absolute top-3.5 left-3.5 flex max-w-[calc(100%-28px)] flex-wrap items-center gap-2 px-2.5 py-2 text-sm {floating}"
+				>
+					<span>Region <strong class="font-serif">{selectedRegion.name}</strong></span>
+					<button class="btn btn-sm" onclick={() => enter(selectedRegion)}>Enter</button>
 					<button
-						class="btn small"
+						class="btn btn-sm"
 						onclick={() =>
 							(prompt = {
 								kind: 'rename',
@@ -438,21 +454,27 @@
 								initial: selectedRegion.name
 							})}>Rename</button
 					>
-					<button class="btn small danger" onclick={() => deleteRegion(selectedRegion)}>
+					<button class="btn btn-sm btn-danger" onclick={() => deleteRegion(selectedRegion)}>
 						Delete
 					</button>
-					<small>Drag a corner to reshape</small>
+					<small class="text-muted">Drag a corner to reshape</small>
 				</div>
 			{/if}
 
 			{#if empty && isGm && !editing}
-				<p class="coach">
+				<p
+					class="absolute top-4.5 left-1/2 w-max max-w-[calc(100%-28px)] -translate-x-1/2 rounded-full border bg-night/90 px-3.5 py-2 text-center text-sm"
+				>
 					This map is empty. Turn on <strong>Edit world</strong> to add a map image, markers and
 					regions.
 				</p>
 			{/if}
 
-			<div class="toolbar" role="toolbar" aria-label="Map tools">
+			<div
+				class="absolute bottom-3.5 left-1/2 flex w-max max-w-[calc(100%-120px)] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 p-1.5 max-[720px]:bottom-16 max-[720px]:max-w-[calc(100%-24px)] {floating}"
+				role="toolbar"
+				aria-label="Map tools"
+			>
 				{#if tool !== 'pan'}
 					<button class="btn" onclick={() => ((placing = null), (drawing = false))}>Cancel</button>
 				{:else}
@@ -460,7 +482,7 @@
 						<span aria-hidden="true">＋</span> Add note
 					</button>
 					{#if isGm && editing}
-						<span class="divider"></span>
+						<span class="w-px self-stretch bg-line"></span>
 						<button class="btn" onclick={() => startPlacing({ create: 'world' })}>
 							<span aria-hidden="true">＋</span> World marker
 						</button>
@@ -493,13 +515,16 @@
 			</div>
 
 			{#if notice}
-				<div class="notice" role="status">
+				<div
+					class="absolute bottom-18.5 left-1/2 flex w-max max-w-[calc(100%-28px)] -translate-x-1/2 items-center gap-2 rounded-[10px] border border-[#4a5670] bg-[#2a3142] py-2 pr-2 pl-3.5 text-sm shadow-pop max-[720px]:bottom-31"
+					role="status"
+				>
 					<span>{notice.text}</span>
 					{#if notice.undo}
 						{@const step = notice.undo}
-						<button class="btn small" onclick={() => undo(step)}>Undo</button>
+						<button class="btn btn-sm" onclick={() => undo(step)}>Undo</button>
 					{/if}
-					<button class="btn small ghost" aria-label="Dismiss" onclick={() => (notice = null)}>
+					<button class="btn btn-sm btn-ghost" aria-label="Dismiss" onclick={() => (notice = null)}>
 						×
 					</button>
 				</div>
@@ -531,246 +556,3 @@
 		onclose={() => (prompt = null)}
 	/>
 {/if}
-
-<style>
-	.app {
-		height: 100dvh;
-		display: flex;
-		flex-direction: column;
-	}
-
-	.bar {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 12px;
-		min-height: 48px;
-		padding: 6px 12px;
-		background: var(--panel);
-		border-bottom: 1px solid var(--line);
-	}
-
-	.trail {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		min-width: 0;
-		overflow-x: auto;
-		white-space: nowrap;
-		font-family: var(--serif);
-		font-size: 17px;
-		scrollbar-width: none;
-	}
-
-	.trail a {
-		color: var(--muted);
-		text-decoration: none;
-	}
-
-	.trail a:hover {
-		color: var(--accent);
-	}
-
-	.home {
-		display: flex;
-		padding: 4px;
-	}
-
-	.sep {
-		color: #5c667a;
-	}
-
-	.here {
-		font-weight: 600;
-	}
-
-	.places {
-		margin-left: 6px;
-		padding: 3px 6px;
-		border: 1px solid var(--line);
-		border-radius: 8px;
-		background: var(--panel-2);
-		color: var(--muted);
-		font-family: var(--sans);
-		font-size: 13px;
-		cursor: pointer;
-	}
-
-	.tools {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-shrink: 0;
-	}
-
-	.status {
-		font-size: 12px;
-		color: #e8b85a;
-	}
-
-	.online {
-		display: flex;
-		list-style: none;
-		margin: 0 4px 0 0;
-		padding: 0;
-	}
-
-	.online li {
-		width: 26px;
-		height: 26px;
-		margin-left: -6px;
-		display: grid;
-		place-items: center;
-		border-radius: 50%;
-		border: 2px solid var(--panel);
-		background: #3a465c;
-		font-size: 11px;
-		font-weight: 600;
-		cursor: default;
-	}
-
-	.online li.gm {
-		background: var(--accent);
-		color: var(--accent-ink);
-	}
-
-	.invite {
-		position: relative;
-	}
-
-	.popover {
-		position: absolute;
-		right: 0;
-		top: calc(100% + 8px);
-		z-index: 5;
-		width: min(340px, calc(100vw - 24px));
-		padding: 14px;
-		display: grid;
-		gap: 10px;
-		background: var(--panel);
-		border: 1px solid var(--line);
-		border-radius: 12px;
-		box-shadow: var(--shadow);
-		font-size: 13px;
-	}
-
-	.copy {
-		display: flex;
-		gap: 6px;
-	}
-
-	.copy .input {
-		min-height: 28px;
-		font-size: 13px;
-	}
-
-	.stage {
-		flex: 1;
-		min-height: 0;
-		display: flex;
-	}
-
-	.canvas {
-		position: relative;
-		flex: 1;
-		min-width: 0;
-	}
-
-	.toolbar {
-		position: absolute;
-		left: 50%;
-		bottom: 14px;
-		transform: translateX(-50%);
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		justify-content: center;
-		gap: 6px;
-		width: max-content;
-		max-width: calc(100% - 120px);
-		padding: 6px;
-		background: rgb(26 31 41 / 0.94);
-		border: 1px solid var(--line);
-		border-radius: 12px;
-		box-shadow: var(--shadow);
-	}
-
-	.divider {
-		width: 1px;
-		align-self: stretch;
-		background: var(--line);
-	}
-
-	.region-bar {
-		position: absolute;
-		left: 14px;
-		top: 14px;
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 8px;
-		max-width: calc(100% - 28px);
-		padding: 8px 10px;
-		background: rgb(26 31 41 / 0.94);
-		border: 1px solid var(--line);
-		border-radius: 12px;
-		box-shadow: var(--shadow);
-		font-size: 14px;
-	}
-
-	.region-bar strong {
-		font-family: var(--serif);
-	}
-
-	.region-bar small {
-		color: var(--muted);
-	}
-
-	.coach {
-		position: absolute;
-		left: 50%;
-		top: 18px;
-		transform: translateX(-50%);
-		width: max-content;
-		max-width: calc(100% - 28px);
-		padding: 8px 14px;
-		border-radius: 999px;
-		background: rgb(16 19 26 / 0.9);
-		border: 1px solid var(--line);
-		font-size: 14px;
-		text-align: center;
-	}
-
-	.notice {
-		position: absolute;
-		left: 50%;
-		bottom: 74px;
-		transform: translateX(-50%);
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		width: max-content;
-		max-width: calc(100% - 28px);
-		padding: 8px 8px 8px 14px;
-		background: #2a3142;
-		border: 1px solid #4a5670;
-		border-radius: 10px;
-		box-shadow: var(--shadow);
-		font-size: 14px;
-	}
-
-	@media (max-width: 720px) {
-		.bar {
-			flex-wrap: wrap;
-		}
-
-		.toolbar {
-			max-width: calc(100% - 24px);
-			bottom: 64px;
-		}
-
-		.notice {
-			bottom: 124px;
-		}
-	}
-</style>
