@@ -1,0 +1,1 @@
+ALTER TABLE `maps` ADD `cell_feet` real DEFAULT 8 NOT NULL;

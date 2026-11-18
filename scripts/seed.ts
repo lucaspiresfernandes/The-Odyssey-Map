@@ -17,7 +17,7 @@ import { addToGallery, newImageFile } from '#lib/server/gallery.ts';
 import { getMapSnapshot } from '#lib/server/queries.ts';
 import { users } from '#lib/server/schema.ts';
 import { perform, type Actor } from '#lib/server/world.ts';
-import { TOKEN_COLORS, type Marker, type Point } from '#lib/shared/types.ts';
+import { TOKEN_COLORS, type MapKind, type Marker, type Point } from '#lib/shared/types.ts';
 import { interior, terrain, type Painting } from './demo-art.ts';
 
 export const DEMO_USERNAME = 'demo';
@@ -49,9 +49,9 @@ async function paint(mapId: string, painting: Painting) {
 	perform(db, gm, { t: 'map.update', id: mapId, image: file });
 }
 
-/** Draws a region on `mapId` and returns the id of the map behind it. */
-function region(mapId: string, name: string, points: Point[]): string {
-	perform(db, gm, { t: 'region.create', mapId, name, points });
+/** Draws a region on `mapId` and returns the id of the map behind it: a world map unless told otherwise. */
+function region(mapId: string, name: string, points: Point[], kind: MapKind = 'world'): string {
+	perform(db, gm, { t: 'region.create', mapId, name, points, kind });
 	const regions = getMapSnapshot(db, campaign.id, mapId, 'gm')!.regions;
 	return regions.find((r) => r.name === name)!.targetMapId;
 }
@@ -96,19 +96,25 @@ const tavern = region(port, 'The Gilded Eel', [
 ]);
 await paint(tavern, interior({ seed: 3, rooms: 5 }));
 
-const cellar = region(tavern, 'The Cellar', [
-	[0.62, 0.58],
-	[0.86, 0.58],
-	[0.86, 0.86],
-	[0.62, 0.86]
-]);
+// The cellar is where the fight breaks out: a battle map from the start,
+// with the pieces already on it.
+const cellar = region(
+	tavern,
+	'The Cellar',
+	[
+		[0.62, 0.58],
+		[0.86, 0.58],
+		[0.86, 0.86],
+		[0.62, 0.86]
+	],
+	'battle'
+);
 await paint(cellar, interior({ seed: 11, rooms: 3, dark: true }));
 
-// The cellar is where the fight breaks out: a battle map with the pieces
-// already on it. The painted rooms start 90 pixels in, and so does the grid.
+// The painted rooms start 90 pixels in, and so does the grid.
 const CELL = 50;
 const EDGE = 90 % CELL;
-perform(db, gm, { t: 'map.update', id: cellar, kind: 'battle', grid: { size: CELL, x: EDGE, y: EDGE } });
+perform(db, gm, { t: 'map.update', id: cellar, grid: { size: CELL, x: EDGE, y: EDGE } });
 
 /** Puts a token on the cellar's grid, in the cell that many across and down. */
 function piece(by: Actor, name: string, column: number, row: number, extra: Record<string, unknown> = {}) {
@@ -124,7 +130,7 @@ function piece(by: Actor, name: string, column: number, row: number, extra: Reco
 
 piece(mira, 'Mira', 4, 13, { color: TOKEN_COLORS[5] });
 piece(gm, 'Smuggler', 9, 6);
-piece(gm, 'Smuggler 2', 11, 9);
+piece(gm, 'Smuggler 2', 11, 9, { outline: TOKEN_COLORS[2] });
 piece(gm, 'Brute', 17.5, 11.5, { size: 2, color: TOKEN_COLORS[1] });
 piece(gm, 'Lookout', 21, 3, { color: TOKEN_COLORS[6], hidden: true });
 

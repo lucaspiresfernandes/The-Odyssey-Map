@@ -16,17 +16,14 @@ import {
 	gallery,
 	maps,
 	markers,
-	members,
 	regions,
-	tokens,
-	users
+	tokens
 } from './schema';
 import { wrapOffset } from '../shared/grid';
 import {
 	canChangeDrawing,
 	canEditMarkerKind,
 	canEditWorld,
-	canMoveToken,
 	canRemoveMarker,
 	canRemoveToken,
 	canSeeEvent
@@ -39,6 +36,7 @@ import {
 	MARKER_TYPE_IDS,
 	ROTATION_STEP,
 	TOKEN_COLORS,
+	TOKEN_SIZE_STEP,
 	type Drawing,
 	type DrawingKind,
 	type EntityType,
@@ -132,6 +130,7 @@ export const mapColumns = {
 	name: maps.name,
 	kind: maps.kind,
 	grid: maps.grid,
+	cellFeet: maps.cellFeet,
 	imageFile: maps.imageFile,
 	width: maps.width,
 	height: maps.height
@@ -142,14 +141,13 @@ export const tokenColumns = {
 	mapId: tokens.mapId,
 	name: tokens.name,
 	color: tokens.color,
+	outline: tokens.outline,
 	image: tokens.image,
 	x: tokens.x,
 	y: tokens.y,
 	size: tokens.size,
 	rotation: tokens.rotation,
 	locked: tokens.locked,
-	ownerId: tokens.ownerId,
-	ownerName: tokens.ownerName,
 	hidden: tokens.hidden,
 	updatedAt: tokens.updatedAt
 };
@@ -431,10 +429,20 @@ function asGrid(value: unknown, current: Grid): Grid {
 	};
 }
 
-/**
- * Validates whichever token fields are present and drops everything else.
- * Who may own a token is not decided here: `ownerId` is only an id so far.
- */
+/** How many feet a cell stands for. */
+function asCellFeet(value: unknown): number {
+	if (
+		typeof value !== 'number' ||
+		!Number.isFinite(value) ||
+		value < LIMITS.cellFeetMin ||
+		value > LIMITS.cellFeetMax
+	) {
+		fail('invalid', `A cell stands for between ${LIMITS.cellFeetMin} and ${LIMITS.cellFeetMax} feet.`);
+	}
+	return value;
+}
+
+/** Validates whichever token fields are present and drops everything else. */
 function asTokenChanges(value: unknown): Partial<TokenInput> {
 	const raw = asRecord(value);
 	const out: Partial<TokenInput> = {};
@@ -445,13 +453,28 @@ function asTokenChanges(value: unknown): Partial<TokenInput> {
 		}
 		out.color = raw.color as string;
 	}
+	if (raw.outline !== undefined) {
+		// A ring is in one of the token colours, or isn't there.
+		if (raw.outline !== null && !(TOKEN_COLORS as readonly unknown[]).includes(raw.outline)) {
+			fail('invalid', 'Unknown outline colour.');
+		}
+		out.outline = raw.outline as string | null;
+	}
 	if (raw.image !== undefined) out.image = raw.image === null ? null : asImageFile(raw.image);
 	if (raw.x !== undefined) out.x = asCoord(raw.x);
 	if (raw.y !== undefined) out.y = asCoord(raw.y);
 	if (raw.size !== undefined) {
 		const size = raw.size;
-		if (typeof size !== 'number' || !Number.isInteger(size) || size < 1 || size > LIMITS.tokenSize) {
-			fail('invalid', `A token is between 1 and ${LIMITS.tokenSize} cells across.`);
+		if (
+			typeof size !== 'number' ||
+			!Number.isInteger(size / TOKEN_SIZE_STEP) ||
+			size < TOKEN_SIZE_STEP ||
+			size > LIMITS.tokenSize
+		) {
+			fail(
+				'invalid',
+				`A token is between ${TOKEN_SIZE_STEP} and ${LIMITS.tokenSize} cells across, in steps of ${TOKEN_SIZE_STEP}.`
+			);
 		}
 		out.size = size;
 	}
@@ -464,7 +487,6 @@ function asTokenChanges(value: unknown): Partial<TokenInput> {
 		out.rotation = ((turn % 360) + 360) % 360;
 	}
 	if (raw.locked !== undefined) out.locked = asBool(raw.locked);
-	if (raw.ownerId !== undefined) out.ownerId = raw.ownerId === null ? null : asId(raw.ownerId);
 	if (raw.hidden !== undefined) out.hidden = asBool(raw.hidden);
 	return out;
 }
@@ -584,7 +606,8 @@ function restoreMarker(db: Db, actor: Actor, id: string): StoredEvent[] {
 	const { marker, deletedAt } = findMarker(db, actor, id);
 	requireMarkerRemoval(actor, marker, 'restore');
 	if (deletedAt === null) fail('conflict', 'That marker is already on the map.');
-	// Its map may have become a battle map since it was deleted.
+	// From when a world map could still be turned into a battle map: a
+	// marker deleted before that has no map to come back to.
 	if (readMap(db, marker.mapId).kind === 'battle') {
 		fail('conflict', 'That marker was on what is now a battle map, which holds none.');
 	}
@@ -599,14 +622,6 @@ function readToken(db: Db, id: string): Token {
 	return db.select(tokenColumns).from(tokens).where(eq(tokens.id, id)).get()!;
 }
 
-/** For everything a token's owner may do to it: move, resize, turn, recolour, dress. */
-function requireTokenMove(actor: Actor, token: Token, what: string) {
-	if (!canMoveToken(actor.role, actor.userId, token)) {
-		const whose = token.ownerName ? `${token.ownerName} or the GM` : 'the GM';
-		fail('forbidden', `Only ${whose} can ${what} this token.`);
-	}
-}
-
 /**
  * Taking a token off the map, or putting a deleted one back, is the GM's.
  * `undoing` is the one way round that: a player takes back a token they
@@ -619,17 +634,6 @@ function requireTokenRemoval(actor: Actor, what: 'delete' | 'restore', undoing: 
 	}
 }
 
-/** The name of the member a token is being handed to. Only the GM gets this far. */
-function ownerName(db: Db, actor: Actor, userId: string): string {
-	const member = db
-		.select({ name: users.name })
-		.from(members)
-		.innerJoin(users, eq(users.id, members.userId))
-		.where(and(eq(members.campaignId, actor.campaignId), eq(members.userId, userId)))
-		.get();
-	return member?.name ?? fail('invalid', 'That person is not at this table.');
-}
-
 function createToken(db: Db, actor: Actor, raw: Record<string, unknown>): StoredEvent[] {
 	const map = findMap(db, actor, asId(raw.mapId));
 	if (map.kind !== 'battle') fail('invalid', 'Tokens go on battle maps.');
@@ -638,10 +642,6 @@ function createToken(db: Db, actor: Actor, raw: Record<string, unknown>): Stored
 	if (input.name === undefined) fail('invalid', "The name can't be empty.");
 	if (input.x === undefined || input.y === undefined) fail('invalid', 'The token needs a position.');
 
-	// A player adds their own piece and nothing else. The GM's tokens are the
-	// GM's alone unless they are made out to someone.
-	const gm = actor.role === 'gm';
-	const ownerId = gm ? (input.ownerId ?? null) : actor.userId;
 	// A token wears a picture out of the gallery. For a player that is one
 	// the GM has revealed.
 	const image = input.image ?? null;
@@ -654,15 +654,15 @@ function createToken(db: Db, actor: Actor, raw: Record<string, unknown>): Stored
 			mapId: map.id,
 			name: input.name,
 			color: input.color ?? TOKEN_COLORS[0],
+			outline: input.outline ?? null,
 			image,
 			x: input.x,
 			y: input.y,
 			size: input.size ?? 1,
 			rotation: input.rotation ?? 0,
 			locked: input.locked === true,
-			ownerId,
-			ownerName: gm ? ownerId && ownerName(db, actor, ownerId) : actor.name,
-			hidden: gm && input.hidden === true,
+			// Only the GM has anything to hide.
+			hidden: actor.role === 'gm' && input.hidden === true,
 			createdAt: now,
 			updatedAt: now
 		})
@@ -672,8 +672,8 @@ function createToken(db: Db, actor: Actor, raw: Record<string, unknown>): Stored
 
 /**
  * Puts a copy of a token beside it: the same in everything but where it
- * stands, and never locked, so it can be dragged to its place. It belongs to
- * whoever the first one belongs to. Anyone who sees a token can copy it.
+ * stands, and never locked, so it can be dragged to its place. Anyone who
+ * sees a token can copy it.
  */
 function duplicateToken(db: Db, actor: Actor, id: string): StoredEvent[] {
 	const { token, deletedAt } = findToken(db, actor, id);
@@ -705,14 +705,13 @@ function duplicateToken(db: Db, actor: Actor, id: string): StoredEvent[] {
 			mapId: token.mapId,
 			name: token.name,
 			color: token.color,
+			outline: token.outline,
 			image: token.image,
 			x,
 			y: token.y,
 			size: token.size,
 			rotation: token.rotation,
 			locked: false,
-			ownerId: token.ownerId,
-			ownerName: token.ownerName,
 			hidden: token.hidden,
 			createdAt: now,
 			updatedAt: now
@@ -724,17 +723,15 @@ function duplicateToken(db: Db, actor: Actor, id: string): StoredEvent[] {
 const TOKEN_FIELDS = [
 	'name',
 	'color',
+	'outline',
 	'image',
 	'x',
 	'y',
 	'size',
 	'rotation',
 	'locked',
-	'ownerId',
 	'hidden'
 ] as const;
-/** What only the GM and the token's own player change. Its name and its lock are anyone's. */
-const TOKEN_HANDLING = ['color', 'image', 'x', 'y', 'size', 'rotation'] as const;
 /** What a lock holds in place. */
 const TOKEN_PLACING = ['x', 'y', 'size', 'rotation'] as const;
 
@@ -750,11 +747,9 @@ function updateToken(
 	if (deletedAt !== null) fail('conflict', 'That token was deleted. Restore it first.');
 
 	const changes = asTokenChanges(rawChanges);
-	if (actor.role !== 'gm' && (changes.hidden !== undefined || changes.ownerId !== undefined)) {
-		fail('forbidden', 'Only the GM can hide a token or hand it to someone.');
-	}
-	if (TOKEN_HANDLING.some((field) => changes[field] !== undefined)) {
-		requireTokenMove(actor, before, 'change');
+	// Hiding is the GM's. Everything else about a token is the whole table's.
+	if (actor.role !== 'gm' && changes.hidden !== undefined) {
+		fail('forbidden', 'Only the GM can hide a token.');
 	}
 
 	const after: Token = { ...before, ...changes };
@@ -768,23 +763,19 @@ function updateToken(
 		// has not revealed: it is the token's own past, not a pick.
 		findPicture(db, actor, after.image, 'token', restoring);
 	}
-	if (after.ownerId !== before.ownerId) {
-		after.ownerName = after.ownerId && ownerName(db, actor, after.ownerId);
-	}
 
 	after.updatedAt = Date.now();
 	db.update(tokens)
 		.set({
 			name: after.name,
 			color: after.color,
+			outline: after.outline,
 			image: after.image,
 			x: after.x,
 			y: after.y,
 			size: after.size,
 			rotation: after.rotation,
 			locked: after.locked,
-			ownerId: after.ownerId,
-			ownerName: after.ownerName,
 			hidden: after.hidden,
 			updatedAt: after.updatedAt
 		})
@@ -1099,28 +1090,14 @@ function isBlank(db: Db, mapId: string): boolean {
 	return !readMap(db, mapId).imageFile && !marker && !token && !drawing && !region;
 }
 
-/**
- * True when a map holds none of what a battle map can't: no markers, no
- * notes, no regions. A deleted marker doesn't count. It stays deleted.
- */
-function isBare(db: Db, mapId: string): boolean {
-	const marker = db
-		.select({ id: markers.id })
-		.from(markers)
-		.where(and(eq(markers.mapId, mapId), isNull(markers.deletedAt)))
-		.get();
-	const region = db.select({ id: regions.id }).from(regions).where(eq(regions.mapId, mapId)).get();
-	return !marker && !region;
-}
-
 const sameGrid = (a: Grid, b: Grid) =>
 	a.size === b.size && a.x === b.x && a.y === b.y && a.shown === b.shown;
 
 function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): StoredEvent[] {
 	if (
 		before.name === after.name &&
-		before.kind === after.kind &&
 		sameGrid(before.grid, after.grid) &&
+		before.cellFeet === after.cellFeet &&
 		before.imageFile === after.imageFile &&
 		before.width === after.width &&
 		before.height === after.height
@@ -1132,18 +1109,12 @@ function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): Stored
 	if (after.imageFile && after.imageFile !== before.imageFile) {
 		findPicture(db, actor, after.imageFile, 'map');
 	}
-	// The same goes for the way back to a battle map.
-	if (before.kind !== 'battle' && after.kind === 'battle' && !isBare(db, after.id)) {
-		fail(
-			'conflict',
-			'A battle map holds no markers, notes or regions. Delete the ones on this map first.'
-		);
-	}
+	// A map's kind is not among these: it is what it was made as.
 	db.update(maps)
 		.set({
 			name: after.name,
-			kind: after.kind,
 			grid: after.grid,
+			cellFeet: after.cellFeet,
 			imageFile: after.imageFile,
 			width: after.width,
 			height: after.height
@@ -1154,29 +1125,30 @@ function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): Stored
 }
 
 /**
- * Renames a map, turns it into a battle map or back into a world map, sets
- * up its grid, lays an image from the gallery under it: whichever are asked
- * for. Only a map with no markers and no regions can become a battle map,
- * since a battle map holds neither. Going back to a world map keeps the grid
- * and the tokens, out of sight, for the next time.
+ * Renames a map, sets up its grid, says how many feet a cell stands for,
+ * lays an image from the gallery under it: whichever are asked for. What
+ * kind of map it is was settled when its region was drawn, and stays so.
  */
 function updateMap(
 	db: Db,
 	actor: Actor,
 	id: string,
-	changes: { name?: unknown; kind?: unknown; grid?: unknown; image?: unknown }
+	changes: { name?: unknown; kind?: unknown; grid?: unknown; cellFeet?: unknown; image?: unknown }
 ): StoredEvent[] {
 	requireWorldEdit(actor);
 	const before = findMap(db, actor, id);
-	const { name, kind, grid, image } = changes;
-	if ([name, kind, grid, image].every((change) => change === undefined)) {
+	const { name, kind, grid, cellFeet, image } = changes;
+	if (kind !== undefined) {
+		fail('invalid', 'A map stays the kind it was made as. Draw a region for the other kind.');
+	}
+	if ([name, grid, cellFeet, image].every((change) => change === undefined)) {
 		fail('invalid', 'Malformed request.');
 	}
 
 	const after: MapInfo = { ...before };
 	if (changes.name !== undefined) after.name = asText(changes.name, 'The name', LIMITS.name, true);
-	if (changes.kind !== undefined) after.kind = asMapKind(changes.kind);
 	if (changes.grid !== undefined) after.grid = asGrid(changes.grid, before.grid);
+	if (cellFeet !== undefined) after.cellFeet = asCellFeet(cellFeet);
 	if (image !== undefined) {
 		// The map takes the size of its picture. Everything on it is placed
 		// in fractions of the map, so it all stays where it was.
@@ -1301,9 +1273,11 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 	return writeMap(db, actor, current, {
 		...current,
 		name: old.name,
-		// Changes from before there were battle maps have neither of these.
-		kind: old.kind ?? current.kind,
+		// Changes from before there were battle maps have no grid, and ones
+		// from before distances were told in feet have no scale. The kind of
+		// the map is left alone, whatever an old change did to it.
 		grid: old.grid ?? current.grid,
+		cellFeet: old.cellFeet ?? current.cellFeet,
 		imageFile: old.imageFile,
 		width: old.width,
 		height: old.height

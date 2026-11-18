@@ -26,10 +26,6 @@
 		draw: 'M3 16c2.5-8 5-8 7-1.5s4.5 4.5 6-2 2.5-5.5 5-3.5',
 		text: 'M4 7V4h16v3 M9 20h6 M12 4v16',
 		// What is done to a token.
-		'turn-left': 'M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8 M3 3v5h5',
-		'turn-right': 'M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8 M21 3v5h-5',
-		grow: 'M15 3h6v6 M9 21H3v-6 M21 3l-7 7 M3 21l7-7',
-		shrink: 'M4 14h6v6 M20 10h-6V4 M14 10l7-7 M3 21l7-7',
 		label:
 			'M12.59 2.59A2 2 0 0 0 11.17 2H4a2 2 0 0 0-2 2v7.17a2 2 0 0 0 .59 1.42l8.7 8.7a2.43 2.43 0 0 0 3.42 0l6.58-6.58a2.43 2.43 0 0 0 0-3.42Z M7.5 7.5h.01',
 		lock: 'M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z M7 11V7a5 5 0 0 1 10 0v4',
@@ -37,6 +33,7 @@
 			'M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2Z M7 11V7a5 5 0 0 1 9.9-1',
 		duplicate:
 			'M10 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2Z M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2',
+		filter: 'M22 3H2l8 9.46V19l4 2v-8.54Z',
 		plus: 'M12 5v14 M5 12h14',
 		up: 'M6 15l6-6 6 6',
 		down: 'M6 9l6 6 6-6',
@@ -56,12 +53,19 @@
 		label: string;
 		/** A second, quieter line in the tooltip: why the tool is off, for one. */
 		hint?: string;
+		/** The key that does the same, shown beside the label. Whoever owns the tool listens for it. */
+		shortcut?: string;
 		/** Writes the label on the button instead, for a tool that stands alone. */
 		named?: boolean;
 		disabled?: boolean;
 		danger?: boolean;
 		/** A tool that is switched on. */
 		active?: boolean;
+		/**
+		 * For a tool that opens something beside it: whether that is open. While
+		 * it is, the tooltip keeps out of its way.
+		 */
+		expanded?: boolean;
 		/** A smaller button, for the ones that float over the map beside what they act on. */
 		small?: boolean;
 		/** Which side the tooltip comes out on. Above, unless the button is docked where that has no room. */
@@ -73,10 +77,12 @@
 		icon,
 		label,
 		hint,
+		shortcut,
 		named = false,
 		disabled = false,
 		danger = false,
 		active = false,
+		expanded,
 		small = false,
 		tip = 'top',
 		onclick
@@ -102,6 +108,8 @@
 		]}
 		aria-label={named ? undefined : label}
 		aria-pressed={active || undefined}
+		aria-expanded={expanded}
+		aria-keyshortcuts={shortcut?.toUpperCase()}
 		{disabled}
 		{onclick}
 	>
@@ -120,14 +128,24 @@
 		</svg>
 		{#if named}{label}{/if}
 	</button>
-	{#if !named || hint}
+	{#if (!named || hint) && !expanded}
 		<span
 			class="pointer-events-none absolute z-5 grid w-max gap-0.5 rounded-lg border border-[#4a5670] bg-night px-2.5 py-1.5 text-center text-xs opacity-0 shadow-pop transition-opacity delay-150 duration-100 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100 touch:hidden {TIP[
 				tip
 			]}"
 			aria-hidden="true"
 		>
-			{#if !named}<span>{label}</span>{/if}
+			{#if !named}
+				<span>
+					{label}
+					{#if shortcut}
+						<kbd
+							class="ml-1 rounded border border-[#4a5670] bg-panel-2 px-1 font-sans text-[11px] text-muted"
+							>{shortcut.toUpperCase()}</kbd
+						>
+					{/if}
+				</span>
+			{/if}
 			{#if hint}<span class="text-muted">{hint}</span>{/if}
 		</span>
 	{/if}

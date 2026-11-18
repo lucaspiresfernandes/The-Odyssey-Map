@@ -42,16 +42,12 @@ export function canSeeRegion(role: Role, region: Pick<Region, 'hidden'>): boolea
 }
 
 /**
- * A token is moved, resized, turned and given another look by the GM and by
- * the player it belongs to, as long as it isn't locked.
- *
- * Two things about a token are the whole table's: anyone who sees it can
- * label it and lock or unlock it, and anyone can put a copy of it beside
- * it. Three are the GM's alone: hiding it, handing it to someone else, and
- * taking it off the map. The server checks each of these apart.
+ * A token is the whole table's: anyone who sees it can move it, resize it,
+ * turn it, give it another look, label it, lock or unlock it, and put a copy
+ * of it beside it. A lock is all that holds it in place.
  */
-export function canMoveToken(role: Role, userId: string, token: Pick<Token, 'ownerId'>): boolean {
-	return role === 'gm' || token.ownerId === userId;
+export function canMoveToken(token: Pick<Token, 'locked'>): boolean {
+	return !token.locked;
 }
 
 /** Taking a token off the map, and hiding or revealing it, are the GM's. */

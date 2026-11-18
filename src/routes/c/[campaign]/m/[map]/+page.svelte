@@ -8,6 +8,7 @@
 	import MapCanvas from '#lib/components/MapCanvas.svelte';
 	import MapSetup from '#lib/components/MapSetup.svelte';
 	import MarkerForm from '#lib/components/MarkerForm.svelte';
+	import MarkerGlyph from '#lib/components/MarkerGlyph.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import NamePrompt from '#lib/components/NamePrompt.svelte';
 	import TokenDock from '#lib/components/TokenDock.svelte';
@@ -18,6 +19,7 @@
 	import {
 		INK_COLORS,
 		LIMITS,
+		MARKER_TYPES,
 		TOKEN_COLORS,
 		type Command,
 		type GalleryItem,
@@ -25,6 +27,7 @@
 		type Marker,
 		type MarkerInput,
 		type MarkerKind,
+		type MarkerType,
 		type Patch,
 		type Point,
 		type Region,
@@ -85,14 +88,14 @@
 	/** The colour the pen draws in and text is written in. */
 	let ink = $state<string>(INK_COLORS[0]);
 	let form = $state<Form | null>(null);
-	/** The token whose picture, colour and owner are being changed. */
+	/** The token whose picture, colour and outline are being changed. */
 	let tokenForm = $state<Token | null>(null);
 	/** Goes up whenever the gallery may have changed, so the dock reads it again. */
 	let galleryStamp = $state(0);
 	// The two palettes of a battle map fold away, and stay as they were left.
 	let dockFolded = $state(false);
 	let toolsFolded = $state(false);
-	/** The GM is choosing what kind of map this is, and setting up its grid. */
+	/** The GM is setting up the grid of this battle map. */
 	let setup = $state(false);
 	/**
 	 * The GM is in the gallery: to choose an image to lay under this map, or
@@ -106,6 +109,13 @@
 	let selectedRegionId = $state<string | null>(null);
 	/** The tokens and drawings selected on a battle map. */
 	let selectedIds = $state<string[]>([]);
+	/**
+	 * The types of marker this person has filtered out of the world maps. It
+	 * is their own view and nobody else's, and it is kept from map to map.
+	 */
+	let hiddenTypes = $state<MarkerType[]>([]);
+	/** The pills that choose them are out, over the bar under the map. */
+	let filterOpen = $state(false);
 	let inviteOpen = $state(false);
 	// Raw, because a notice's step is looked up in the undo stack by identity,
 	// and deep state would hand out a proxy of it instead.
@@ -118,6 +128,19 @@
 	 */
 	const battle = $derived(world.map.kind === 'battle');
 	const tool = $derived(battle ? battleTool : placing ? 'place' : drawing ? 'draw' : 'pan');
+
+	/** The markers of this map that are of a type this person wants to see. */
+	const shownMarkers = $derived(
+		hiddenTypes.length
+			? world.markers.filter((marker) => !hiddenTypes.includes(marker.type))
+			: world.markers
+	);
+	/** How many markers of each type this map holds, shown or not. */
+	const typeCounts = $derived.by(() => {
+		const counts: Partial<Record<MarkerType, number>> = {};
+		for (const marker of world.markers) counts[marker.type] = (counts[marker.type] ?? 0) + 1;
+		return counts;
+	});
 
 	// How the palettes were left is this browser's to remember: read once the
 	// page is in it, and written whenever one is folded or unfolded.
@@ -153,19 +176,9 @@
 			world.tokens.length === 0
 	);
 
-	// Each kind of map has its own tools. Whichever is out when the GM turns
-	// this map into the other kind is put away.
-	$effect(() => {
-		void battle;
-		untrack(() => {
-			putAway();
-			form = null;
-			tokenForm = null;
-			prompt = null;
-		});
-	});
-
-	// Stepping into another map starts from a clean slate.
+	// Stepping into another map starts from a clean slate. That is also the
+	// only way from one kind of map to the other, each with its own tools: a
+	// map stays the kind it was made as.
 	$effect(() => {
 		void data.snapshot.map.id;
 		untrack(() => {
@@ -174,6 +187,7 @@
 			battleTool = 'pan';
 			form = null;
 			tokenForm = null;
+			filterOpen = false;
 			setup = false;
 			gallery = null;
 			prompt = null;
@@ -250,22 +264,43 @@
 		else form = { mode: 'create', kind: target.create, x, y };
 	}
 
-	function saveMarker(values: Pick<MarkerInput, 'type' | 'title' | 'description' | 'hidden'>) {
-		if (!form) return Promise.resolve(false);
+	async function saveMarker(values: Pick<MarkerInput, 'type' | 'title' | 'description' | 'hidden'>) {
+		if (!form) return false;
+		let command: Command;
 		if (form.mode === 'create') {
-			return run({
+			command = {
 				t: 'marker.create',
 				mapId: world.map.id,
 				kind: form.kind,
 				x: form.x,
 				y: form.y,
 				...values
-			});
+			};
+		} else {
+			// Table notes have no hidden state to send.
+			const { hidden, ...shared } = values;
+			const changes = form.marker.kind === 'world' ? values : shared;
+			command = { t: 'marker.update', id: form.marker.id, changes };
 		}
-		// Table notes have no hidden state to send.
-		const { hidden, ...shared } = values;
-		const changes = form.marker.kind === 'world' ? values : shared;
-		return run({ t: 'marker.update', id: form.marker.id, changes });
+		const saved = await run(command);
+		// A marker just made or changed shouldn't vanish from under its maker:
+		// its type is shown again if it was filtered out.
+		if (saved) hiddenTypes = hiddenTypes.filter((type) => type !== values.type);
+		return saved;
+	}
+
+	/** Filters the markers down to all types but these. */
+	function hideTypes(types: MarkerType[]) {
+		hiddenTypes = types;
+		// A pinned card goes with its marker.
+		const pinned = world.markers.find((marker) => marker.id === selectedMarkerId);
+		if (pinned && types.includes(pinned.type)) selectedMarkerId = null;
+	}
+
+	function toggleType(type: MarkerType) {
+		hideTypes(
+			hiddenTypes.includes(type) ? hiddenTypes.filter((t) => t !== type) : [...hiddenTypes, type]
+		);
 	}
 
 	async function deleteMarker(marker: Marker) {
@@ -324,26 +359,30 @@
 		selectedIds = world.tokens.filter((token) => !had.has(token.id)).map((token) => token.id);
 	}
 
-	function saveToken(values: Pick<TokenInput, 'color' | 'image' | 'ownerId'>) {
+	function saveToken(values: Pick<TokenInput, 'color' | 'outline' | 'image'>) {
 		if (!tokenForm) return Promise.resolve(false);
-		// Who moves a token is the GM's to say.
-		const { ownerId, ...shared } = values;
-		return run({ t: 'token.update', id: tokenForm.id, changes: isGm ? values : shared });
+		return run({ t: 'token.update', id: tokenForm.id, changes: values });
 	}
 
-	/** Picks up a tool of the battle map, or with the one in hand, puts it down again. */
-	function pick(next: BattleTool) {
-		battleTool = battleTool === next ? 'pan' : next;
+	/** Takes a tool of the battle map in hand. */
+	function take(next: BattleTool) {
+		battleTool = next;
 		// A box to select with keeps what is selected: Shift adds to it.
-		if (battleTool !== 'pan' && battleTool !== 'select') selectedIds = [];
+		if (next !== 'pan' && next !== 'select') selectedIds = [];
 	}
 
-	const BATTLE_TOOLS: { tool: BattleTool; icon: ToolIcon; label: string }[] = [
-		{ tool: 'pan', icon: 'pointer', label: 'Select and move' },
-		{ tool: 'select', icon: 'marquee', label: 'Select several' },
-		{ tool: 'measure', icon: 'ruler', label: 'Measure a distance' },
-		{ tool: 'sketch', icon: 'draw', label: 'Draw' },
-		{ tool: 'text', icon: 'text', label: 'Write text' }
+	/** A click on a tool picks it up, or with that one in hand, puts it down again. */
+	function pick(next: BattleTool) {
+		take(battleTool === next ? 'pan' : next);
+	}
+
+	/** Each with the key that takes it in hand: the top row of the keyboard, left to right. */
+	const BATTLE_TOOLS: { tool: BattleTool; icon: ToolIcon; label: string; key: string }[] = [
+		{ tool: 'pan', icon: 'pointer', label: 'Select and move', key: 'q' },
+		{ tool: 'select', icon: 'marquee', label: 'Select several', key: 'w' },
+		{ tool: 'measure', icon: 'ruler', label: 'Measure a distance', key: 'e' },
+		{ tool: 'sketch', icon: 'draw', label: 'Draw', key: 'r' },
+		{ tool: 'text', icon: 'text', label: 'Write text', key: 't' }
 	];
 
 	// ------------------------------------------------------ maps & regions
@@ -413,11 +452,12 @@
 
 	function onkeydown(e: KeyboardEvent) {
 		if (form || tokenForm || setup || gallery || prompt || deleting) return;
+		// In a text field, a letter is a letter and Ctrl+Z belongs to the text.
+		const typing =
+			e.target instanceof Element && !!e.target.closest('input, textarea, select, [contenteditable]');
 
 		if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'z') {
-			// In a text field, Ctrl+Z belongs to the text.
-			const field = 'input, textarea, select, [contenteditable]';
-			if (e.target instanceof Element && e.target.closest(field)) return;
+			if (typing) return;
 			e.preventDefault();
 			// One step per press: holding the keys down doesn't run through the lot.
 			if (e.repeat) return;
@@ -426,9 +466,21 @@
 			return;
 		}
 
+		// Each tool of a battle map has a key of its own.
+		if (battle && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+			const hit = BATTLE_TOOLS.find((each) => each.key === e.key.toLowerCase());
+			if (hit) {
+				e.preventDefault();
+				if (!e.repeat) take(hit.tool);
+				return;
+			}
+		}
+
 		if (e.key !== 'Escape') return;
 		if (placing || drawing || battleTool !== 'pan') {
 			putAway();
+		} else if (filterOpen) {
+			filterOpen = false;
 		} else if (inviteOpen) {
 			inviteOpen = false;
 		} else {
@@ -574,7 +626,7 @@
 				bind:this={canvas}
 				map={world.map}
 				regions={world.regions}
-				markers={world.markers}
+				markers={shownMarkers}
 				tokens={world.tokens}
 				drawings={world.drawings}
 				{cursors}
@@ -666,6 +718,7 @@
 									tip="left"
 									icon={each.icon}
 									label={each.label}
+									shortcut={each.key}
 									active={battleTool === each.tool}
 									onclick={() => pick(each.tool)}
 								/>
@@ -733,6 +786,54 @@
 						onerror={say}
 					/>
 				{:else}
+				{#if filterOpen && tool === 'pan'}
+					<!-- Which types of marker to see: a pill for each, lit while its type
+					     is shown, with how many of them this map holds. -->
+					<div
+						class="pointer-events-auto grid w-[min(440px,calc(100%-24px))] gap-2 p-2.5 {floating}"
+						role="group"
+						aria-label="Types of marker to show"
+					>
+						<div class="flex flex-wrap justify-center gap-1.5">
+							{#each MARKER_TYPES as option (option.id)}
+								{@const shown = !hiddenTypes.includes(option.id)}
+								<!-- Each type is a pill in its own colour, which arrives as --c. -->
+								<button
+									class={[
+										'inline-flex cursor-pointer items-center gap-1.25 rounded-full border py-1 pr-2.5 pl-2 text-[13px] touch:py-2',
+										shown
+											? 'border-(--c) bg-(--c)/18 text-[color-mix(in_srgb,var(--c)_70%,white)]'
+											: 'text-muted line-through decoration-muted/60'
+									]}
+									style:--c={option.color}
+									aria-pressed={shown}
+									onclick={() => toggleType(option.id)}
+								>
+									<MarkerGlyph type={option.id} size={15} />
+									{option.label}
+									{#if typeCounts[option.id]}
+										<span class="text-[11px] tabular-nums opacity-70">{typeCounts[option.id]}</span>
+									{/if}
+								</button>
+							{/each}
+						</div>
+						<div class="flex items-center justify-between gap-2">
+							<span class="text-xs text-muted">Only changes what you see.</span>
+							<span class="flex gap-1.5">
+								<button
+									class="btn btn-sm btn-ghost"
+									disabled={hiddenTypes.length === 0}
+									onclick={() => hideTypes([])}>Show all</button
+								>
+								<button
+									class="btn btn-sm btn-ghost"
+									disabled={hiddenTypes.length === MARKER_TYPES.length}
+									onclick={() => hideTypes(MARKER_TYPES.map((each) => each.id))}>Hide all</button
+								>
+							</span>
+						</div>
+					</div>
+				{/if}
 				<div
 					class="pointer-events-auto flex max-w-[calc(100%-120px)] flex-wrap items-center justify-center gap-1.5 p-1.5 max-[720px]:max-w-[calc(100%-24px)] max-[720px]:flex-col {floating}"
 					role="toolbar"
@@ -751,6 +852,18 @@
 								label={isGm ? 'Add a note' : 'Add note'}
 								named={!isGm}
 								onclick={() => startPlacing({ create: 'player' })}
+							/>
+							<!-- Lit while some type is filtered out, so markers that don't
+							     show are never a mystery. -->
+							<ToolButton
+								icon="filter"
+								label="Filter markers by type"
+								hint={hiddenTypes.length
+									? `${hiddenTypes.length} of ${MARKER_TYPES.length} types hidden`
+									: undefined}
+								active={hiddenTypes.length > 0}
+								expanded={filterOpen}
+								onclick={() => (filterOpen = !filterOpen)}
 							/>
 							{#if isGm}
 								<span class="w-px self-stretch bg-line"></span>
@@ -778,11 +891,6 @@
 									label="Rename this map"
 									onclick={() =>
 										(prompt = { kind: 'rename', mapId: world.map.id, initial: world.map.name })}
-								/>
-								<ToolButton
-									icon="grid"
-									label="Make this a battle map"
-									onclick={() => (setup = true)}
 								/>
 							{/if}
 						</div>
@@ -865,7 +973,6 @@
 	<TokenForm
 		gm={isGm}
 		{campaignId}
-		members={data.members}
 		token={tokenForm}
 		onsubmit={saveToken}
 		onclose={() => {
@@ -876,11 +983,10 @@
 	/>
 {/if}
 
-{#if setup}
+{#if setup && battle}
 	<MapSetup
 		map={world.map}
-		occupied={world.markers.length > 0 || world.regions.length > 0}
-		onsubmit={(kind, grid) => run({ t: 'map.update', id: world.map.id, kind, grid })}
+		onsubmit={(grid, cellFeet) => run({ t: 'map.update', id: world.map.id, grid, cellFeet })}
 		onclose={() => (setup = false)}
 	/>
 {/if}

@@ -3,19 +3,17 @@
 	// token, one drawing, or a whole catch of them. Each button is there only
 	// for those it would do something for.
 	//
-	// A token's label and its lock are the whole table's, and so is copying
-	// it. Turning and resizing it are for whoever moves it, while it isn't
-	// locked. Hiding it and taking it off the map are the GM's. A drawing is
-	// changed and rubbed out by whoever made it, and by the GM.
+	// A token is the whole table's: its label, its lock, its look, and copying
+	// it. Hiding it and taking it off the map are the GM's. Turning and
+	// resizing it are not done from here: the map has handles for those on
+	// the token itself. A drawing is changed and rubbed out by whoever made
+	// it, and by the GM.
 
-	import { snapToGrid } from '#lib/shared/grid.ts';
-	import { canChangeDrawing, canMoveToken, canRemoveToken } from '#lib/shared/rules.ts';
+	import { canChangeDrawing, canRemoveToken } from '#lib/shared/rules.ts';
 	import {
 		LIMITS,
-		ROTATION_STEP,
 		type Command,
 		type Drawing,
-		type MapInfo,
 		type Role,
 		type Token,
 		type TokenInput
@@ -23,16 +21,17 @@
 	import ToolButton from './ToolButton.svelte';
 
 	interface Props {
-		map: MapInfo;
 		tokens: Token[];
 		drawings: Drawing[];
 		role: Role;
 		userId: string;
+		/** Which side the buttons' tooltips come out on: away from what is selected. */
+		tip: 'top' | 'bottom';
 		/** Carries the commands out. `note` is said once they are, with a way to undo them. */
 		send: (commands: Command[], note?: string) => Promise<boolean>;
 		/** Copies were asked for. Whoever carries these out selects what they make. */
 		oncopy: (commands: Command[]) => void;
-		/** The rest of what a token is: its picture, its colour, whose it is. */
+		/** The rest of what a token is: its picture, its colour, its outline. */
 		onedit: (token: Token) => void;
 		/** A text is to be reworded, there on the map. */
 		onwrite: (drawing: Drawing) => void;
@@ -40,12 +39,10 @@
 		onclear: () => void;
 	}
 
-	let { map, tokens, drawings, role, userId, send, oncopy, onedit, onwrite, onclear }: Props =
+	let { tokens, drawings, role, userId, tip, send, oncopy, onedit, onwrite, onclear }: Props =
 		$props();
 
 	const gm = $derived(canRemoveToken(role));
-	/** The tokens that can be turned and resized from here. */
-	const loose = $derived(tokens.filter((t) => !t.locked && canMoveToken(role, userId, t)));
 	const erasable = $derived(drawings.filter((d) => canChangeDrawing(role, userId, d)));
 	/** The one token selected, when that is all there is. */
 	const one = $derived(tokens.length === 1 && drawings.length === 0 ? tokens[0] : null);
@@ -82,26 +79,6 @@
 		id: token.id,
 		changes
 	});
-
-	function turn(by: number) {
-		send(loose.map((t) => update(t, { rotation: (t.rotation + by + 360) % 360 })));
-	}
-
-	const fits = (size: number) => size >= 1 && size <= LIMITS.tokenSize;
-
-	function resize(by: number) {
-		send(
-			loose
-				.filter((t) => fits(t.size + by))
-				.map((t) => {
-					// An even number of cells sits where four meet, an odd one in
-					// the middle of a cell: it shifts half a cell to stay square.
-					const size = t.size + by;
-					const [x, y] = snapToGrid(map, [t.x, t.y], size);
-					return update(t, { size, x, y });
-				})
-		);
-	}
 
 	function lock() {
 		const locked = !allLocked;
@@ -164,39 +141,11 @@
 				<button class="btn btn-sm btn-primary">Save</button>
 			</form>
 		{:else}
-			{#if loose.length}
-				<ToolButton
-					small
-					icon="turn-left"
-					label="Turn left {ROTATION_STEP}°"
-					onclick={() => turn(-ROTATION_STEP)}
-				/>
-				<ToolButton
-					small
-					icon="turn-right"
-					label="Turn right {ROTATION_STEP}°"
-					onclick={() => turn(ROTATION_STEP)}
-				/>
-				<ToolButton
-					small
-					icon="shrink"
-					label="Make smaller"
-					disabled={!loose.some((t) => fits(t.size - 1))}
-					onclick={() => resize(-1)}
-				/>
-				<ToolButton
-					small
-					icon="grow"
-					label="Make bigger"
-					disabled={!loose.some((t) => fits(t.size + 1))}
-					onclick={() => resize(1)}
-				/>
-				<span class="w-px self-stretch bg-line"></span>
-			{/if}
 			{#if tokens.length}
 				{#if one}
 					<ToolButton
 						small
+						{tip}
 						icon="label"
 						label="Label"
 						onclick={() => {
@@ -207,6 +156,7 @@
 				{/if}
 				<ToolButton
 					small
+					{tip}
 					icon={allLocked ? 'unlock' : 'lock'}
 					label={allLocked ? 'Unlock' : 'Lock in place'}
 					active={allLocked}
@@ -214,26 +164,29 @@
 				/>
 				<ToolButton
 					small
+					{tip}
 					icon="duplicate"
 					label={several ? 'Duplicate them' : 'Duplicate'}
 					onclick={() => oncopy(tokens.map((t) => ({ t: 'token.duplicate', id: t.id })))}
 				/>
-				{#if one && canMoveToken(role, userId, one)}
+				{#if one}
 					<ToolButton
 						small
+						{tip}
 						icon="image"
-						label="Picture, colour{gm ? ' and owner' : ''}"
+						label="Picture, colour and outline"
 						onclick={() => onedit(one)}
 					/>
 				{/if}
 			{/if}
 			{#if text}
-				<ToolButton small icon="rename" label="Change the text" onclick={() => onwrite(text)} />
+				<ToolButton small {tip} icon="rename" label="Change the text" onclick={() => onwrite(text)} />
 			{/if}
 			{#if gm && tokens.length}
 				<span class="w-px self-stretch bg-line"></span>
 				<ToolButton
 					small
+					{tip}
 					icon={allHidden ? 'reveal' : 'hide'}
 					label={allHidden ? 'Reveal to players' : 'Hide from players'}
 					active={allHidden}
@@ -243,6 +196,7 @@
 			{#if removable}
 				<ToolButton
 					small
+					{tip}
 					danger
 					icon="delete"
 					label={removable > 1 ? `Delete all ${removable}` : gm && tokens.length ? 'Delete' : 'Rub out'}

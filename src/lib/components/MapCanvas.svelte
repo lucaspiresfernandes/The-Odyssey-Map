@@ -13,12 +13,20 @@
 	import { untrack } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
 	import { boxOf, capped, linePath, thinOut, touchesBox } from '#lib/shared/drawing.ts';
-	import { cellCount, cellsBetween, snapToGrid } from '#lib/shared/grid.ts';
+	import {
+		cellsToFeet,
+		feetBetween,
+		feetCount,
+		sitsOnCorner,
+		snapToGrid
+	} from '#lib/shared/grid.ts';
 	import { canChangeDrawing, canEditWorld, canMoveToken } from '#lib/shared/rules.ts';
 	import { tileLevelFor, tileLevels, tilesIn, type Tile } from '#lib/shared/tiles.ts';
 	import {
 		DRAWING_SIZE,
 		LIMITS,
+		ROTATION_STEP,
+		TOKEN_SIZE_STEP,
 		imageUrl,
 		mapImageUrl,
 		markerType,
@@ -31,7 +39,8 @@
 		type Point,
 		type Region,
 		type Role,
-		type Token
+		type Token,
+		type TokenInput
 	} from '#lib/shared/types.ts';
 	import MarkerCard from './MarkerCard.svelte';
 	import MarkerGlyph from './MarkerGlyph.svelte';
@@ -87,7 +96,7 @@
 		onmove: (marker: Marker) => void;
 		ondelete: (marker: Marker) => void;
 		onhide: (marker: Marker, hidden: boolean) => void;
-		/** The rest of what a token is, is to be changed: its picture, its colour, whose it is. */
+		/** The rest of what a token is, is to be changed: its picture, its colour, its outline. */
 		onedittoken: (token: Token) => void;
 		/** Where this browser is pointing on the map, or null when it is not over it. */
 		oncursor: (at: Pointing | null) => void;
@@ -166,6 +175,22 @@
 		rest: Point;
 		/** Whether the lead is a token: then the way it has come is measured. */
 		measured: boolean;
+		held: boolean;
+	} | null>(null);
+	/**
+	 * A token being turned or resized by one of its handles, and what it has
+	 * come to so far. Once let go it waits here, no longer `held`, until the
+	 * server has changed it for everyone. `at` is where it comes to rest then,
+	 * if resizing it moved it. `swing` is how far round the token the pointer
+	 * has taken the handle that turns it, in degrees: not in steps like the
+	 * token's own turn, so the handle stays with the pointer.
+	 */
+	let shaping = $state.raw<{
+		id: string;
+		size?: number;
+		rotation?: number;
+		swing?: number;
+		at?: Point;
 		held: boolean;
 	} | null>(null);
 	/** A distance being measured with the ruler tool: from, to. */
@@ -274,9 +299,9 @@
 		for (const other of cursors) {
 			const { drag } = other;
 			const token = drag && tokens.find((t) => t.id === drag.id);
-			// Only from someone who could really move it. A drag is one
-			// browser's word, and the server that passes it on doesn't check.
-			if (drag && token && canMoveToken(other.role, other.userId, token)) {
+			// Only one that can really be moved. A drag is one browser's word,
+			// and the server that passes it on doesn't check.
+			if (drag && token && canMoveToken(token)) {
 				spots.set(token.id, clamped([drag.x, drag.y]));
 			}
 		}
@@ -294,8 +319,15 @@
 
 	/** Where a token is drawn: in a hand if it is in one, or where it stands. */
 	function spotOf(token: Token): Point {
-		return inHandAt(token.id) ?? heldByOthers.get(token.id) ?? [token.x, token.y];
+		const resized = shaping?.id === token.id ? shaping.at : undefined;
+		return inHandAt(token.id) ?? resized ?? heldByOthers.get(token.id) ?? [token.x, token.y];
 	}
+
+	/** How big a token is drawn, and which way round: as its handles have it, or as it is. */
+	const sizeOf = (token: Token) =>
+		(shaping?.id === token.id ? shaping.size : undefined) ?? token.size;
+	const turnOf = (token: Token) =>
+		(shaping?.id === token.id ? shaping.rotation : undefined) ?? token.rotation;
 
 	/** How far from where it is kept a drawing is drawn, while it is in hand. */
 	function shiftOf(drawing: Drawing): Point {
@@ -311,9 +343,9 @@
 	/** What goes around letters so they read on any map: dark around light ink, light around dark. */
 	const haloOf = (color: string) => (color === '#12151c' ? '#fff8e4' : '#0c0e14');
 
-	const isToken = (thing: Token | Drawing): thing is Token => 'ownerId' in thing;
-	/** A token is picked up by whoever moves it, unless it is locked. */
-	const canGrabToken = (token: Token) => !token.locked && canMoveToken(role, userId, token);
+	const isToken = (thing: Token | Drawing): thing is Token => !('points' in thing);
+	/** A token is picked up by anyone, unless it is locked. */
+	const canGrabToken = (token: Token) => canMoveToken(token);
 	const canGrabDrawing = (drawing: Drawing) => canChangeDrawing(role, userId, drawing);
 	const canGrab = (thing: Token | Drawing) =>
 		isToken(thing) ? canGrabToken(thing) : canGrabDrawing(thing);
@@ -327,9 +359,29 @@
 		selecting ? drawings.filter((d) => selectedIds.includes(d.id)) : []
 	);
 
-	/** Where the buttons for the selection float: over the top of it, in the middle. */
+	/**
+	 * The token that wears handles to turn and resize it by: the only one
+	 * selected, as long as it isn't locked or being carried.
+	 */
+	const handled = $derived(
+		selectedTokens.length === 1 && canGrabToken(selectedTokens[0]) && !carry?.held
+			? selectedTokens[0]
+			: null
+	);
+	/**
+	 * How far beyond a token's rim its handles stand, on screen: the dots that
+	 * resize it just clear of it, so a small token isn't lost under them, and
+	 * the one that turns it clear of those.
+	 */
+	const sizeReach = $derived(4 * grip);
+	const turnReach = $derived(26 * grip);
+
+	/**
+	 * Where the buttons for the selection float: just under it, in the middle,
+	 * or over the top of it when it is too low on the screen for that.
+	 */
 	const barPosition = $derived.by(() => {
-		if (carry?.held || marquee || writing) return null;
+		if (carry?.held || shaping?.held || marquee || writing) return null;
 		if (selectedTokens.length + selectedDrawings.length === 0) return null;
 		const box = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity };
 		const take = (x: number, y: number, rx: number, ry: number) => {
@@ -339,7 +391,7 @@
 			box.y1 = Math.max(box.y1, y + ry);
 		};
 		for (const token of selectedTokens) {
-			const half = (token.size * cell) / 2;
+			const half = (sizeOf(token) * cell) / 2;
 			take(...spotOf(token), half / W, half / H);
 		}
 		for (const drawing of selectedDrawings) {
@@ -357,9 +409,22 @@
 				take(x + sx + long, y + sy, 0, half / H);
 			}
 		}
-		// A token's name is written under it, so buttons that go below go below that.
-		const below = (box.y1 - box.y0) * H * view.k + 12 + (selectedTokens.length ? 18 : 0);
-		return cardSpot([(box.x0 + box.x1) / 2, box.y0], 12, below, barW, barH);
+		// On screen: the middle of the selection, its top and its bottom.
+		const sx = ((box.x0 + box.x1) / 2) * W * view.k + view.x;
+		const top = box.y0 * H * view.k + view.y;
+		const bottom = box.y1 * H * view.k + view.y;
+		if (sx < -30 || sx > cw + 30 || bottom < -30 || top > ch + 30) return null;
+		// A token's name is written under it, so the buttons go under that.
+		const under = bottom + 6 + (selectedTokens.length ? 18 : 0);
+		const fits = under + barH <= ch - 6;
+		// With no room left down there they go over the top, clear of the
+		// handle that turns a token.
+		const clear = handled ? turnReach + 18 * grip : 0;
+		return {
+			left: Math.min(Math.max(sx - barW / 2, 8), Math.max(8, cw - barW - 8)),
+			top: fits ? under : Math.max(6, top - 12 - clear - barH),
+			under: fits
+		};
 	});
 
 	interface Ruler {
@@ -387,7 +452,7 @@
 			drawn.push({ key: other.id, from: clamped(from), to: clamped(to), tint: tintOf(other) });
 		}
 		return drawn.map(
-			(ruler): Ruler => ({ ...ruler, length: cellCount(cellsBetween(map, ruler.from, ruler.to)) })
+			(ruler): Ruler => ({ ...ruler, length: feetCount(feetBetween(map, ruler.from, ruler.to)) })
 		);
 	});
 
@@ -414,6 +479,66 @@
 	function aim(e: PointerEvent): Point {
 		const at = clamped(toMap(e.clientX, e.clientY));
 		return e.altKey ? at : snapToGrid(map, at);
+	}
+
+	// ---------------------------------------------------- turning and resizing
+
+	/** How far a pointer is from the middle of a token, in the map's pixels. */
+	function fromMiddle(token: Token, e: PointerEvent): Point {
+		const [px, py] = toMap(e.clientX, e.clientY);
+		const [x, y] = spotOf(token);
+		return [(px - x) * W, (py - y) * H];
+	}
+
+	/** Which way that is, in degrees clockwise from straight up: the way a token's turn is counted. */
+	const bearing = ([dx, dy]: Point) => (Math.atan2(dx, -dy) * 180) / Math.PI;
+
+	/**
+	 * What to ask of the server for a token that has been turned or resized,
+	 * or null when it is as it was. A token an even number of cells across
+	 * sits where four cells meet and any other in the middle of one, so going
+	 * from one to the other shifts it half a cell to sit squarely again.
+	 * `free` leaves it where it is.
+	 */
+	function reshaped(
+		token: Token,
+		to: { size?: number; rotation?: number },
+		free = false
+	): Partial<TokenInput> | null {
+		const changes: Partial<TokenInput> = {};
+		if (to.rotation !== undefined && to.rotation !== token.rotation) changes.rotation = to.rotation;
+		if (to.size !== undefined && to.size !== token.size) {
+			changes.size = to.size;
+			if (!free && sitsOnCorner(to.size) !== sitsOnCorner(token.size)) {
+				[changes.x, changes.y] = snapToGrid(map, [token.x, token.y], to.size);
+			}
+		}
+		return Object.keys(changes).length ? changes : null;
+	}
+
+	/**
+	 * A handle with the focus: the left and right arrow keys do what dragging
+	 * it does, a step at a time. `side` is which side of the token a resize
+	 * handle is on, so that the arrow pointing away from the token grows it.
+	 */
+	function handleKey(e: KeyboardEvent, token: Token, how: 'turn' | 'resize', side = 1) {
+		const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+		if (!step) return;
+		e.preventDefault();
+		if (e.repeat) return;
+		const changes = reshaped(
+			token,
+			how === 'turn'
+				? { rotation: (token.rotation + step * ROTATION_STEP + 360) % 360 }
+				: {
+						size: within(
+							token.size + step * side * TOKEN_SIZE_STEP,
+							TOKEN_SIZE_STEP,
+							LIMITS.tokenSize
+						)
+					}
+		);
+		if (changes) send([{ t: 'token.update', id: token.id, changes }]);
 	}
 
 	// What a tool was in the middle of is put away with the tool.
@@ -703,6 +828,7 @@
 			if (shown.id !== map.id) {
 				clearHover();
 				carry = null;
+				shaping = null;
 				measure = null;
 				stroke = null;
 				inked = [];
@@ -836,6 +962,19 @@
 				sy: number;
 				moved: boolean;
 				target: Element;
+		  }
+		| {
+				/** A handle of a token is being dragged: the one that turns it, or one that resizes it. */
+				type: 'shape';
+				how: 'turn' | 'resize';
+				token: Token;
+				/**
+				 * How far off its mark the handle was caught, so the token doesn't
+				 * jump to the pointer: in degrees for a turn, map pixels for a size.
+				 */
+				slack: number;
+				/** Which way the pointer was from the token's middle when it caught the handle. */
+				bearing: number;
 		  }
 		| { type: 'measure' }
 		| { type: 'sketch' }
@@ -990,6 +1129,7 @@
 		if (pointers.size === 2) {
 			// A second finger makes it a pinch, and drops whatever the first one held.
 			if (carry?.held) carry = null;
+			if (shaping?.held) shaping = null;
 			measure = null;
 			stroke = null;
 			marquee = null;
@@ -1030,6 +1170,33 @@
 				sy: e.clientY,
 				moved: false
 			};
+			capture(e.pointerId);
+			return;
+		}
+
+		// One of the handles on the selected token: it is turned or resized
+		// from here until the pointer lets go.
+		const handle = handled && target.closest<HTMLElement>('[data-handle]');
+		if (handle && handled) {
+			const how = handle.dataset.handle === 'turn' ? 'turn' : 'resize';
+			const from = fromMiddle(handled, e);
+			gesture = {
+				type: 'shape',
+				how,
+				token: handled,
+				slack:
+					how === 'turn'
+						? bearing(from) - turnOf(handled)
+						: Math.hypot(...from) - (sizeOf(handled) * cell) / 2,
+				bearing: bearing(from)
+			};
+			// A size being changed is written over the token from the first, so
+			// it starts out as the size it is. A turn is read off the token.
+			shaping =
+				how === 'turn'
+					? { id: handled.id, held: true }
+					: { id: handled.id, size: sizeOf(handled), held: true };
+			dragging = true;
 			capture(e.pointerId);
 			return;
 		}
@@ -1190,6 +1357,32 @@
 					held: true
 				};
 			}
+		} else if (g?.type === 'shape') {
+			const from = fromMiddle(g.token, e);
+			const away = Math.hypot(...from);
+			if (g.how === 'turn') {
+				// It turns as far as the pointer has gone round it, a step at a
+				// time, and its handle goes round with the pointer. Right over its
+				// middle there is no telling which way the pointer is.
+				if (away * view.k >= 6) {
+					const turned = Math.round((bearing(from) - g.slack) / ROTATION_STEP) * ROTATION_STEP;
+					shaping = {
+						id: g.token.id,
+						rotation: ((turned % 360) + 360) % 360,
+						swing: bearing(from) - g.bearing,
+						held: true
+					};
+				}
+			} else {
+				// Its rim follows the pointer, and its middle stays where it is.
+				const across = ((away - g.slack) * 2) / cell;
+				const size = within(
+					Math.round(across / TOKEN_SIZE_STEP) * TOKEN_SIZE_STEP,
+					TOKEN_SIZE_STEP,
+					LIMITS.tokenSize
+				);
+				shaping = { id: g.token.id, size, held: true };
+			}
 		} else if (g?.type === 'measure' && measure) {
 			measure = [measure[0], aim(e)];
 		} else if (g?.type === 'sketch' && stroke) {
@@ -1252,6 +1445,24 @@
 				});
 			} else {
 				carry = null;
+			}
+		}
+		if (g?.type === 'shape') {
+			const shaped = shaping;
+			// With Alt held, a resized token stays exactly where it is.
+			const changes = shaped && completed ? reshaped(g.token, shaped, e.altKey) : null;
+			if (shaped && changes) {
+				// Kept as it was let go until the server has changed it, so it
+				// never flickers back to what it was.
+				const at: Point | undefined =
+					changes.x !== undefined && changes.y !== undefined ? [changes.x, changes.y] : undefined;
+				const settled = { ...shaped, at, held: false };
+				shaping = settled;
+				send([{ t: 'token.update', id: g.token.id, changes }]).then(() => {
+					if (shaping === settled) shaping = null;
+				});
+			} else {
+				shaping = null;
 			}
 		}
 		if (g?.type === 'vertex') {
@@ -1497,16 +1708,9 @@
 		send([{ t: 'token.update', id: token.id, changes: { x, y } }]);
 	}
 
-	/** Whose a token is, for its tooltip. */
-	function whose(token: Token): string {
-		const owner =
-			token.ownerId === userId
-				? 'Your token'
-				: token.ownerName
-					? `${token.ownerName}'s token`
-					: "The GM's token";
-		return token.locked ? `${owner} · locked` : owner;
-	}
+	/** What every handle on a token looks like. Each keeps its size on screen: scale-(--inv). */
+	const handleLook =
+		'absolute top-0 left-0 -translate-1/2 scale-(--inv) rounded-full border-[1.5px] border-accent-ink bg-white text-accent-ink shadow-[0_1px_3px_rgb(0_0_0/0.55)] [-webkit-tap-highlight-color:transparent]';
 
 	// ---------------------------------------------------------------- looks
 
@@ -1867,16 +2071,18 @@
 
 			<!-- The pieces on a battle map. Each is as many cells across as it says, so
 			     unlike a pin it grows and shrinks with the map. It is a disc in its own
-			     colour (--c) with its initials on it, or with its picture, ringed in
-			     that colour. Its name is lettered underneath once it is big enough on
-			     screen to tell from its neighbours. -->
+			     colour (--c) with its initials on it, or its picture. Either can wear
+			     a ring in its outline colour (--o), to tell it from the next one. Its
+			     name is lettered underneath once it is big enough on screen to tell
+			     from its neighbours. -->
 			{#if battle}
 				{#each tokens as token (token.id)}
 					{@const [x, y] = spotOf(token)}
 					{@const mine = canGrabToken(token)}
 					{@const inHand = !!carry?.held && token.id in carry.origins}
 					{@const selected = selecting && selectedIds.includes(token.id)}
-					{@const across = token.size * cell}
+					{@const across = sizeOf(token) * cell}
+					{@const turn = turnOf(token)}
 					<!-- Only the position glides, from one report of a drag to the next and
 					     onto the grid when it is let go. Never in the hand that holds it. -->
 					<div
@@ -1891,8 +2097,7 @@
 					>
 						<button
 							class={[
-								'absolute grid -translate-1/2 place-items-center overflow-hidden rounded-full bg-(--c) leading-none font-semibold text-[#12151c] [-webkit-tap-highlight-color:transparent]',
-								token.image ? 'border-(--c)' : 'border-[#12151c]',
+								'absolute grid -translate-1/2 place-items-center overflow-hidden rounded-full border-(--o) bg-(--c) leading-none font-semibold text-[#12151c] [-webkit-tap-highlight-color:transparent]',
 								inHand ? 'cursor-grabbing' : mine ? 'cursor-grab' : 'cursor-pointer',
 								selected ? 'token-selected' : inHand ? 'token-lifted' : 'token-shadow',
 								// Only the GM ever has a hidden one to draw.
@@ -1902,11 +2107,12 @@
 							data-token-id={token.id}
 							style:width="{across}px"
 							style:height="{across}px"
-							style:border-width="{across * 0.06}px"
+							style:border-width="{across * (token.outline ? 0.09 : 0.06)}px"
 							style:font-size="{across * 0.4}px"
-							style:rotate="{token.rotation}deg"
+							style:rotate="{turn}deg"
 							style:--c={token.color}
-							title={whose(token)}
+							style:--o={token.outline ?? '#12151c'}
+							title="{token.name}{token.locked ? ' · locked' : ''}"
 							aria-label="Token: {token.name}{token.hidden ? ' (hidden from players)' : ''}{mine
 								? '. Arrow keys move it.'
 								: ''}"
@@ -1933,6 +2139,63 @@
 							>
 								{token.name}
 							</span>
+						{/if}
+						{#if handled?.id === token.id}
+							<!-- The handles of the one token selected. A dot on each side of it
+							     is dragged out or in to resize it, half a cell at a time. The
+							     one above it is dragged around it to turn it: it goes round
+							     with the pointer while it is held, and the token turns as far.
+							     Let go, it is back on top. -->
+							{@const out = across / 2 + turnReach / view.k}
+							{@const swing = shaping?.held && shaping.id === token.id ? (shaping.swing ?? 0) : 0}
+							{@const round = (swing * Math.PI) / 180}
+							{#each [-1, 1] as side (side)}
+								<button
+									class="{handleLook} size-3 cursor-ew-resize touch:size-5"
+									data-handle="resize"
+									style:left="{side * (across / 2 + sizeReach / view.k)}px"
+									title="Drag to resize"
+									aria-label="Resize {token.name}: drag, or use the left and right arrow keys"
+									onkeydown={(e) => handleKey(e, token, 'resize', side)}
+								></button>
+							{/each}
+							<button
+								class="{handleLook} grid size-5.5 cursor-grab place-items-center touch:size-8"
+								data-handle="turn"
+								style:left="{Math.sin(round) * out}px"
+								style:top="{-Math.cos(round) * out}px"
+								title="Drag around the token to turn it"
+								aria-label="Turn {token.name}: drag around it, or use the left and right arrow keys"
+								onkeydown={(e) => handleKey(e, token, 'turn')}
+							>
+								<svg
+									class="pointer-events-none size-[62%]"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2.75"
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									aria-hidden="true"
+								>
+									<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8 M21 3v5h-5" />
+								</svg>
+							</button>
+							{#if shaping?.held && shaping.id === token.id}
+								<!-- How big it is being made, or how far round it is being turned,
+								     written over the top of it for as long as a handle is held. -->
+								<div
+									class="pointer-events-none absolute left-0 size-0 scale-(--inv)"
+									style:top="{-out}px"
+									aria-hidden="true"
+								>
+									<span
+										class="absolute bottom-4.5 left-0 -translate-x-1/2 rounded-full border border-accent bg-night/90 px-2 py-0.5 text-xs font-semibold whitespace-nowrap touch:bottom-6"
+									>
+										{shaping.size !== undefined ? `${feetCount(cellsToFeet(map, shaping.size))} across` : `${turn}°`}
+									</span>
+								</div>
+							{/if}
 						{/if}
 					</div>
 				{/each}
@@ -2074,8 +2337,8 @@
 			</div>
 		{/if}
 
-		<!-- The buttons for whatever is selected on a battle map, floating over the
-		     top of it. They stay mounted while it is off screen or in hand, out
+		<!-- The buttons for whatever is selected on a battle map, floating just
+		     under it. They stay mounted while it is off screen or in hand, out
 		     of sight, so the Delete key still has them to ask. -->
 		{#if selectedTokens.length + selectedDrawings.length > 0}
 			<div
@@ -2087,11 +2350,11 @@
 			>
 				<SelectionBar
 					bind:this={bar}
-					{map}
 					tokens={selectedTokens}
 					drawings={selectedDrawings}
 					{role}
 					{userId}
+					tip={barPosition?.under === false ? 'top' : 'bottom'}
 					{send}
 					oncopy={copy}
 					onedit={onedittoken}

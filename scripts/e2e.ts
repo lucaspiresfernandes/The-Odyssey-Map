@@ -482,6 +482,10 @@ async function run() {
 	const squared = await gm.command(campaign, { t: 'map.update', id: bridgeId, grid: { size: 70 } });
 	check('the GM sets up its grid', squared.body.events?.[0]?.patch.map?.grid?.size === 70, `status ${squared.status}`);
 	check('a player cannot', (await player.command(campaign, { t: 'map.update', id: bridgeId, grid: { size: 10 } })).status === 403);
+	check('a cell starts out as eight feet', squared.body.events?.[0]?.patch.map?.cellFeet === 8);
+	const scaled = await gm.command(campaign, { t: 'map.update', id: bridgeId, cellFeet: 5 });
+	check('the GM says how many feet a cell is', scaled.body.events?.[0]?.patch.map?.cellFeet === 5, `status ${scaled.status}`);
+	check('but not a nonsense number of them', (await gm.command(campaign, { t: 'map.update', id: bridgeId, cellFeet: 0 })).status === 400);
 	check('tokens stay off a world map', (await gm.command(campaign, { t: 'token.create', mapId, name: 'Lost', x: 0.5, y: 0.5 })).status === 400);
 	check(
 		'notes and markers stay off a battle map',
@@ -492,7 +496,11 @@ async function run() {
 		'and so do regions: nothing leads further in',
 		(await gm.command(campaign, { t: 'region.create', mapId: bridgeId, name: 'Under the bridge', points: [[0.1, 0.1], [0.3, 0.1], [0.3, 0.3]] })).status === 400
 	);
-	check('a map with things on it cannot become a battle map', (await gm.command(campaign, { t: 'map.update', id: mapId, kind: 'battle' })).status === 409);
+	check(
+		'a map stays the kind it was made as',
+		(await gm.command(campaign, { t: 'map.update', id: mapId, kind: 'battle' })).status === 400 &&
+			(await gm.command(campaign, { t: 'map.update', id: bridgeId, kind: 'world' })).status === 400
+	);
 
 	// A token wears a picture from the gallery, kept small however big it came.
 	const face = await add('token', pixels, 'Ogre face.png', 'Ogre face');
@@ -512,7 +520,7 @@ async function run() {
 	const heroId: string = dressed.body.events?.[0]?.patch.token?.id;
 	check('once the GM reveals it, a player gives their own token that picture', dressed.body.events?.[0]?.patch.token?.image === faceFile, `status ${dressed.status}`);
 	check('and takes it off again', (await player.command(campaign, { t: 'token.update', id: heroId, changes: { image: null } })).body.events?.[0]?.patch.token?.image === null);
-	check('but cannot dress the GM\'s token', (await player.command(campaign, { t: 'token.update', id: ogreId, changes: { image: null } })).status === 403);
+	check('and makes the GM\'s token half a cell smaller', (await player.command(campaign, { t: 'token.update', id: ogreId, changes: { size: 1.5 } })).body.events?.[0]?.patch.token?.size === 1.5);
 	// Short enough to fit in a token's name.
 	const lurker = crypto.randomUUID().slice(0, 18);
 	const lurking = await gm.command(campaign, { t: 'token.create', mapId: bridgeId, name: `Lurker ${lurker}`, x: 0.2, y: 0.2, hidden: true });
@@ -524,7 +532,7 @@ async function run() {
 	await pause(600);
 	const tokenEvents = (socket: { messages: any[] }, id: string) =>
 		socket.messages.filter((m) => m.t === 'event' && m.event.patch.token?.id === id).map((m) => m.event.patch.token);
-	check('a token the GM adds reaches the player live', !!ogreId && tokenEvents(playerSocket, ogreId).length === 1);
+	check('a token the GM adds reaches the player live', !!ogreId && tokenEvents(playerSocket, ogreId)[0]?.name === 'Ogre');
 	const lurkerSeen = {
 		id: !!lurkerId,
 		gm: tokenEvents(gmSocket, lurkerId).length,
@@ -538,11 +546,11 @@ async function run() {
 	);
 	check('and to the player it does not exist', ack(34)?.ok === false);
 	const mine = gmSocket.messages.find((m) => m.t === 'event' && m.event.patch.token?.name === 'Tester')?.event.patch.token;
-	check('a player can add a token, and it is theirs', ack(30)?.ok === true && mine?.ownerName === 'Tester');
-	check('a player cannot move the GM\'s token', ack(31)?.ok === false);
+	check('a player can add a token', ack(30)?.ok === true && !!mine?.id);
+	check('a player moves the GM\'s token, and the GM sees it go', ack(31)?.ok === true && tokenEvents(gmSocket, ogreId).at(-1)?.x === 0.1);
 	tokenCommand(32, { t: 'token.update', id: mine?.id, changes: { x: 0.6, y: 0.6 } });
 	await pause(500);
-	check('but moves their own, and the GM sees it go', ack(32)?.ok === true && tokenEvents(gmSocket, mine?.id).at(-1)?.x === 0.6);
+	check('and the one they added', ack(32)?.ok === true && tokenEvents(gmSocket, mine?.id).at(-1)?.x === 0.6);
 	tokenCommand(33, { t: 'history.revert', seq: ack(32)?.undo?.[0] });
 	await pause(500);
 	check('and can undo the move', ack(33)?.ok === true && tokenEvents(gmSocket, mine?.id).at(-1)?.x === 0.3);
@@ -563,7 +571,7 @@ async function run() {
 	const chief = tokenEvents(gmSocket, ogreId).at(-1);
 	check('a player labels and locks the GM\'s token', ack(40)?.ok === true && chief?.name === 'Ogre chief' && chief?.locked === true);
 	const twin = gmSocket.messages.filter((m) => m.t === 'event' && m.event.patch.token?.name === 'Ogre chief').map((m) => m.event.patch.token).find((t) => t.id !== ogreId);
-	check('and duplicates it, into another of the GM\'s', ack(41)?.ok === true && !!twin && twin.ownerId === null && twin.locked === false);
+	check('and duplicates it, into one that is not locked', ack(41)?.ok === true && !!twin && twin.locked === false);
 	check('but cannot delete it', ack(42)?.ok === false);
 	check('a locked token stays where it is, for the GM too', (await gm.command(campaign, { t: 'token.update', id: ogreId, changes: { x: 0.2 } })).status === 409);
 	// Several changes as one: turned and unlocked together, or not at all.

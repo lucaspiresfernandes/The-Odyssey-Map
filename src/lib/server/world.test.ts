@@ -546,22 +546,55 @@ describe('battle maps', () => {
 		expect((plain.after as Region).kind).toBe('world');
 	});
 
-	test('the GM turns any map into one and back, and sets up its grid', () => {
-		const [made] = perform(db, gm, { t: 'map.update', id: mapId, kind: 'battle', grid: { size: 70, x: 80, y: -10 } });
-		expect(sees(mapId).map).toMatchObject({ kind: 'battle', grid: { size: 70, x: 10, y: 60, shown: true } });
-		expect(perform(db, gm, { t: 'map.update', id: mapId, grid: { shown: false } })).toHaveLength(1);
-		expect(sees(mapId).map.grid).toEqual({ size: 70, x: 10, y: 60, shown: false });
+	test('the GM sets up its grid', () => {
+		const { id } = battlefield();
+		const [made] = perform(db, gm, { t: 'map.update', id, grid: { size: 70, x: 80, y: -10 } });
+		expect(sees(id).map).toMatchObject({ kind: 'battle', grid: { size: 70, x: 10, y: 60, shown: true } });
+		expect(perform(db, gm, { t: 'map.update', id, grid: { shown: false } })).toHaveLength(1);
+		expect(sees(id).map.grid).toEqual({ size: 70, x: 10, y: 60, shown: false });
 
-		expect(refusal(() => perform(db, player, { t: 'map.update', id: mapId, kind: 'world' }))).toBe('forbidden');
+		expect(refusal(() => perform(db, player, { t: 'map.update', id, grid: { size: 60 } }))).toBe('forbidden');
 		for (const grid of [{ size: 2 }, { size: 'big' }, { x: Infinity }, { shown: 1 }, 'square']) {
-			expect(refusal(() => perform(db, gm, { t: 'map.update', id: mapId, grid }))).toBe('invalid');
+			expect(refusal(() => perform(db, gm, { t: 'map.update', id, grid }))).toBe('invalid');
 		}
-		expect(refusal(() => perform(db, gm, { t: 'map.update', id: mapId, kind: 'hex' }))).toBe('invalid');
-		expect(refusal(() => perform(db, gm, { t: 'map.update', id: mapId }))).toBe('invalid');
+		expect(refusal(() => perform(db, gm, { t: 'map.update', id }))).toBe('invalid');
 
-		// Undoing the change puts the world map back, grid and all.
+		// Undoing the first change puts back the grid the map was made with.
 		perform(db, gm, { t: 'history.revert', seq: made.seq });
-		expect(sees(mapId).map).toMatchObject({ kind: 'world', grid: { size: 50, x: 0, y: 0 } });
+		expect(sees(id).map).toMatchObject({ kind: 'battle', grid: { size: 50, x: 0, y: 0 } });
+	});
+
+	test('a map stays the kind it was made as', () => {
+		const { id } = battlefield();
+		// Neither way, for the GM or anyone, alone or along with another change.
+		expect(refusal(() => perform(db, gm, { t: 'map.update', id: mapId, kind: 'battle' }))).toBe('invalid');
+		expect(refusal(() => perform(db, gm, { t: 'map.update', id, kind: 'world' }))).toBe('invalid');
+		expect(refusal(() => perform(db, gm, { t: 'map.update', id, kind: 'world', grid: { size: 70 } }))).toBe('invalid');
+		expect(refusal(() => perform(db, player, { t: 'map.update', id, kind: 'world' }))).toBe('forbidden');
+		// Even to say what it already is: the kind isn't something a map is told.
+		expect(refusal(() => perform(db, gm, { t: 'map.update', id, kind: 'battle' }))).toBe('invalid');
+		expect(sees(mapId).map.kind).toBe('world');
+		expect(sees(id).map).toMatchObject({ kind: 'battle', grid: { size: 50 } });
+	});
+
+	test('a cell stands for eight feet until the GM says otherwise', () => {
+		const { id } = battlefield();
+		expect(sees(id).map.cellFeet).toBe(8);
+		const [scaled] = perform(db, gm, { t: 'map.update', id, cellFeet: 5 });
+		expect(sees(id).map.cellFeet).toBe(5);
+		expect(sees(id, 'gm').map.cellFeet).toBe(5);
+		// The same again changes nothing, and so is no event.
+		expect(perform(db, gm, { t: 'map.update', id, cellFeet: 5 })).toHaveLength(0);
+		expect(perform(db, gm, { t: 'map.update', id, cellFeet: 2.5 })).toHaveLength(1);
+
+		expect(refusal(() => perform(db, player, { t: 'map.update', id, cellFeet: 10 }))).toBe('forbidden');
+		for (const cellFeet of [0, -5, 0.1, 5000, '5', null, Infinity]) {
+			expect(refusal(() => perform(db, gm, { t: 'map.update', id, cellFeet }))).toBe('invalid');
+		}
+
+		// Undoing the first change puts back the scale the map had before it.
+		perform(db, gm, { t: 'history.revert', seq: scaled.seq });
+		expect(sees(id).map).toMatchObject({ cellFeet: 8 });
 	});
 
 	test('it holds no markers, no notes and no regions', () => {
@@ -574,68 +607,39 @@ describe('battle maps', () => {
 		expect(sees(id, 'gm')).toMatchObject({ markers: [], regions: [] });
 	});
 
-	test('a map with markers or regions on it has to be cleared first', () => {
-		const pinned = note();
-		const toBattle = () => perform(db, gm, { t: 'map.update', id: mapId, kind: 'battle' });
-		expect(refusal(toBattle)).toBe('conflict');
-		const [gone] = perform(db, gm, { t: 'marker.delete', id: pinned.id });
-		const { region } = battlefield();
-		expect(refusal(toBattle)).toBe('conflict');
-		perform(db, gm, { t: 'region.delete', id: region.id });
-		expect(toBattle()).toHaveLength(1);
-
-		// The note that was deleted to make room stays deleted while this is a battle map.
-		expect(refusal(() => perform(db, gm, { t: 'history.revert', seq: gone.seq }))).toBe('conflict');
-		expect(refusal(() => perform(db, gm, { t: 'marker.restore', id: pinned.id }))).toBe('conflict');
-
-		// Undo is held to the same rule: back to a world map, a note goes on, and
-		// undoing the way back would make it a battle map with a note.
-		const [back] = perform(db, gm, { t: 'map.update', id: mapId, kind: 'world' });
-		perform(db, gm, { t: 'marker.restore', id: pinned.id });
-		expect(refusal(() => perform(db, gm, { t: 'history.revert', seq: back.seq }))).toBe('conflict');
-		expect(sees(mapId).map.kind).toBe('world');
-	});
-
 	test('tokens go on battle maps only', () => {
 		expect(refusal(() => token(gm, mapId))).toBe('invalid');
 		const { id } = battlefield();
-		expect(token(gm, id)).toMatchObject({ name: 'Goblin', size: 1, ownerId: null, hidden: false });
-		// Back to a world map, the tokens wait out of sight for the next fight.
-		perform(db, gm, { t: 'map.update', id, kind: 'world' });
-		expect(refusal(() => token(gm, id))).toBe('invalid');
+		expect(token(gm, id)).toMatchObject({ name: 'Goblin', size: 1, hidden: false });
 		expect(sees(id).tokens).toHaveLength(1);
 	});
 
-	test('a player adds their own token, and moves that one only', () => {
+	test('anyone adds a token, and anyone moves any of them', () => {
 		const { id } = battlefield();
 		const goblin = token(gm, id);
-		// Whatever a player asks for, the token they add is theirs and in plain sight.
-		const mine = token(player, id, { name: 'Mira', ownerId: other.userId, hidden: true });
-		expect(mine).toMatchObject({ ownerId: player.userId, ownerName: 'Mira', hidden: false });
+		// Whatever a player asks for, the token they add is in plain sight.
+		const mine = token(player, id, { name: 'Mira', hidden: true });
+		expect(mine).toMatchObject({ name: 'Mira', hidden: false });
+		// A token belongs to nobody: there is nothing to say whose it is.
+		expect(mine).not.toHaveProperty('ownerId');
 
 		const [move] = perform(db, player, { t: 'token.update', id: mine.id, changes: { x: 0.1, y: 0.2 } });
 		expect(move.after).toMatchObject({ x: 0.1, y: 0.2 });
-		expect(refusal(() => perform(db, player, { t: 'token.update', id: goblin.id, changes: { x: 0.1 } }))).toBe('forbidden');
-		expect(refusal(() => perform(db, other, { t: 'token.update', id: mine.id, changes: { x: 0.9 } }))).toBe('forbidden');
-		expect(refusal(() => perform(db, other, { t: 'token.delete', id: mine.id }))).toBe('forbidden');
-		// The GM moves anything.
+		// The GM's, another player's, a player's for the GM: all the same.
+		expect(perform(db, player, { t: 'token.update', id: goblin.id, changes: { x: 0.1 } })[0].after).toMatchObject({ x: 0.1 });
+		expect(perform(db, other, { t: 'token.update', id: mine.id, changes: { x: 0.9 } })[0].after).toMatchObject({ x: 0.9 });
 		expect(perform(db, gm, { t: 'token.update', id: mine.id, changes: { x: 0.3 } })).toHaveLength(1);
+		// Taking one off the map is still the GM's.
+		expect(refusal(() => perform(db, other, { t: 'token.delete', id: mine.id }))).toBe('forbidden');
 	});
 
-	test('only the GM hides a token or hands it to someone', () => {
+	test('only the GM hides a token', () => {
 		const { id } = battlefield();
 		const mine = token(player, id);
 		expect(refusal(() => perform(db, player, { t: 'token.update', id: mine.id, changes: { hidden: true } }))).toBe('forbidden');
-		expect(refusal(() => perform(db, player, { t: 'token.update', id: mine.id, changes: { ownerId: other.userId } }))).toBe('forbidden');
-
-		const [given] = perform(db, gm, { t: 'token.update', id: mine.id, changes: { ownerId: other.userId } });
-		expect(given.after).toMatchObject({ ownerId: other.userId, ownerName: 'Tovin' });
-		expect(refusal(() => perform(db, player, { t: 'token.update', id: mine.id, changes: { x: 0.9 } }))).toBe('forbidden');
-		expect(perform(db, other, { t: 'token.update', id: mine.id, changes: { x: 0.9 } })).toHaveLength(1);
-
-		const [kept] = perform(db, gm, { t: 'token.update', id: mine.id, changes: { ownerId: null } });
-		expect(kept.after).toMatchObject({ ownerId: null, ownerName: null });
-		expect(refusal(() => perform(db, gm, { t: 'token.update', id: mine.id, changes: { ownerId: 'nobody' } }))).toBe('invalid');
+		expect(perform(db, gm, { t: 'token.update', id: mine.id, changes: { hidden: true } })[0].after).toMatchObject({ hidden: true });
+		// Handing a token to someone is a thing of the past: asking for it changes nothing.
+		expect(perform(db, gm, { t: 'token.update', id: mine.id, changes: { ownerId: other.userId } })).toHaveLength(0);
 	});
 
 	test('a hidden token reaches the GM only', () => {
@@ -700,13 +704,13 @@ describe('battle maps', () => {
 	test('malformed tokens are refused', () => {
 		const { id } = battlefield();
 		const base = { t: 'token.create', mapId: id, name: 'Goblin', x: 0.5, y: 0.5 };
-		for (const extra of [{ name: ' ' }, { x: 2 }, { size: 0 }, { size: 1.5 }, { size: 99 }, { color: 'red' }, { ownerId: 7 }, { hidden: 'no' }, { rotation: 10 }, { rotation: '90' }, { locked: 1 }]) {
+		for (const extra of [{ name: ' ' }, { x: 2 }, { size: 0 }, { size: 0.25 }, { size: 1.2 }, { size: '2' }, { size: 99 }, { color: 'red' }, { outline: 'red' }, { outline: '' }, { hidden: 'no' }, { rotation: 10 }, { rotation: '90' }, { locked: 1 }]) {
 			expect(refusal(() => perform(db, gm, { ...base, ...extra }))).toBe('invalid');
 		}
 		expect(sees(id, 'gm').tokens).toHaveLength(0);
 	});
 
-	test('a token is turned and resized by whoever moves it', () => {
+	test('a token is turned and resized by anyone, half a cell at a time', () => {
 		const { id } = battlefield();
 		const goblin = token(gm, id);
 		const mine = token(player, id, { name: 'Mira' });
@@ -714,20 +718,53 @@ describe('battle maps', () => {
 
 		const [turned] = perform(db, player, { t: 'token.update', id: mine.id, changes: { rotation: 45, size: 2 } });
 		expect(turned.after).toMatchObject({ rotation: 45, size: 2 });
+		// Half sizes are kept as they are, down to half a cell and up to the limit.
+		perform(db, player, { t: 'token.update', id: goblin.id, changes: { size: 1.5 } });
+		expect(sees(id).tokens[0].size).toBe(1.5);
+		perform(db, player, { t: 'token.update', id: goblin.id, changes: { size: 0.5 } });
+		expect(sees(id).tokens[0].size).toBe(0.5);
+		perform(db, player, { t: 'token.update', id: goblin.id, changes: { size: 1 } });
+		expect(refusal(() => perform(db, gm, { t: 'token.update', id: goblin.id, changes: { size: 6.5 } }))).toBe('invalid');
 		// A full turn and a bit is the bit, and so is turning back past nothing.
 		expect(perform(db, player, { t: 'token.update', id: mine.id, changes: { rotation: 375 } })[0].after).toMatchObject({ rotation: 15 });
 		expect(perform(db, player, { t: 'token.update', id: mine.id, changes: { rotation: -15 } })[0].after).toMatchObject({ rotation: 345 });
 		// Nothing to do is nothing done.
 		expect(perform(db, player, { t: 'token.update', id: mine.id, changes: { rotation: 345 } })).toHaveLength(0);
 
+		// Nobody's token is out of anyone's reach.
 		for (const changes of [{ rotation: 90 }, { size: 3 }, { color: '#3fae7c' }]) {
-			expect(refusal(() => perform(db, player, { t: 'token.update', id: goblin.id, changes }))).toBe('forbidden');
-			expect(refusal(() => perform(db, other, { t: 'token.update', id: mine.id, changes }))).toBe('forbidden');
+			expect(perform(db, player, { t: 'token.update', id: goblin.id, changes })[0].after).toMatchObject(changes);
 		}
+		expect(perform(db, other, { t: 'token.update', id: mine.id, changes: { color: '#3fae7c' } })).toHaveLength(1);
 		// Undo turns it back, and leaves its size alone.
 		perform(db, player, { t: 'token.update', id: mine.id, changes: { size: 3 } });
 		perform(db, player, { t: 'history.revert', seq: turned.seq });
 		expect(sees(id).tokens[1]).toMatchObject({ rotation: 0, size: 1 });
+	});
+
+	test('any token can wear an outline, with a picture or without', () => {
+		const { id } = battlefield();
+		// A token starts out with none, whatever its colour.
+		const goblin = token(gm, id, { color: '#3fae7c' });
+		expect(goblin).toMatchObject({ color: '#3fae7c', outline: null });
+		const marked = token(gm, id, { name: 'Chief', outline: '#e0a526' });
+		expect(marked.outline).toBe('#e0a526');
+
+		// Anyone gives it one, changes it, and takes it off again.
+		const [ringed] = perform(db, player, { t: 'token.update', id: goblin.id, changes: { outline: '#5b8def' } });
+		expect(ringed.after).toMatchObject({ color: '#3fae7c', outline: '#5b8def' });
+		expect(sees(id).tokens[0].outline).toBe('#5b8def');
+		expect(perform(db, other, { t: 'token.update', id: goblin.id, changes: { outline: null } })[0].after).toMatchObject({ outline: null });
+		expect(perform(db, other, { t: 'token.update', id: goblin.id, changes: { outline: null } })).toHaveLength(0);
+		expect(refusal(() => perform(db, gm, { t: 'token.update', id: goblin.id, changes: { outline: 'red' } }))).toBe('invalid');
+
+		// Undo puts the ring back, and a lock doesn't hold it.
+		perform(db, player, { t: 'history.revert', seq: ringed.seq });
+		expect(sees(id).tokens[0].outline).toBeNull();
+		perform(db, gm, { t: 'token.update', id: goblin.id, changes: { locked: true } });
+		expect(perform(db, player, { t: 'token.update', id: goblin.id, changes: { outline: '#b072e0' } })).toHaveLength(1);
+		// A copy wears the same one.
+		expect(perform(db, player, { t: 'token.duplicate', id: goblin.id })[0].after).toMatchObject({ outline: '#b072e0' });
 	});
 
 	test('anyone labels a token, and locks or unlocks it', () => {
@@ -743,7 +780,7 @@ describe('battle maps', () => {
 		perform(db, player, { t: 'history.revert', seq: named.seq });
 		expect(sees(id).tokens[0].name).toBe('Goblin');
 
-		// A locked token stays as it is, for its own player and for the GM.
+		// A locked token stays as it is, for the player who added it and for the GM.
 		for (const changes of [{ x: 0.2 }, { size: 2 }, { rotation: 90 }]) {
 			expect(refusal(() => perform(db, player, { t: 'token.update', id: mine.id, changes }))).toBe('conflict');
 			expect(refusal(() => perform(db, gm, { t: 'token.update', id: mine.id, changes }))).toBe('conflict');
@@ -754,11 +791,11 @@ describe('battle maps', () => {
 		expect(perform(db, player, { t: 'token.update', id: mine.id, changes: { locked: false, x: 0.2 } })[0].after).toMatchObject({ locked: false, x: 0.2 });
 		perform(db, gm, { t: 'token.update', id: goblin.id, changes: { locked: true } });
 		expect(perform(db, player, { t: 'token.update', id: goblin.id, changes: { locked: false } })).toHaveLength(1);
-		// Unlocked by a player, the GM's token is still not theirs to move.
-		expect(refusal(() => perform(db, player, { t: 'token.update', id: goblin.id, changes: { x: 0.2 } }))).toBe('forbidden');
+		// Unlocked, it is anyone's to move again.
+		expect(perform(db, player, { t: 'token.update', id: goblin.id, changes: { x: 0.2 } })).toHaveLength(1);
 	});
 
-	test('anyone duplicates a token, and the copy is whose the first one is', () => {
+	test('anyone duplicates a token', () => {
 		const { id } = battlefield();
 		perform(db, gm, { t: 'map.update', id, grid: { size: 100 } });
 		const ogre = token(gm, id, { name: 'Ogre', size: 2, rotation: 90, locked: true, color: '#3fae7c' });
@@ -766,11 +803,10 @@ describe('battle maps', () => {
 		const [copied] = perform(db, player, { t: 'token.duplicate', id: ogre.id });
 		const copy = copied.after as Token;
 		// Its own width to the right: two cells of a hundred, on a map 1600 wide.
-		expect(copy).toMatchObject({ name: 'Ogre', size: 2, rotation: 90, color: '#3fae7c', ownerId: null, locked: false, y: 0.5 });
+		expect(copy).toMatchObject({ name: 'Ogre', size: 2, rotation: 90, color: '#3fae7c', locked: false, y: 0.5 });
 		expect(copy.x).toBeCloseTo(0.625);
 		expect(copy.id).not.toBe(ogre.id);
-		// The GM's copy is the GM's: the player who made it can't move it, but can take it back.
-		expect(refusal(() => perform(db, player, { t: 'token.update', id: copy.id, changes: { x: 0.1 } }))).toBe('forbidden');
+		// Whoever made the copy can take it back.
 		perform(db, player, { t: 'history.revert', seq: copied.seq });
 		expect(sees(id).tokens).toHaveLength(1);
 
@@ -782,9 +818,7 @@ describe('battle maps', () => {
 		perform(db, gm, { t: 'token.update', id: ogre.id, changes: { locked: false, x: 0.95 } });
 		expect((perform(db, gm, { t: 'token.duplicate', id: ogre.id })[0].after as Token).x).toBeCloseTo(0.825);
 
-		// A copy of a player's token is that player's. A hidden token is nobody's to copy but the GM's.
-		const mine = token(player, id, { name: 'Mira' });
-		expect(perform(db, other, { t: 'token.duplicate', id: mine.id })[0].after).toMatchObject({ ownerId: player.userId, ownerName: 'Mira' });
+		// A hidden token is nobody's to copy but the GM's.
 		const lurker = token(gm, id, { hidden: true });
 		expect(refusal(() => perform(db, player, { t: 'token.duplicate', id: lurker.id }))).toBe('not_found');
 		expect(perform(db, gm, { t: 'token.duplicate', id: lurker.id })[0].after).toMatchObject({ hidden: true });
@@ -828,7 +862,7 @@ describe('battle maps', () => {
 		const half = { t: 'batch', cmds: [{ t: 'token.update', id: a.id, changes: { x: 0.9 } }, { t: 'token.delete', id: 'nothing' }] };
 		expect(refusal(() => perform(db, gm, half))).toBe('not_found');
 		expect(sees(id).tokens[0].x).toBe(0.5);
-		const mixed = { t: 'batch', cmds: [{ t: 'token.update', id: a.id, changes: { name: 'Gob' } }, { t: 'token.update', id: a.id, changes: { x: 0.9 } }] };
+		const mixed = { t: 'batch', cmds: [{ t: 'token.update', id: a.id, changes: { name: 'Gob' } }, { t: 'token.update', id: a.id, changes: { hidden: true } }] };
 		expect(refusal(() => perform(db, player, mixed))).toBe('forbidden');
 		expect(sees(id).tokens[0].name).toBe('Goblin');
 
@@ -1069,16 +1103,16 @@ describe('the gallery', () => {
 		expect((again.after as Token).image).toBe(face.file);
 	});
 
-	test('a player dresses their own token from what the GM has revealed', () => {
+	test('a player dresses a token from what the GM has revealed', () => {
 		const { id } = battlefield();
 		const hero = revealed('token', 'Hero');
 		const knight = revealed('token', 'Knight');
 		const foe = token(id);
 
 		const me = token(id, { name: 'Mira', image: hero.file }, player);
-		expect(me).toMatchObject({ image: hero.file, ownerId: player.userId });
+		expect(me).toMatchObject({ image: hero.file });
 
-		// They change it, take it off, and undo that, all on their own token.
+		// They change it, take it off, and undo that.
 		const [changed] = perform(db, player, { t: 'token.update', id: me.id, changes: { image: knight.file } });
 		expect((changed.after as Token).image).toBe(knight.file);
 		const [back] = perform(db, player, { t: 'history.revert', seq: changed.seq });
@@ -1086,10 +1120,9 @@ describe('the gallery', () => {
 		const [bare] = perform(db, player, { t: 'token.update', id: me.id, changes: { image: null } });
 		expect((bare.after as Token).image).toBeNull();
 
-		// Nobody else's token, the GM's included.
-		expect(refusal(() => perform(db, player, { t: 'token.update', id: foe.id, changes: { image: hero.file } }))).toBe('forbidden');
-		expect(refusal(() => perform(db, other, { t: 'token.update', id: me.id, changes: { image: hero.file } }))).toBe('forbidden');
-		// The GM dresses anyone's.
+		// Any token is theirs to dress, the one the GM added included.
+		expect(perform(db, player, { t: 'token.update', id: foe.id, changes: { image: hero.file } })).toHaveLength(1);
+		expect(perform(db, other, { t: 'token.update', id: me.id, changes: { image: hero.file } })).toHaveLength(1);
 		expect(perform(db, gm, { t: 'token.update', id: me.id, changes: { image: knight.file } })).toHaveLength(1);
 	});
 

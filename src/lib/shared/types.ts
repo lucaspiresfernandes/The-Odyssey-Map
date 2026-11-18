@@ -83,6 +83,9 @@ export interface Grid {
 
 export const DEFAULT_GRID: Grid = { size: 50, x: 0, y: 0, shown: true };
 
+/** How many feet a cell stands for until the GM says otherwise. */
+export const DEFAULT_CELL_FEET = 8;
+
 export const TOKEN_COLORS = [
 	'#e5544b',
 	'#d9783a',
@@ -104,27 +107,33 @@ export interface Token {
 	id: string;
 	mapId: string;
 	name: string;
+	/** What a plain disc is filled with. A token with a picture keeps it, out of sight under the picture. */
 	color: string;
-	/** File name of its picture, out of the gallery. Null for a plain disc in its colour. */
+	/**
+	 * The colour of the ring around it, for telling apart tokens that look
+	 * alike, or marking which belong together. Null for none.
+	 */
+	outline: string | null;
+	/** File name of its picture, out of the gallery. Null for a plain disc. */
 	image: string | null;
 	x: number;
 	y: number;
-	/** How many cells it is across. */
+	/** How many cells it is across: a multiple of TOKEN_SIZE_STEP. */
 	size: number;
 	/** Which way it is turned, in degrees clockwise: a multiple of ROTATION_STEP under 360. */
 	rotation: number;
 	/** A locked token stays as it is put until someone unlocks it: not moved, resized or turned. */
 	locked: boolean;
-	/** The player who moves it, besides the GM. Null for a token that is the GM's alone. */
-	ownerId: string | null;
-	ownerName: string | null;
 	/** Only ever sent to the GM as true. */
 	hidden: boolean;
 	updatedAt: number;
 }
 
-/** How far one press of a rotate button turns a token, in degrees. */
+/** A token turns this many degrees at a time. */
 export const ROTATION_STEP = 15;
+
+/** A token grows and shrinks this many cells at a time. It is also the smallest one. */
+export const TOKEN_SIZE_STEP = 0.5;
 
 /** The colours the table draws and writes in. */
 export const INK_COLORS = [
@@ -171,6 +180,8 @@ export interface MapInfo {
 	kind: MapKind;
 	/** Kept on a world map too, so turning it into a battle map and back loses nothing. */
 	grid: Grid;
+	/** How many feet one cell of the grid stands for. Distances on the map are told in feet. */
+	cellFeet: number;
 	/** File name of the map image, out of the gallery, or null for a blank map. */
 	imageFile: string | null;
 	width: number;
@@ -256,6 +267,8 @@ export interface MarkerInput {
 export interface TokenInput {
 	name: string;
 	color: string;
+	/** One of the token colours, or null for no ring. */
+	outline: string | null;
 	/** The file name of a token picture in the gallery, or null for none. */
 	image: string | null;
 	x: number;
@@ -264,8 +277,6 @@ export interface TokenInput {
 	rotation: number;
 	/** Anyone's to set, like the name: the two things the whole table shares about a token. */
 	locked: boolean;
-	/** The GM's to set. A token a player adds is their own. */
-	ownerId: string | null;
 	/** The GM's to set. */
 	hidden: boolean;
 }
@@ -317,16 +328,17 @@ export type Command =
 	/** For good, along with the map behind the region and everything inside it. */
 	| { t: 'region.delete'; id: string }
 	/**
-	 * Renames a map, changes its kind, sets up its grid, lays an image under
-	 * it: whichever are given. `image` is the file name of a map image in the
-	 * gallery.
+	 * Renames a map, sets up its grid, says how many feet a cell stands for,
+	 * lays an image under it: whichever are given. `image` is the file name of
+	 * a map image in the gallery. A map's kind is not here: it is chosen when
+	 * its region is drawn, and stays.
 	 */
 	| {
 			t: 'map.update';
 			id: string;
 			name?: string;
-			kind?: MapKind;
 			grid?: Partial<Grid>;
+			cellFeet?: number;
 			image?: string;
 	  }
 	/** Takes back the change with this sequence number by performing its opposite. */
@@ -404,13 +416,6 @@ export interface CursorSpot {
 	drag?: { id: string; x: number; y: number };
 	/** A distance they are measuring, from one spot to another. */
 	ruler?: [Point, Point];
-}
-
-/** Someone at the table, for the GM to hand a token to. */
-export interface Member {
-	id: string;
-	name: string;
-	role: Role;
 }
 
 /**
@@ -496,6 +501,9 @@ export const LIMITS = {
 	/** The smallest and the largest a grid cell can be, in map pixels. */
 	gridMin: 8,
 	gridMax: 2000,
+	/** The fewest and the most feet a cell can stand for. */
+	cellFeetMin: 0.5,
+	cellFeetMax: 1000,
 	regionPoints: 200,
 	// Room for a big map that has been through an upscaler.
 	imageBytes: 256 * 1024 * 1024,

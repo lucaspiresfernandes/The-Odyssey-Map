@@ -15,6 +15,7 @@ import {
 	type AnySQLiteColumn
 } from 'drizzle-orm/sqlite-core';
 import {
+	DEFAULT_CELL_FEET,
 	DEFAULT_GRID,
 	type Entity,
 	type EntityType,
@@ -85,6 +86,8 @@ export const maps = sqliteTable(
 		/** A battle map has a grid and tokens on top of everything a world map has. */
 		kind: text('kind', { enum: ['world', 'battle'] }).notNull().default('world'),
 		grid: text('grid', { mode: 'json' }).$type<Grid>().notNull().default(DEFAULT_GRID),
+		/** How many feet one cell of the grid stands for. */
+		cellFeet: real('cell_feet').notNull().default(DEFAULT_CELL_FEET),
 		imageFile: text('image_file'),
 		width: integer('width').notNull(),
 		height: integer('height').notNull(),
@@ -148,17 +151,25 @@ export const tokens = sqliteTable(
 			.notNull()
 			.references(() => maps.id, { onDelete: 'cascade' }),
 		name: text('name').notNull(),
+		/** What a plain disc is filled with. */
 		color: text('color').notNull(),
+		/** The colour of the ring around it. Null for none. */
+		outline: text('outline'),
 		/** File name of its picture, out of the gallery. Null for a plain disc. */
 		image: text('image'),
 		x: real('x').notNull(),
 		y: real('y').notNull(),
-		/** Cells across. */
+		/**
+		 * Cells across, in halves. The column was made for whole cells and SQLite
+		 * can't change a column's type without rebuilding the table, so it is
+		 * still declared an integer: SQLite keeps 1.5 in one as the real it is.
+		 */
 		size: integer('size').notNull().default(1),
 		/** Degrees clockwise. */
 		rotation: integer('rotation').notNull().default(0),
 		locked: integer('locked', { mode: 'boolean' }).notNull().default(false),
-		/** The player who moves it, besides the GM. Null for the GM's own. */
+		// From when a token belonged to one player. Nothing reads or writes
+		// these now: anyone moves any token that isn't locked.
 		ownerId: text('owner_id'),
 		ownerName: text('owner_name'),
 		hidden: integer('hidden', { mode: 'boolean' }).notNull().default(false),
