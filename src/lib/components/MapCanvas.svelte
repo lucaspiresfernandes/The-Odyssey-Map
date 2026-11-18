@@ -6,6 +6,7 @@
 	// `view` turns map space into screen pixels: screen = map * size * k + offset.
 
 	import { untrack } from 'svelte';
+	import { canEditWorld } from '#lib/shared/rules.ts';
 	import {
 		mapImageUrl,
 		markerType,
@@ -18,6 +19,7 @@
 	} from '#lib/shared/types.ts';
 	import MarkerCard from './MarkerCard.svelte';
 	import MarkerGlyph from './MarkerGlyph.svelte';
+	import RegionMenu from './RegionMenu.svelte';
 
 	interface Props {
 		map: MapInfo;
@@ -27,7 +29,7 @@
 		cursors: Cursor[];
 		role: Role;
 		userId: string;
-		/** GM edit mode: regions can be selected and reshaped. */
+		/** GM edit mode: a selected region can be reshaped by its corners. */
 		editing: boolean;
 		/** `place` waits for a click that positions a marker, `draw` outlines a region. */
 		tool: 'pan' | 'place' | 'draw';
@@ -36,9 +38,14 @@
 		selectedMarkerId: string | null;
 		selectedRegionId: string | null;
 		onplace: (x: number, y: number) => void;
+		/** A bare spot of the map was double-clicked: a note is wanted there. */
+		onnote: (x: number, y: number) => void;
 		ondrawn: (points: Point[]) => void;
 		onenter: (region: Region) => void;
 		onreshape: (region: Region, points: Point[]) => Promise<boolean>;
+		onregionhide: (region: Region, hidden: boolean) => void;
+		onregionrename: (region: Region) => void;
+		onregiondelete: (region: Region) => void;
 		onedit: (marker: Marker) => void;
 		onmove: (marker: Marker) => void;
 		ondelete: (marker: Marker) => void;
@@ -60,9 +67,13 @@
 		selectedMarkerId = $bindable(),
 		selectedRegionId = $bindable(),
 		onplace,
+		onnote,
 		ondrawn,
 		onenter,
 		onreshape,
+		onregionhide,
+		onregionrename,
+		onregiondelete,
 		onedit,
 		onmove,
 		ondelete,
@@ -94,7 +105,13 @@
 	let reshape = $state<{ id: string; points: Point[] } | null>(null);
 	let cardW = $state(0);
 	let cardH = $state(0);
+	/** The spot where the selected region was clicked. Its menu opens there. */
+	let menuAt = $state.raw<Point | null>(null);
+	let menuW = $state(0);
+	let menuH = $state(0);
 
+	/** The GM gets a menu for a region with one click. Players only step inside. */
+	const canShape = $derived(canEditWorld(role));
 	const W = $derived(map.width);
 	const H = $derived(map.height);
 	const image = $derived(mapImageUrl(map));
@@ -130,6 +147,30 @@
 			top: above ? sy - PIN_HEIGHT - 12 - cardH : Math.min(sy + 12, Math.max(6, ch - cardH - 6))
 		};
 	});
+
+	// The region menu hangs off the spot that was clicked, like a context
+	// menu, and stays on that spot of the map when the map moves.
+	const menuPosition = $derived.by(() => {
+		// Out of the way while a corner is being dragged.
+		if (!selectedRegion || !menuAt || tool !== 'pan' || reshape) return null;
+		const sx = menuAt[0] * W * view.k + view.x;
+		const sy = menuAt[1] * H * view.k + view.y;
+		if (sx < 0 || sx > cw || sy < 0 || sy > ch) return null;
+		const gap = 6;
+		const fits = (at: number, size: number, room: number) => at + gap + size <= room - 8;
+		return {
+			left: Math.max(8, fits(sx, menuW, cw) ? sx + gap : sx - gap - menuW),
+			top: Math.max(8, fits(sy, menuH, ch) ? sy + gap : sy - gap - menuH)
+		};
+	});
+
+	/** Runs what was picked from the region menu, and closes the menu. */
+	function pick(action: (region: Region) => void) {
+		const region = selectedRegion;
+		selectedRegionId = null;
+		hoveredRegionId = null;
+		if (region) action(region);
+	}
 
 	function boundsOf(points: Point[]) {
 		const xs = points.map((p) => p[0]);
@@ -591,10 +632,19 @@
 		if (region && double && lastTap.regionId === region.id) {
 			lastTap.at = 0;
 			hoveredRegionId = null;
+			selectedRegionId = null;
 			onenter(region);
 			return;
 		}
-		selectedRegionId = region && editing ? region.id : null;
+		// The same goes for a bare spot of the map: twice, and a note starts there.
+		if (!region && double && lastTap.regionId === null && inside(point)) {
+			lastTap.at = 0;
+			selectedRegionId = null;
+			onnote(point[0], point[1]);
+			return;
+		}
+		selectedRegionId = region && canShape ? region.id : null;
+		menuAt = point;
 		// Touch has no hover, so the first tap is what names the region.
 		if (e.pointerType !== 'mouse') hoveredRegionId = region?.id ?? null;
 		lastTap = { at: now, x: e.clientX, y: e.clientY, regionId: region?.id ?? null };
@@ -696,12 +746,16 @@
 		idle: 'fill-transparent stroke-[#fff8e4]/90 stroke-[1.5] [stroke-dasharray:7_6]',
 		editing: 'fill-transparent stroke-[#f2c14e] stroke-[1.5] [stroke-dasharray:7_6]',
 		hover: 'fill-accent/22 stroke-accent stroke-[2.5]',
-		selected: 'fill-accent/14 stroke-white stroke-[2.5]'
+		selected: 'fill-accent/14 stroke-white stroke-[2.5]',
+		// Only the GM ever has one of these to draw: dotted, and veiled, so it
+		// reads as shut on a pale map as well as on a dark one.
+		hidden: 'fill-[#0c0e14]/35 stroke-[#f2c14e] stroke-[1.5] [stroke-dasharray:2_5]'
 	};
 
 	function outlineOf(region: Region): string {
 		if (selectedRegionId === region.id) return OUTLINE.selected;
 		if (hoveredRegionId === region.id) return OUTLINE.hover;
+		if (region.hidden) return OUTLINE.hidden;
 		return editing ? OUTLINE.editing : OUTLINE.idle;
 	}
 
@@ -843,13 +897,19 @@
 							lit ? 'text-white' : 'text-[#fff8e4] opacity-55'
 						]}>{region.name}</strong
 					>
-					{#if lit}
-						<!-- How to get in. Out of the flow, so the name does not jump when it appears. -->
+					{#if lit || region.hidden}
+						<!-- How to get in, and for the GM whether players can. Out of the flow,
+						     so the name does not jump when it appears. -->
 						<span
 							class="absolute top-[calc(100%+2px)] left-1/2 -translate-x-1/2 text-xs whitespace-nowrap text-[#e4dcc6]"
 						>
-							<span class="touch:hidden">Double-click to enter</span>
-							<span class="hidden touch:inline">Double-tap to enter</span>
+							{#if region.hidden}
+								<span class="font-semibold text-[#f2c14e]">Hidden{lit ? ' ·' : ' from players'}</span>
+							{/if}
+							{#if lit}
+								<span class="touch:hidden">Double-click to enter</span>
+								<span class="hidden touch:inline">Double-tap to enter</span>
+							{/if}
 						</span>
 					{/if}
 				</div>
@@ -970,6 +1030,25 @@
 					{onmove}
 					{ondelete}
 					{onhide}
+				/>
+			</div>
+		{/if}
+
+		{#if selectedRegion && menuPosition}
+			<div
+				class={['pointer-events-auto absolute', menuW === 0 && 'invisible']}
+				style:left="{menuPosition.left}px"
+				style:top="{menuPosition.top}px"
+				bind:clientWidth={menuW}
+				bind:clientHeight={menuH}
+			>
+				<RegionMenu
+					region={selectedRegion}
+					{editing}
+					onenter={() => pick(onenter)}
+					onhide={(_, hidden) => pick((region) => onregionhide(region, hidden))}
+					onrename={() => pick(onregionrename)}
+					ondelete={() => pick(onregiondelete)}
 				/>
 			</div>
 		{/if}

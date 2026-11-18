@@ -101,6 +101,8 @@ export const regions = sqliteTable(
 			.references(() => maps.id),
 		// The name is not here: a region is called what the map behind it is called.
 		points: text('points', { mode: 'json' }).$type<Point[]>().notNull(),
+		/** A hidden region keeps players out of its map, and of every map inside that one. */
+		hidden: integer('hidden', { mode: 'boolean' }).notNull().default(false),
 		createdAt: integer('created_at').notNull(),
 		deletedAt: integer('deleted_at')
 	},

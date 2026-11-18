@@ -66,6 +66,8 @@ That serves the app on port 3000 (set `PORT` to change it). Everything is stored
 | Hover or tap a marker | Read it |
 | Click a marker | Pin its card, with edit, move and delete if it's yours to change |
 | Double-click a region | Step into its map |
+| Click a region, as the GM | Open its menu: enter, hide or reveal, rename, delete |
+| Double-click a bare spot | Start a note there |
 | Breadcrumbs | Step back out |
 | Arrow keys, `+` `-` `0` | Pan, zoom and fit from the keyboard |
 | `Ctrl+Z`, `Ctrl+Shift+Z` | Undo and redo what you did on the map you're looking at |
@@ -79,13 +81,17 @@ the same map.
 |---|---|---|
 | World markers | create, edit, hide, reveal, delete | read (never the hidden ones) |
 | Table notes | create, edit, delete, anyone's | create, edit anyone's, delete their own |
-| Maps, images, regions | create, edit, delete | read |
+| Maps, images, regions | create, edit, hide, reveal, delete | read (never the hidden ones) |
 | Undo and redo | their own changes | their own changes to table notes |
 
 A table note can be deleted by whoever added it and by the GM, never by another player.
 
 Hidden world markers are filtered on the server. They are not in the page a player loads,
 not in the events their browser receives, and out of reach of a player's undo.
+
+A hidden region works the same way, and takes its map with it: players can't open the map
+behind it or any map further inside, can't load its image, and hear nothing of what happens
+in there. A player who is inside when the GM hides it is walked back out.
 
 ## How it's put together
 
@@ -159,7 +165,8 @@ All optional. Copy [.env.example](.env.example) to `.env` to change a default.
 bun run test
 ```
 
-Unit tests for the rules: permissions, hidden markers, undo and restore, campaign isolation.
+Unit tests for the rules: permissions, hidden markers and regions, undo and restore, campaign
+isolation.
 
 ```bash
 bun run test:e2e
@@ -176,8 +183,8 @@ Type-checks everything.
 
 ## Known limits
 
-- Hiding applies to world markers. Regions and the maps behind them are visible to every
-  member of the campaign.
+- Hiding applies to world markers and regions. A map itself is hidden only through the
+  region that leads to it, so the first map of a campaign is always open.
 - Events are numbered in one sequence. A player who inspects their network traffic can
   see the numbers skip when the GM makes a hidden change, though never what the change was.
 - A player is a browser cookie. Clearing it means joining again as a new player, who can

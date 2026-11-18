@@ -323,6 +323,45 @@ async function run() {
 	check('the player can load the image', fetched.status === 200 && (await fetched.arrayBuffer()).byteLength === pixels.length);
 	check('a stranger cannot', (await new Visitor().request(imagePath)).status === 401);
 
+	// A hidden region takes its whole map away from players: the outline, the
+	// page behind it, and the news of anything that happens in there.
+	const veiled = crypto.randomUUID();
+	const drawn = await gm.command(campaign, {
+		t: 'region.create',
+		mapId,
+		name: `Cellar ${veiled}`,
+		points: [[0.1, 0.1], [0.4, 0.1], [0.4, 0.4], [0.1, 0.4]],
+		hidden: true
+	});
+	const cellar = drawn.body.events?.find((e: any) => e.patch.t === 'region.upsert')?.patch.region;
+	const cellarPath = `/c/${campaign}/m/${cellar?.targetMapId}`;
+	await gm.command(campaign, { t: 'marker.create', mapId: cellar?.targetMapId, kind: 'world', title: `Vault ${veiled}`, x: 0.5, y: 0.5 });
+	await pause(500);
+	check('a hidden region reaches the GM live', gmSocket.messages.some((m) => m.t === 'event' && m.event.patch.region?.id === cellar?.id));
+	check('neither it nor what is inside reaches the player', !JSON.stringify(playerSocket.messages).includes(veiled));
+	check('the player is not shown it on the map', !(await (await player.request(mapPath)).text()).includes(veiled));
+	check(
+		'nor let into the map behind it',
+		(await player.request(cellarPath)).status === 404 && (await gm.request(cellarPath)).status === 200
+	);
+	const trespass = await player.command(campaign, { t: 'marker.create', mapId: cellar?.targetMapId, kind: 'player', title: 'Sneaking in', x: 0.5, y: 0.5 });
+	check('nor can they leave a note in there', trespass.status === 404, `status ${trespass.status}`);
+
+	gmSocket.ws.send(JSON.stringify({ t: 'cmd', id: 20, cmd: { t: 'region.update', id: cellar?.id, hidden: false } }));
+	await pause(500);
+	check(
+		'revealing the region delivers it to the player',
+		playerSocket.messages.some((m) => m.t === 'event' && m.event.patch.t === 'region.upsert' && m.event.patch.region.id === cellar?.id)
+	);
+	check('and lets them in', (await (await player.request(cellarPath)).text()).includes(`Vault ${veiled}`));
+	gmSocket.ws.send(JSON.stringify({ t: 'cmd', id: 21, cmd: { t: 'region.update', id: cellar?.id, hidden: true } }));
+	await pause(500);
+	check(
+		'hiding it again tells the player which map has shut',
+		playerSocket.messages.some((m) => m.t === 'event' && m.event.patch.t === 'region.remove' && m.event.patch.targetMapId === cellar?.targetMapId)
+	);
+	check('and shuts it', (await player.request(cellarPath)).status === 404);
+
 	// The app checks the login on every forwarded command, so an open socket
 	// stops working the moment its session ends.
 	await player.form('/?/logout', {});

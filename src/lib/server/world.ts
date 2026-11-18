@@ -82,7 +82,8 @@ export const regionColumns = {
 	mapId: regions.mapId,
 	targetMapId: regions.targetMapId,
 	name: targetMap.name,
-	points: regions.points
+	points: regions.points,
+	hidden: regions.hidden
 };
 
 export const mapColumns = {
@@ -95,8 +96,29 @@ export const mapColumns = {
 	height: maps.height
 };
 
+/**
+ * True when players are kept out of this map: the region that leads to it is
+ * hidden, or one further up the way there is.
+ */
+export function isConcealed(db: Db, mapId: string): boolean {
+	let id = mapId;
+	for (let depth = 0; depth < 64; depth++) {
+		const door = db
+			.select({ hidden: regions.hidden, mapId: regions.mapId })
+			.from(regions)
+			.where(eq(regions.targetMapId, id))
+			.get();
+		// No region leads to the root map. It is always open.
+		if (!door) return false;
+		if (door.hidden) return true;
+		id = door.mapId;
+	}
+	return false;
+}
+
 // Every lookup is scoped to the actor's campaign, so an id from another
-// campaign behaves exactly like an id that does not exist.
+// campaign behaves exactly like an id that does not exist. So does, for a
+// player, anything on a map they are kept out of.
 
 function findMap(db: Db, actor: Actor, id: string): MapInfo {
 	const map = db
@@ -104,7 +126,10 @@ function findMap(db: Db, actor: Actor, id: string): MapInfo {
 		.from(maps)
 		.where(and(eq(maps.id, id), eq(maps.campaignId, actor.campaignId)))
 		.get();
-	return map ?? fail('not_found', 'That map does not exist.');
+	if (!map || (actor.role !== 'gm' && isConcealed(db, id))) {
+		fail('not_found', 'That map does not exist.');
+	}
+	return map;
 }
 
 function findMarker(
@@ -118,11 +143,14 @@ function findMarker(
 		.innerJoin(maps, eq(maps.id, markers.mapId))
 		.where(and(eq(markers.id, id), eq(maps.campaignId, actor.campaignId)))
 		.get();
-	// A player asking about a world marker they cannot see gets the same
-	// answer as for an id that was never used.
-	if (!row || (actor.role !== 'gm' && row.marker.kind === 'world' && row.marker.hidden)) {
-		fail('not_found', 'That marker does not exist.');
-	}
+	// A player asking about a world marker they cannot see, or any marker on
+	// a map they are kept out of, gets the same answer as for an id that was
+	// never used.
+	const secret =
+		row &&
+		actor.role !== 'gm' &&
+		((row.marker.kind === 'world' && row.marker.hidden) || isConcealed(db, row.marker.mapId));
+	if (!row || secret) fail('not_found', 'That marker does not exist.');
 	return row;
 }
 
@@ -390,12 +418,13 @@ function createRegion(db: Db, actor: Actor, raw: Record<string, unknown>): Store
 	const map = findMap(db, actor, asId(raw.mapId));
 	const name = asText(raw.name, 'The name', LIMITS.name, true);
 	const points = asPoints(raw.points);
+	const hidden = raw.hidden !== undefined && asBool(raw.hidden);
 
 	// Each region is a doorway to a map of its own, created along with it.
 	const targetId = insertMap(db, actor.campaignId, map.id, name);
 	const id = newId();
 	db.insert(regions)
-		.values({ id, mapId: map.id, targetMapId: targetId, points, createdAt: Date.now() })
+		.values({ id, mapId: map.id, targetMapId: targetId, points, hidden, createdAt: Date.now() })
 		.run();
 
 	return [
@@ -406,15 +435,29 @@ function createRegion(db: Db, actor: Actor, raw: Record<string, unknown>): Store
 
 const samePoints = (a: Point[], b: Point[]) => JSON.stringify(a) === JSON.stringify(b);
 
-/** Reshapes a region. Its name is the name of its map, changed with `map.update`. */
-function updateRegion(db: Db, actor: Actor, id: string, rawPoints: unknown): StoredEvent[] {
+/**
+ * Reshapes a region, hides it or reveals it, whichever of the two is asked
+ * for. Its name is the name of its map, changed with `map.update`.
+ */
+function updateRegion(
+	db: Db,
+	actor: Actor,
+	id: string,
+	changes: { points?: unknown; hidden?: unknown }
+): StoredEvent[] {
 	requireWorldEdit(actor);
 	const { region: before, deletedAt } = findRegion(db, actor, id);
 	if (deletedAt !== null) fail('conflict', 'That region was deleted. Restore it first.');
 
-	const after: Region = { ...before, points: asPoints(rawPoints) };
-	if (samePoints(before.points, after.points)) return [];
-	db.update(regions).set({ points: after.points }).where(eq(regions.id, id)).run();
+	const after: Region = { ...before };
+	if (changes.points !== undefined) after.points = asPoints(changes.points);
+	if (changes.hidden !== undefined) after.hidden = asBool(changes.hidden);
+	if (samePoints(before.points, after.points) && before.hidden === after.hidden) return [];
+
+	db.update(regions)
+		.set({ points: after.points, hidden: after.hidden })
+		.where(eq(regions.id, id))
+		.run();
 	return [record(db, actor, before.mapId, 'region', 'update', before, after)];
 }
 
@@ -546,7 +589,15 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 	if (event.entity === 'region') {
 		if (event.action === 'create' || event.action === 'restore') return deleteRegion(db, actor, id);
 		if (event.action === 'delete') return restoreRegion(db, actor, id);
-		return updateRegion(db, actor, id, (event.before as Region).points);
+		// As with markers, only what this edit changed is put back. Events
+		// from before regions could be hidden have no `hidden` to compare.
+		const before = event.before as Region;
+		const after = event.after as Region;
+		const hid = Boolean(before.hidden) !== Boolean(after.hidden);
+		return updateRegion(db, actor, id, {
+			points: samePoints(before.points, after.points) ? undefined : before.points,
+			hidden: hid ? Boolean(before.hidden) : undefined
+		});
 	}
 
 	if (event.action !== 'update') {
@@ -580,7 +631,7 @@ function run(db: Db, actor: Actor, input: unknown): StoredEvent[] {
 		case 'region.create':
 			return createRegion(db, actor, cmd);
 		case 'region.update':
-			return updateRegion(db, actor, asId(cmd.id), cmd.points);
+			return updateRegion(db, actor, asId(cmd.id), cmd);
 		case 'region.delete':
 			return deleteRegion(db, actor, asId(cmd.id));
 		case 'region.restore':

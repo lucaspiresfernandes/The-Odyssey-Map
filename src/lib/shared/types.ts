@@ -54,6 +54,11 @@ export interface Region {
 	/** Name of the target map. */
 	name: string;
 	points: Point[];
+	/**
+	 * Only ever sent to the GM as true. To players a hidden region is not
+	 * there, and neither is its map nor anything inside it.
+	 */
+	hidden: boolean;
 }
 
 export interface MapInfo {
@@ -105,8 +110,9 @@ export type Command =
 	| { t: 'marker.update'; id: string; changes: Partial<MarkerInput> }
 	| { t: 'marker.delete'; id: string }
 	| { t: 'marker.restore'; id: string }
-	| { t: 'region.create'; mapId: string; name: string; points: Point[] }
-	| { t: 'region.update'; id: string; points: Point[] }
+	| { t: 'region.create'; mapId: string; name: string; points: Point[]; hidden?: boolean }
+	/** Reshapes a region, hides or reveals it, or both. */
+	| { t: 'region.update'; id: string; points?: Point[]; hidden?: boolean }
 	| { t: 'region.delete'; id: string }
 	| { t: 'region.restore'; id: string }
 	| { t: 'map.update'; id: string; name: string }
@@ -142,7 +148,8 @@ export type Patch =
 	| { t: 'marker.upsert'; marker: Marker }
 	| { t: 'marker.remove'; id: string; mapId: string }
 	| { t: 'region.upsert'; region: Region }
-	| { t: 'region.remove'; id: string; mapId: string }
+	/** `targetMapId` is the map that can no longer be reached through it. */
+	| { t: 'region.remove'; id: string; mapId: string; targetMapId: string }
 	| { t: 'map.upsert'; map: MapInfo };
 
 export interface LiveEvent {

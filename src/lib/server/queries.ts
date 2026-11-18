@@ -3,9 +3,16 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import type { Db } from './db';
 import { maps, markers, regions } from './schema';
-import { canSeeMarker } from '../shared/rules';
+import { canSeeMarker, canSeeRegion } from '../shared/rules';
 import type { Crumb, MapSnapshot, Role } from '../shared/types';
-import { latestSeq, mapColumns, markerColumns, regionColumns, targetMap } from './world';
+import {
+	isConcealed,
+	latestSeq,
+	mapColumns,
+	markerColumns,
+	regionColumns,
+	targetMap
+} from './world';
 
 /** A map with everything on it that `role` may see, or null if it isn't in this campaign. */
 export function getMapSnapshot(
@@ -21,7 +28,8 @@ export function getMapSnapshot(
 			.from(maps)
 			.where(and(eq(maps.id, mapId), eq(maps.campaignId, campaignId)))
 			.get();
-		if (!map) return null;
+		// To a player, a map behind a hidden region is not there at all.
+		if (!map || (role !== 'gm' && isConcealed(tx, mapId))) return null;
 
 		const trail: Crumb[] = [];
 		for (let step: typeof map | undefined = map, depth = 0; step && depth < 64; depth++) {
@@ -37,7 +45,8 @@ export function getMapSnapshot(
 			.innerJoin(targetMap, eq(targetMap.id, regions.targetMapId))
 			.where(and(eq(regions.mapId, mapId), isNull(regions.deletedAt)))
 			.orderBy(regions.createdAt)
-			.all();
+			.all()
+			.filter((region) => canSeeRegion(role, region));
 
 		const markerList = tx
 			.select(markerColumns)

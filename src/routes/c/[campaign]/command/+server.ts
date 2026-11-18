@@ -32,13 +32,14 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	try {
-		const events = perform(getDb(), actor, command);
+		const db = getDb();
+		const events = perform(db, actor, command);
 		// Deliver the change before answering, so the sender has already seen
 		// its effect by the time their request resolves.
-		await announce(events);
+		await announce(db, events);
 		return json({
 			ok: true,
-			events: events.map((e) => toLiveEvent(e, actor.role)).filter((e) => e !== null),
+			events: events.map((e) => toLiveEvent(db, e, actor.role)).filter((e) => e !== null),
 			undo: undoable(events)
 		} satisfies CommandResponse);
 	} catch (err) {

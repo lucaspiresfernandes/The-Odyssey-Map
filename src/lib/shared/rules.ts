@@ -3,7 +3,7 @@
 // The server enforces these in `server/world.ts` and `server/visibility.ts`.
 // The browser imports the same functions only to decide which buttons to show.
 
-import type { Marker, MarkerKind, Role, StoredEvent } from './types';
+import type { Marker, MarkerKind, Region, Role, StoredEvent } from './types';
 
 /** The GM owns world markers. Anyone at the table can add notes and edit them. */
 export function canEditMarkerKind(role: Role, kind: MarkerKind): boolean {
@@ -31,6 +31,14 @@ export function canEditWorld(role: Role): boolean {
 /** Hidden world markers exist only for the GM. */
 export function canSeeMarker(role: Role, marker: Pick<Marker, 'kind' | 'hidden'>): boolean {
 	return role === 'gm' || marker.kind === 'player' || !marker.hidden;
+}
+
+/**
+ * Hidden regions exist only for the GM too. The server goes further than
+ * this one region: players are kept out of the map behind it as well.
+ */
+export function canSeeRegion(role: Role, region: Pick<Region, 'hidden'>): boolean {
+	return role === 'gm' || !region.hidden;
 }
 
 /**

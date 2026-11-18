@@ -1,19 +1,21 @@
 // The only path from the event log to a client.
 //
 // Stored events hold full before/after snapshots, including hidden world
-// markers. Nothing leaves the app without passing through the functions
-// below, which decide what a given role is allowed to receive. That includes
-// what is handed to the WebSocket server to deliver.
+// markers and hidden regions. Nothing leaves the app without passing through
+// the functions below, which decide what a given role is allowed to receive.
+// That includes what is handed to the WebSocket server to deliver.
 
-import { canSeeMarker } from '../shared/rules';
+import type { Db } from './db';
+import { isConcealed } from './world';
+import { canSeeMarker, canSeeRegion } from '../shared/rules';
 import type { LiveEvent, MapInfo, Marker, Patch, Region, Role, StoredEvent } from '../shared/types';
 
 /**
  * Turns an event into the change a client of this role should apply, or
  * null when the role must not learn that anything happened.
  *
- * For a player, a marker being hidden looks exactly like a delete, and a
- * marker being revealed looks exactly like a create.
+ * For a player, a marker or region being hidden looks exactly like a delete,
+ * and one being revealed looks exactly like a create.
  */
 export function projectEvent(event: StoredEvent, role: Role): Patch | null {
 	if (event.entity === 'marker') {
@@ -27,14 +29,31 @@ export function projectEvent(event: StoredEvent, role: Role): Patch | null {
 	}
 
 	if (event.entity === 'region') {
-		if (event.after) return { t: 'region.upsert', region: event.after as Region };
-		return { t: 'region.remove', id: event.entityId, mapId: event.mapId };
+		const before = event.before as Region | null;
+		const after = event.after as Region | null;
+		if (after && canSeeRegion(role, after)) return { t: 'region.upsert', region: after };
+		if (before && canSeeRegion(role, before)) {
+			return {
+				t: 'region.remove',
+				id: event.entityId,
+				mapId: event.mapId,
+				targetMapId: before.targetMapId
+			};
+		}
+		return null;
 	}
 
 	return { t: 'map.upsert', map: event.after as MapInfo };
 }
 
-export function toLiveEvent(event: StoredEvent, role: Role): LiveEvent | null {
+/**
+ * What a client of this role is sent about an event, if anything. Asked
+ * right after the change is written: whether a map is closed to players is
+ * read from the database as it is now.
+ */
+export function toLiveEvent(db: Db, event: StoredEvent, role: Role): LiveEvent | null {
+	// Nothing that happens on a map behind a hidden region reaches a player.
+	if (role !== 'gm' && isConcealed(db, event.mapId)) return null;
 	const patch = projectEvent(event, role);
 	if (!patch) return null;
 	return {

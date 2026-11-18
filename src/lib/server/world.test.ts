@@ -5,7 +5,7 @@ import { openDb, type Db } from './db';
 import { getMapSnapshot } from './queries';
 import { toLiveEvent } from './visibility';
 import { ActionError, eventsAfter, perform, setMapImage, undoable, type Actor } from './world';
-import type { Marker, Point, StoredEvent } from '../shared/types';
+import type { Marker, Point, Region, StoredEvent } from '../shared/types';
 
 let db: Db;
 let gm: Actor;
@@ -74,7 +74,7 @@ function note(by: Actor = player): Marker {
 
 /** Everything a player's browser would be sent for these events. */
 function sentToPlayer(events: StoredEvent[]): string {
-	return JSON.stringify(events.map((e) => toLiveEvent(e, 'player')).filter(Boolean));
+	return JSON.stringify(events.map((e) => toLiveEvent(db, e, 'player')).filter(Boolean));
 }
 
 describe('accounts', () => {
@@ -142,12 +142,12 @@ describe('world markers', () => {
 	test('hiding looks like a delete to players and revealing like a create', () => {
 		const marker = worldMarker();
 		const [hide] = perform(db, gm, { t: 'marker.update', id: marker.id, changes: { hidden: true } });
-		expect(toLiveEvent(hide, 'player')!.patch).toEqual({ t: 'marker.remove', id: marker.id, mapId });
-		expect(toLiveEvent(hide, 'gm')!.patch.t).toBe('marker.upsert');
+		expect(toLiveEvent(db, hide, 'player')!.patch).toEqual({ t: 'marker.remove', id: marker.id, mapId });
+		expect(toLiveEvent(db, hide, 'gm')!.patch.t).toBe('marker.upsert');
 		expect(getMapSnapshot(db, gm.campaignId, mapId, 'player')!.markers).toHaveLength(0);
 
 		const [show] = perform(db, gm, { t: 'marker.update', id: marker.id, changes: { hidden: false } });
-		const patch = toLiveEvent(show, 'player')!.patch;
+		const patch = toLiveEvent(db, show, 'player')!.patch;
 		expect(patch.t === 'marker.upsert' && patch.marker.title).toBe('The Drowned Bell');
 	});
 
@@ -324,6 +324,107 @@ describe('nested maps', () => {
 
 		perform(db, gm, { t: 'history.revert', seq: reshaped.seq });
 		expect(getMapSnapshot(db, gm.campaignId, mapId, 'player')!.regions[0].points).toEqual(SQUARE);
+	});
+});
+
+describe('hidden regions', () => {
+	/** Draws a region and returns it, with the events that drawing it made. */
+	function draw(name: string, on = mapId, extra: Record<string, unknown> = {}) {
+		const events = perform(db, gm, { t: 'region.create', mapId: on, name, points: SQUARE, ...extra });
+		return { events, region: events[1].after as Region };
+	}
+
+	const playerSees = (id: string) => getMapSnapshot(db, gm.campaignId, id, 'player');
+
+	test('hiding looks like a delete to players and revealing like a create', () => {
+		const { region } = draw('The Cellar');
+		const [hide] = perform(db, gm, { t: 'region.update', id: region.id, hidden: true });
+		expect(toLiveEvent(db, hide, 'player')!.patch).toEqual({
+			t: 'region.remove',
+			id: region.id,
+			mapId,
+			targetMapId: region.targetMapId
+		});
+		expect(toLiveEvent(db, hide, 'gm')!.patch.t).toBe('region.upsert');
+		expect(playerSees(mapId)!.regions).toHaveLength(0);
+		expect(getMapSnapshot(db, gm.campaignId, mapId, 'gm')!.regions[0].hidden).toBe(true);
+
+		const [show] = perform(db, gm, { t: 'region.update', id: region.id, hidden: false });
+		const patch = toLiveEvent(db, show, 'player')!.patch;
+		expect(patch.t === 'region.upsert' && patch.region.name).toBe('The Cellar');
+		expect(playerSees(mapId)!.regions).toHaveLength(1);
+	});
+
+	test('players are kept out of the map behind it, and of every map inside that', () => {
+		const { region: tavern } = draw('The Gilded Eel');
+		const { region: cellar } = draw('The Cellar', tavern.targetMapId);
+		const { region: vault } = draw('The Vault', cellar.targetMapId);
+		const dropped = note(player);
+		perform(db, gm, { t: 'marker.update', id: dropped.id, changes: { title: 'Still here' } });
+		const [inside] = perform(db, player, { t: 'marker.create', mapId: vault.targetMapId, kind: 'player', title: 'Chest', x: 0.5, y: 0.5 });
+
+		perform(db, gm, { t: 'region.update', id: cellar.id, hidden: true });
+		expect(playerSees(tavern.targetMapId)!.regions).toHaveLength(0);
+		expect(playerSees(cellar.targetMapId)).toBeNull();
+		expect(playerSees(vault.targetMapId)).toBeNull();
+		expect(getMapSnapshot(db, gm.campaignId, vault.targetMapId, 'gm')!.markers).toHaveLength(1);
+
+		// Nor can they act on what is in there, even knowing its id.
+		expect(refusal(() => perform(db, player, { t: 'marker.create', mapId: vault.targetMapId, kind: 'player', title: 'x', x: 0, y: 0 }))).toBe('not_found');
+		expect(refusal(() => perform(db, player, { t: 'marker.update', id: inside.entityId, changes: { title: 'x' } }))).toBe('not_found');
+		expect(refusal(() => perform(db, player, { t: 'marker.delete', id: inside.entityId }))).toBe('not_found');
+		expect(refusal(() => perform(db, player, { t: 'history.revert', seq: inside.seq }))).toBe('not_found');
+
+		perform(db, gm, { t: 'region.update', id: cellar.id, hidden: false });
+		expect(playerSees(vault.targetMapId)!.markers).toHaveLength(1);
+	});
+
+	test('nothing that happens in there reaches a player', () => {
+		const { region } = draw('The Cellar');
+		perform(db, gm, { t: 'region.update', id: region.id, hidden: true });
+		const inside = region.targetMapId;
+
+		const events = [
+			...perform(db, gm, { t: 'map.update', id: inside, name: 'SECRET crypt' }),
+			...perform(db, gm, { t: 'marker.create', mapId: inside, kind: 'world', title: 'SECRET altar', x: 0.5, y: 0.5 }),
+			...perform(db, gm, { t: 'marker.create', mapId: inside, kind: 'player', title: 'SECRET note', x: 0.5, y: 0.5 }),
+			...perform(db, gm, { t: 'region.create', mapId: inside, name: 'SECRET vault', points: SQUARE }),
+			...setMapImage(db, gm, inside, { file: `${inside}-abc.png`, width: 10, height: 10 }),
+			...perform(db, gm, { t: 'region.delete', id: region.id })
+		];
+		expect(events).toHaveLength(7);
+		expect(sentToPlayer(events)).toBe('[]');
+		expect(JSON.stringify(playerSees(mapId))).not.toContain('SECRET');
+	});
+
+	test('a region can be drawn already hidden', () => {
+		const { events, region } = draw('SECRET passage', mapId, { hidden: true });
+		expect(region.hidden).toBe(true);
+		expect(sentToPlayer(events)).toBe('[]');
+		expect(playerSees(mapId)!.regions).toHaveLength(0);
+		expect(playerSees(region.targetMapId)).toBeNull();
+	});
+
+	test('hiding is undone on its own, leaving a later reshape alone', () => {
+		const { region } = draw('The Cellar');
+		const moved = SQUARE.map(([x, y]): Point => [x + 0.2, y]);
+		const [hide] = perform(db, gm, { t: 'region.update', id: region.id, hidden: true });
+		const [reshape] = perform(db, gm, { t: 'region.update', id: region.id, points: moved });
+
+		perform(db, gm, { t: 'history.revert', seq: hide.seq });
+		expect(playerSees(mapId)!.regions[0].points).toEqual(moved);
+
+		perform(db, gm, { t: 'history.revert', seq: reshape.seq });
+		const [now] = playerSees(mapId)!.regions;
+		expect(now.points).toEqual(SQUARE);
+		expect(now.hidden).toBe(false);
+	});
+
+	test('only the GM hides and reveals', () => {
+		const { region } = draw('The Cellar');
+		expect(refusal(() => perform(db, player, { t: 'region.update', id: region.id, hidden: true }))).toBe('forbidden');
+		expect(refusal(() => perform(db, gm, { t: 'region.update', id: region.id, hidden: 'yes' }))).toBe('invalid');
+		expect(perform(db, gm, { t: 'region.update', id: region.id, hidden: false })).toHaveLength(0);
 	});
 });
 

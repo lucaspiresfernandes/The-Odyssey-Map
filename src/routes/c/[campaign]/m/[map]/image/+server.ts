@@ -8,7 +8,13 @@ import { newId } from '#lib/server/ids.ts';
 import { maps } from '#lib/server/schema.ts';
 import { requireMemberApi } from '#lib/server/session.ts';
 import { toLiveEvent } from '#lib/server/visibility.ts';
-import { ActionError, IMAGE_FILE_PATTERN, setMapImage, undoable } from '#lib/server/world.ts';
+import {
+	ActionError,
+	IMAGE_FILE_PATTERN,
+	isConcealed,
+	setMapImage,
+	undoable
+} from '#lib/server/world.ts';
 import { canEditWorld } from '#lib/shared/rules.ts';
 import { LIMITS, type CommandResponse } from '#lib/shared/types.ts';
 
@@ -40,12 +46,16 @@ function refuse(status: number, error: string) {
 export const GET: RequestHandler = async (event) => {
 	const { campaign } = requireMemberApi(event, event.params.campaign!);
 	const mapId = event.params.map!;
-	const row = getDb()
+	const db = getDb();
+	const row = db
 		.select({ imageFile: maps.imageFile })
 		.from(maps)
 		.where(and(eq(maps.id, mapId), eq(maps.campaignId, campaign.id)))
 		.get();
-	if (!row) return refuse(404, 'Map not found');
+	// A map behind a hidden region keeps its picture from players too.
+	if (!row || (campaign.role !== 'gm' && isConcealed(db, mapId))) {
+		return refuse(404, 'Map not found');
+	}
 
 	// `v` names one specific upload of this map, so a URL always means the
 	// same bytes and can be cached for good. Older uploads stay reachable,
@@ -114,10 +124,10 @@ export const POST: RequestHandler = async (event) => {
 			width: Number(form.get('width')),
 			height: Number(form.get('height'))
 		});
-		await announce(events);
+		await announce(db, events);
 		return json({
 			ok: true,
-			events: events.map((e) => toLiveEvent(e, actor.role)).filter((e) => e !== null),
+			events: events.map((e) => toLiveEvent(db, e, actor.role)).filter((e) => e !== null),
 			undo: undoable(events)
 		} satisfies CommandResponse);
 	} catch (err) {

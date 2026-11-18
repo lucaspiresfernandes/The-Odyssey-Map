@@ -5,6 +5,7 @@
 // so nothing hidden is ever handed over to be sent to a player.
 
 import type { Broadcast, StoredEvent } from '../shared/types';
+import type { Db } from './db';
 import { toLiveEvent } from './visibility';
 
 const BRIDGE_URL = `http://127.0.0.1:${process.env.WS_PORT || 3001}`;
@@ -39,13 +40,13 @@ async function deliver(message: Broadcast) {
  * Hands the events of one change to the WebSocket server. Resolves once they
  * are on their way to the table (or delivery failed); it never rejects.
  */
-export function announce(events: StoredEvent[]): Promise<void> {
+export function announce(db: Db, events: StoredEvent[]): Promise<void> {
 	if (events.length === 0) return Promise.resolve();
 	const message: Broadcast = {
 		campaignId: events[0].campaignId,
 		events: events.map((event) => ({
 			seq: event.seq,
-			to: { gm: toLiveEvent(event, 'gm'), player: toLiveEvent(event, 'player') }
+			to: { gm: toLiveEvent(db, event, 'gm'), player: toLiveEvent(db, event, 'player') }
 		}))
 	};
 	// One at a time, so events arrive in the order they were written.

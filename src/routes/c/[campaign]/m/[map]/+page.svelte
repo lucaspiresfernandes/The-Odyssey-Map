@@ -15,6 +15,7 @@
 		type Marker,
 		type MarkerInput,
 		type MarkerKind,
+		type Patch,
 		type Point,
 		type Region
 	} from '#lib/shared/types.ts';
@@ -31,7 +32,12 @@
 		for (const event of live.recent) state.apply(event);
 		return state;
 	});
-	$effect(() => live.subscribe((event) => world.apply(event)));
+	$effect(() =>
+		live.subscribe((event) => {
+			world.apply(event);
+			leaveIfShut(event.patch);
+		})
+	);
 
 	// What this person has done on this map, for Ctrl+Z and Ctrl+Shift+Z.
 	const undos = new UndoStack(live);
@@ -65,14 +71,12 @@
 	let selectedMarkerId = $state<string | null>(null);
 	let selectedRegionId = $state<string | null>(null);
 	let inviteOpen = $state(false);
-	let copied = $state(false);
 	let uploading = $state(false);
 	// Raw, because a notice's step is looked up in the undo stack by identity,
 	// and deep state would hand out a proxy of it instead.
 	let notice = $state.raw<Notice | null>(null);
 
 	const tool = $derived(placing ? 'place' : drawing ? 'draw' : 'pan');
-	const selectedRegion = $derived(world.regions.find((r) => r.id === selectedRegionId) ?? null);
 	const inviteUrl = $derived(
 		data.invitePath && typeof location !== 'undefined' ? location.origin + data.invitePath : ''
 	);
@@ -194,10 +198,22 @@
 		}
 	}
 
-	function saveName(name: string) {
+	function saveName(name: string, hidden: boolean) {
 		if (!prompt) return Promise.resolve(false);
 		if (prompt.kind === 'rename') return run({ t: 'map.update', id: prompt.mapId, name });
-		return run({ t: 'region.create', mapId: world.map.id, name, points: prompt.points });
+		return run({ t: 'region.create', mapId: world.map.id, name, points: prompt.points, hidden });
+	}
+
+	/**
+	 * A region a player could see has gone from some map: hidden, or deleted.
+	 * A player standing in the map it led to, or deeper, is walked back out
+	 * to the map the region was on.
+	 */
+	function leaveIfShut(patch: Patch) {
+		if (isGm || patch.t !== 'region.remove') return;
+		if (world.trail.some((crumb) => crumb.id === patch.targetMapId)) {
+			goto(`/c/${campaignId}/m/${patch.mapId}`);
+		}
 	}
 
 	async function deleteRegion(region: Region) {
@@ -246,9 +262,10 @@
 	async function copyInvite() {
 		try {
 			await navigator.clipboard.writeText(inviteUrl);
-			copied = true;
-			setTimeout(() => (copied = false), 2000);
+			inviteOpen = false;
+			say('Invite link copied to the clipboard.');
 		} catch {
+			// The popup stays open, so the link can be copied by hand.
 			say('Copy the link from the box.');
 		}
 	}
@@ -339,7 +356,7 @@
 				>
 					<option value="">Step into…</option>
 					{#each world.regions as region (region.id)}
-						<option value={region.id}>{region.name}</option>
+						<option value={region.id}>{region.name}{region.hidden ? ' (hidden)' : ''}</option>
 					{/each}
 				</select>
 			{/if}
@@ -399,9 +416,7 @@
 									aria-label="Invite link"
 									onfocus={(e) => e.currentTarget.select()}
 								/>
-								<button class="btn btn-sm btn-primary" onclick={copyInvite}>
-									{copied ? 'Copied' : 'Copy'}
-								</button>
+								<button class="btn btn-sm btn-primary" onclick={copyInvite}>Copy</button>
 							</div>
 						</div>
 					{/if}
@@ -426,40 +441,23 @@
 				bind:selectedMarkerId
 				bind:selectedRegionId
 				onplace={placed}
+				onnote={(x, y) => (form = { mode: 'create', kind: 'player', x, y })}
 				ondrawn={(points) => {
 					drawing = false;
 					prompt = { kind: 'region', points };
 				}}
 				onenter={enter}
 				onreshape={(region, points) => run({ t: 'region.update', id: region.id, points })}
+				onregionhide={(region, hidden) => run({ t: 'region.update', id: region.id, hidden })}
+				onregionrename={(region) =>
+					(prompt = { kind: 'rename', mapId: region.targetMapId, initial: region.name })}
+				onregiondelete={deleteRegion}
 				onedit={(marker) => (form = { mode: 'edit', marker })}
 				onmove={(marker) => startPlacing({ move: marker })}
 				ondelete={deleteMarker}
 				onhide={(marker, hidden) => run({ t: 'marker.update', id: marker.id, changes: { hidden } })}
 				oncursor={(at) => live.point(at && { mapId: world.map.id, x: at[0], y: at[1] })}
 			/>
-
-			{#if selectedRegion && editing && tool === 'pan'}
-				<div
-					class="absolute top-3.5 left-3.5 flex max-w-[calc(100%-28px)] flex-wrap items-center gap-2 px-2.5 py-2 text-sm {floating}"
-				>
-					<span>Region <strong class="font-serif">{selectedRegion.name}</strong></span>
-					<button class="btn btn-sm" onclick={() => enter(selectedRegion)}>Enter</button>
-					<button
-						class="btn btn-sm"
-						onclick={() =>
-							(prompt = {
-								kind: 'rename',
-								mapId: selectedRegion.targetMapId,
-								initial: selectedRegion.name
-							})}>Rename</button
-					>
-					<button class="btn btn-sm btn-danger" onclick={() => deleteRegion(selectedRegion)}>
-						Delete
-					</button>
-					<small class="text-muted">Drag a corner to reshape</small>
-				</div>
-			{/if}
 
 			{#if empty && isGm && !editing}
 				<p
@@ -552,6 +550,7 @@
 		hint={prompt.kind === 'region'
 			? 'The region gets a map of its own. Double-click it to step inside and add the image.'
 			: undefined}
+		canHide={prompt.kind === 'region'}
 		onsubmit={saveName}
 		onclose={() => (prompt = null)}
 	/>
