@@ -56,6 +56,8 @@
 @layer components {
 	.btn {
 		@apply inline-flex min-h-8.5 cursor-pointer items-center justify-center gap-[0.45em] rounded-lg border bg-panel-2 px-[0.85em] whitespace-nowrap text-cream no-underline transition-colors duration-120 hover:border-[#465166] hover:bg-[#2c3545] disabled:cursor-default disabled:opacity-50;
+		/* A finger needs more to aim at than a mouse does. */
+		@apply touch:min-h-11;
 	}
 
 	.btn-primary {
@@ -76,7 +78,7 @@
 	}
 
 	.btn-sm {
-		@apply min-h-7 px-[0.6em] text-[13px];
+		@apply min-h-7 px-[0.6em] text-[13px] touch:min-h-9;
 	}
 
 	/* A label wrapped around its input: <label class="field"><span>…</span><input class="input" /></label> */
@@ -90,6 +92,8 @@
 
 	.input {
 		@apply min-h-9 w-full rounded-lg border bg-[#12161e] px-[0.65em] py-[0.4em];
+		/* 16px, because iOS zooms the whole page into a field with smaller text. */
+		@apply touch:min-h-11 touch:text-base;
 	}
 
 	textarea.input {

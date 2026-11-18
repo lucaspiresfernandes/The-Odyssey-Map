@@ -6,8 +6,11 @@
 	// `view` turns map space into screen pixels: screen = map * size * k + offset.
 
 	import { untrack } from 'svelte';
+	import { MediaQuery } from 'svelte/reactivity';
 	import { canEditWorld } from '#lib/shared/rules.ts';
+	import { tileLevelFor, tileLevels, tilesIn, type Tile } from '#lib/shared/tiles.ts';
 	import {
+		LIMITS,
 		mapImageUrl,
 		markerType,
 		type Cursor,
@@ -19,7 +22,6 @@
 	} from '#lib/shared/types.ts';
 	import MarkerCard from './MarkerCard.svelte';
 	import MarkerGlyph from './MarkerGlyph.svelte';
-	import RegionMenu from './RegionMenu.svelte';
 
 	interface Props {
 		map: MapInfo;
@@ -29,8 +31,6 @@
 		cursors: Cursor[];
 		role: Role;
 		userId: string;
-		/** GM edit mode: a selected region can be reshaped by its corners. */
-		editing: boolean;
 		/** `place` waits for a click that positions a marker, `draw` outlines a region. */
 		tool: 'pan' | 'place' | 'draw';
 		/** How many maps deep this one is. Decides which way the arrival animation zooms. */
@@ -43,9 +43,6 @@
 		ondrawn: (points: Point[]) => void;
 		onenter: (region: Region) => void;
 		onreshape: (region: Region, points: Point[]) => Promise<boolean>;
-		onregionhide: (region: Region, hidden: boolean) => void;
-		onregionrename: (region: Region) => void;
-		onregiondelete: (region: Region) => void;
 		onedit: (marker: Marker) => void;
 		onmove: (marker: Marker) => void;
 		ondelete: (marker: Marker) => void;
@@ -61,7 +58,6 @@
 		cursors,
 		role,
 		userId,
-		editing,
 		tool,
 		depth,
 		selectedMarkerId = $bindable(),
@@ -71,9 +67,6 @@
 		ondrawn,
 		onenter,
 		onreshape,
-		onregionhide,
-		onregionrename,
-		onregiondelete,
 		onedit,
 		onmove,
 		ondelete,
@@ -101,23 +94,28 @@
 	let hoveredRegionId = $state<string | null>(null);
 	let draft = $state<Point[]>([]);
 	let cursor = $state<Point | null>(null);
-	/** A region's corners while one of them is being dragged, before the server confirms. */
+	/** A region's corners while they are being changed, before the server confirms. */
 	let reshape = $state<{ id: string; points: Point[] } | null>(null);
 	let cardW = $state(0);
 	let cardH = $state(0);
-	/** The spot where the selected region was clicked. Its menu opens there. */
-	let menuAt = $state.raw<Point | null>(null);
-	let menuW = $state(0);
-	let menuH = $state(0);
 
-	/** The GM gets a menu for a region with one click. Players only step inside. */
+	/**
+	 * The GM selects a region with one click, and gets its corners to reshape
+	 * it by. What else can be done with it is up to the page, which knows the
+	 * selection too. Players only step inside.
+	 */
 	const canShape = $derived(canEditWorld(role));
+	/** A finger is pointing, not a mouse: the corners of a region grow to be caught by one. */
+	const coarse = new MediaQuery('(pointer: coarse)');
+	const grip = $derived(coarse.current ? 1.6 : 1);
 	const W = $derived(map.width);
 	const H = $derived(map.height);
 	const image = $derived(mapImageUrl(map));
 	const fitK = $derived(cw > 0 && ch > 0 ? Math.min(cw / W, ch / H) * 0.94 : 1);
 	const minK = $derived(fitK * 0.5);
-	const maxK = $derived(Math.max(fitK * 16, 4));
+	// A picture is only so sharp, so the zoom stops at twice its own pixels.
+	// A map without one is drawn fresh at any size.
+	const maxK = $derived(image ? Math.max(fitK * 2, 2) : Math.max(fitK * 16, 4));
 
 	// Small regions go on top, so a district inside a larger outline stays reachable.
 	const orderedRegions = $derived(
@@ -147,30 +145,6 @@
 			top: above ? sy - PIN_HEIGHT - 12 - cardH : Math.min(sy + 12, Math.max(6, ch - cardH - 6))
 		};
 	});
-
-	// The region menu hangs off the spot that was clicked, like a context
-	// menu, and stays on that spot of the map when the map moves.
-	const menuPosition = $derived.by(() => {
-		// Out of the way while a corner is being dragged.
-		if (!selectedRegion || !menuAt || tool !== 'pan' || reshape) return null;
-		const sx = menuAt[0] * W * view.k + view.x;
-		const sy = menuAt[1] * H * view.k + view.y;
-		if (sx < 0 || sx > cw || sy < 0 || sy > ch) return null;
-		const gap = 6;
-		const fits = (at: number, size: number, room: number) => at + gap + size <= room - 8;
-		return {
-			left: Math.max(8, fits(sx, menuW, cw) ? sx + gap : sx - gap - menuW),
-			top: Math.max(8, fits(sy, menuH, ch) ? sy + gap : sy - gap - menuH)
-		};
-	});
-
-	/** Runs what was picked from the region menu, and closes the menu. */
-	function pick(action: (region: Region) => void) {
-		const region = selectedRegion;
-		selectedRegionId = null;
-		hoveredRegionId = null;
-		if (region) action(region);
-	}
 
 	function boundsOf(points: Point[]) {
 		const xs = points.map((p) => p[0]);
@@ -350,6 +324,93 @@
 		});
 	});
 
+	// ---------------------------------------------------------------- tiles
+
+	// A big image is a small preview with tiles over it: see
+	// src/lib/shared/tiles.ts. A small one is shown whole, as it was uploaded.
+	const levels = $derived(image ? tileLevels(W, H) : 0);
+	const picture = $derived(levels > 0 ? mapImageUrl(map, 'preview') : image);
+
+	interface PlacedTile extends Tile {
+		src: string;
+	}
+
+	/**
+	 * The tiles on screen: `over` at the level the zoom calls for. When the
+	 * zoom moves on to another level, the tiles it leaves stay `under` the new
+	 * ones until those have loaded, so the map doesn't drop back to the
+	 * blurry preview in between.
+	 */
+	let tiling = $state.raw<{
+		/** The image these tiles are cut from. */
+		of: string | null;
+		level: number;
+		under: PlacedTile[];
+		over: PlacedTile[];
+	}>({ of: null, level: 0, under: [], over: [] });
+	/** The tiles on screen that have finished loading. */
+	const arrived = new Set<string>();
+
+	function retile() {
+		const level = tileLevelFor(view.k * (window.devicePixelRatio || 1));
+		let over: PlacedTile[] = [];
+		if (level < levels) {
+			// A little more than the screen, so a pan doesn't outrun them at once.
+			const pad = 256;
+			over = tilesIn(W, H, level, {
+				x0: (-pad - view.x) / view.k,
+				y0: (-pad - view.y) / view.k,
+				x1: (cw + pad - view.x) / view.k,
+				y1: (ch + pad - view.y) / view.k
+			}).map((tile) => ({
+				...tile,
+				src: mapImageUrl(map, `${tile.level}/${tile.x}/${tile.y}`)!
+			}));
+		}
+
+		let under = tiling.under;
+		if (tiling.of !== image || over.length === 0) {
+			under = [];
+		} else if (tiling.level !== level) {
+			// A level that was left before it finished loading isn't worth
+			// keeping over the one that was already under it.
+			const loaded = tiling.over.filter((tile) => arrived.has(tile.src));
+			if (loaded.length === tiling.over.length || under.length === 0) under = loaded;
+			under = under.filter((tile) => tile.level !== level);
+		}
+		tiling = { of: image, level, under, over };
+
+		const shown = new Set([...under, ...over].map((tile) => tile.src));
+		for (const src of arrived) if (!shown.has(src)) arrived.delete(src);
+		settleTiles();
+	}
+
+	function settleTiles() {
+		if (tiling.under.length > 0 && tiling.over.every((tile) => arrived.has(tile.src))) {
+			tiling = { ...tiling, under: [] };
+		}
+	}
+
+	/** Loaded or failed, a tile is no longer worth waiting for. */
+	function tileArrived(src: string) {
+		arrived.add(src);
+		settleTiles();
+	}
+
+	// The tiles follow the view a beat behind, so a zoom that sweeps through
+	// several levels doesn't fetch them all.
+	let tileTimer: ReturnType<typeof setTimeout> | undefined;
+	$effect(() => {
+		void [view, cw, ch, image, W, H];
+		if (levels === 0) return;
+		tileTimer ??= setTimeout(() => {
+			tileTimer = undefined;
+			retile();
+		}, 80);
+	});
+
+	$effect(() => () => clearTimeout(tileTimer));
+
 	// ------------------------------------------------------------- gestures
 
 	type Gesture =
@@ -363,11 +424,22 @@
 				target: Element;
 		  }
 		| { type: 'pinch'; distance: number; k: number; wx: number; wy: number }
-		| { type: 'vertex'; region: Region; index: number; moved: boolean };
+		| {
+				type: 'vertex';
+				region: Region;
+				index: number;
+				/** The corner is new: it was pulled out of the middle of an edge. */
+				added: boolean;
+				sx: number;
+				sy: number;
+				moved: boolean;
+		  };
 
 	const pointers = new Map<number, { x: number; y: number }>();
 	let gesture: Gesture | null = null;
 	let lastTap = { at: 0, x: 0, y: 0, regionId: null as string | null };
+	/** The last corner that was clicked without being dragged. A second click removes it. */
+	let lastCorner = { at: 0, regionId: '', index: -1 };
 
 	function toMap(clientX: number, clientY: number): Point {
 		const rect = viewport!.getBoundingClientRect();
@@ -492,16 +564,28 @@
 		if (pointers.size > 2) return;
 
 		const target = e.target as Element;
-		const handle = target.closest<SVGElement>('[data-vertex]');
-		if (handle && selectedRegion) {
-			reshape = {
-				id: selectedRegion.id,
-				points: pointsOf(selectedRegion).map(([x, y]) => [x, y] as Point)
-			};
+		const corner = target.closest<SVGElement>('[data-vertex]');
+		const edge = corner ? null : target.closest<SVGElement>('[data-edge]');
+		if ((corner || edge) && selectedRegion) {
+			const points = pointsOf(selectedRegion).map(([x, y]) => [x, y] as Point);
+			let index = Number(corner?.dataset.vertex);
+			if (edge) {
+				// The dot in the middle of an edge: a new corner goes in there, and
+				// is dragged from there like any other.
+				const from = Number(edge.dataset.edge);
+				const [ax, ay] = points[from];
+				const [bx, by] = points[(from + 1) % points.length];
+				index = from + 1;
+				points.splice(index, 0, [(ax + bx) / 2, (ay + by) / 2]);
+			}
+			reshape = { id: selectedRegion.id, points };
 			gesture = {
 				type: 'vertex',
 				region: selectedRegion,
-				index: Number(handle.dataset.vertex),
+				index,
+				added: !!edge,
+				sx: e.clientX,
+				sy: e.clientY,
 				moved: false
 			};
 			capture(e.pointerId);
@@ -549,8 +633,11 @@
 			}
 			if (g.moved) view = bounded({ k: view.k, x: g.vx + dx, y: g.vy + dy });
 		} else if (g?.type === 'vertex' && reshape) {
-			g.moved = true;
-			reshape.points[g.index] = clamped(toMap(e.clientX, e.clientY));
+			// A press that barely moves is a click, not a drag. It leaves the
+			// corner where it is, so that two of them can remove it.
+			const slack = e.pointerType === 'mouse' ? 3 : 8;
+			if (Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > slack) g.moved = true;
+			if (g.moved) reshape.points[g.index] = clamped(toMap(e.clientX, e.clientY));
 		}
 	}
 
@@ -580,7 +667,25 @@
 		if (g?.type === 'pan' && !g.moved && completed) tap(e, g.target);
 		if (g?.type === 'vertex') {
 			const pending = reshape;
-			if (g.moved && completed && pending) {
+			const now = performance.now();
+			const clicked = completed && !g.moved && !g.added;
+			const twice =
+				clicked &&
+				lastCorner.regionId === g.region.id &&
+				lastCorner.index === g.index &&
+				now - lastCorner.at < 400;
+			lastCorner =
+				clicked && !twice
+					? { at: now, regionId: g.region.id, index: g.index }
+					: { at: 0, regionId: '', index: -1 };
+			// A corner clicked twice goes, as long as the region keeps three.
+			let removed = false;
+			if (pending && twice && pending.points.length > 3) {
+				pending.points.splice(g.index, 1);
+				removed = true;
+			}
+
+			if (pending && completed && (g.moved || removed)) {
 				const points = pending.points.map(([x, y]) => [x, y] as Point);
 				onreshape(g.region, points).then((ok) => {
 					if (!ok && reshape === pending) reshape = null;
@@ -644,7 +749,6 @@
 			return;
 		}
 		selectedRegionId = region && canShape ? region.id : null;
-		menuAt = point;
 		// Touch has no hover, so the first tap is what names the region.
 		if (e.pointerType !== 'mouse') hoveredRegionId = region?.id ?? null;
 		lastTap = { at: now, x: e.clientX, y: e.clientY, regionId: region?.id ?? null };
@@ -657,7 +761,7 @@
 		const [x, y] = draft[0];
 		const sx = x * W * view.k + view.x + rect.left;
 		const sy = y * H * view.k + view.y + rect.top;
-		return Math.hypot(e.clientX - sx, e.clientY - sy) < 14;
+		return Math.hypot(e.clientX - sx, e.clientY - sy) < (e.pointerType === 'mouse' ? 14 : 24);
 	}
 
 	function finishDraft() {
@@ -744,7 +848,6 @@
 	// hovered, hovered beats the rest.
 	const OUTLINE = {
 		idle: 'fill-transparent stroke-[#fff8e4]/90 stroke-[1.5] [stroke-dasharray:7_6]',
-		editing: 'fill-transparent stroke-[#f2c14e] stroke-[1.5] [stroke-dasharray:7_6]',
 		hover: 'fill-accent/22 stroke-accent stroke-[2.5]',
 		selected: 'fill-accent/14 stroke-white stroke-[2.5]',
 		// Only the GM ever has one of these to draw: dotted, and veiled, so it
@@ -756,13 +859,16 @@
 		if (selectedRegionId === region.id) return OUTLINE.selected;
 		if (hoveredRegionId === region.id) return OUTLINE.hover;
 		if (region.hidden) return OUTLINE.hidden;
-		return editing ? OUTLINE.editing : OUTLINE.idle;
+		return OUTLINE.idle;
 	}
 
 	/** The instruction shown at the top while a tool is waiting for a click. */
+	// On a narrow screen it leaves the corner to the zoom buttons, and may wrap.
 	const hint =
-		'absolute top-3.5 left-1/2 w-max max-w-[calc(100%-24px)] -translate-x-1/2 rounded-full border border-accent bg-night/90 px-3.5 py-2 text-center text-sm';
-	const zoomButton = 'h-9 w-9.5 cursor-pointer hover:bg-panel-2';
+		'absolute top-3.5 left-1/2 w-max max-w-[calc(100%-24px)] -translate-x-1/2 rounded-full border border-accent bg-night/90 px-3.5 py-2 text-center text-sm max-[720px]:max-w-[calc(100%-136px)] max-[720px]:rounded-2xl';
+	const zoomButton = 'h-9 w-9.5 cursor-pointer hover:bg-panel-2 touch:size-11';
+	/** Typed only where there are keys to type it on. */
+	const keys = 'ml-1.5 text-muted touch:hidden';
 </script>
 
 <svelte:window {onkeydown} />
@@ -777,7 +883,7 @@
 	<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 	<div
 		class={[
-			'absolute inset-0 touch-none select-none focus-visible:-outline-offset-2',
+			'absolute inset-0 touch-none select-none [-webkit-touch-callout:none] focus-visible:-outline-offset-2',
 			tool !== 'pan' ? 'cursor-crosshair' : dragging ? 'cursor-grabbing' : 'cursor-grab'
 		]}
 		data-tool={tool}
@@ -806,15 +912,35 @@
 			style:transform="translate({view.x}px, {view.y}px) scale({view.k})"
 			style:--inv={1 / view.k}
 		>
-			{#if image}
+			{#if picture}
+				<!-- The picture never takes the pointer, so holding a finger on the map
+				     doesn't bring up the browser's menu for saving it. -->
 				<img
-					class="block h-full w-full rounded-[3px] shadow-map [-webkit-user-drag:none]"
-					src={image}
+					class="pointer-events-none block h-full w-full rounded-[3px] shadow-map [-webkit-user-drag:none]"
+					src={picture}
 					alt=""
 					width={W}
 					height={H}
 					draggable="false"
 				/>
+				{#if tiling.of === image}
+					<div class="pointer-events-none absolute inset-0 overflow-hidden rounded-[3px]">
+						{#each [...tiling.under, ...tiling.over] as tile (tile.src)}
+							<img
+								class="absolute [-webkit-user-drag:none]"
+								src={tile.src}
+								alt=""
+								draggable="false"
+								style:left="{tile.left}px"
+								style:top="{tile.top}px"
+								style:width="{tile.width}px"
+								style:height="{tile.height}px"
+								onload={() => tileArrived(tile.src)}
+								onerror={() => tileArrived(tile.src)}
+							/>
+						{/each}
+					</div>
+				{/if}
 			{:else}
 				<div
 					class="grid h-full w-full place-content-center gap-2.5 rounded-[3px] bg-parchment text-center text-[#6d5f43] shadow-map"
@@ -866,15 +992,38 @@
 					{/each}
 				{/if}
 
-				{#if editing && selectedRegion && tool === 'pan'}
-					{#each pointsOf(selectedRegion) as [x, y], i (i)}
+				<!-- The selected region's corners, for the GM to reshape it by: drag one
+				     to move it, click it twice to remove it. The smaller dot in the
+				     middle of each edge pulls out into a new corner. -->
+				{#if canShape && selectedRegion && tool === 'pan'}
+					{@const corners = pointsOf(selectedRegion)}
+					{#if corners.length < LIMITS.regionPoints}
+						{#each corners as [x, y], i (i)}
+							{@const [nx, ny] = corners[(i + 1) % corners.length]}
+							<!-- Only on an edge long enough to keep the dot clear of its corners. -->
+							{#if Math.hypot((nx - x) * W, (ny - y) * H) * view.k > 44 * grip}
+								<circle
+									class="cursor-copy fill-accent stroke-accent-ink stroke-[1.5] stroke-steady [pointer-events:visible]"
+									data-edge={i}
+									cx={((x + nx) / 2) * W}
+									cy={((y + ny) / 2) * H}
+									r={(4.5 * grip) / view.k}
+								>
+									<title>Drag to add a corner</title>
+								</circle>
+							{/if}
+						{/each}
+					{/if}
+					{#each corners as [x, y], i (i)}
 						<circle
 							class="cursor-move fill-white stroke-accent-ink stroke-[1.5] stroke-steady [pointer-events:visible]"
 							data-vertex={i}
 							cx={x * W}
 							cy={y * H}
-							r={7 / view.k}
-						/>
+							r={(7 * grip) / view.k}
+						>
+							<title>Drag to move · double-click to remove</title>
+						</circle>
 					{/each}
 				{/if}
 			</svg>
@@ -1034,48 +1183,40 @@
 			</div>
 		{/if}
 
-		{#if selectedRegion && menuPosition}
-			<div
-				class={['pointer-events-auto absolute', menuW === 0 && 'invisible']}
-				style:left="{menuPosition.left}px"
-				style:top="{menuPosition.top}px"
-				bind:clientWidth={menuW}
-				bind:clientHeight={menuH}
-			>
-				<RegionMenu
-					region={selectedRegion}
-					{editing}
-					onenter={() => pick(onenter)}
-					onhide={(_, hidden) => pick((region) => onregionhide(region, hidden))}
-					onrename={() => pick(onregionrename)}
-					ondelete={() => pick(onregiondelete)}
-				/>
-			</div>
-		{/if}
-
 		{#if tool === 'draw'}
 			<p class={hint}>
 				{#if draft.length < 3}
-					Click to mark the corners of the region.
+					<span class="touch:hidden">Click to mark the corners of the region.</span>
+					<span class="hidden touch:inline">Tap to mark the corners of the region.</span>
 				{:else}
-					Click the first corner or press Enter to finish.
+					<span class="touch:hidden">Click the first corner or press Enter to finish.</span>
+					<span class="hidden touch:inline">Tap the first corner to finish.</span>
 				{/if}
-				<span class="ml-1.5 text-muted">Backspace removes a corner · Esc cancels</span>
+				<span class={keys}>Backspace removes a corner · Esc cancels</span>
 			</p>
 		{:else if tool === 'place'}
 			<p class={hint}>
-				Click the map where it belongs. <span class="ml-1.5 text-muted">Esc cancels</span>
+				<span class="touch:hidden">Click the map where it belongs.</span>
+				<span class="hidden touch:inline">Tap the map where it belongs.</span>
+				<span class={keys}>Esc cancels</span>
 			</p>
 		{/if}
 
+		<!-- In the bottom corner, beside the tools. A narrow screen gives the
+		     whole bottom edge to the tools, so there it sits in the top corner.
+		     Fingers zoom by pinching, which leaves only Fit to offer them. -->
 		<div
-			class="pointer-events-auto absolute right-3.5 bottom-3.5 grid overflow-hidden rounded-[10px] border bg-panel"
+			class="pointer-events-auto absolute right-3.5 bottom-3.5 grid overflow-hidden rounded-[10px] border bg-panel max-[720px]:top-3.5 max-[720px]:bottom-auto"
 		>
-			<button class="{zoomButton} border-b text-[19px]" aria-label="Zoom in" onclick={() => zoomBy(1.6)}>
+			<button
+				class="{zoomButton} border-b text-[19px] touch:hidden"
+				aria-label="Zoom in"
+				onclick={() => zoomBy(1.6)}
+			>
 				+
 			</button>
 			<button
-				class="{zoomButton} border-b text-[19px]"
+				class="{zoomButton} border-b text-[19px] touch:hidden"
 				aria-label="Zoom out"
 				onclick={() => zoomBy(1 / 1.6)}
 			>

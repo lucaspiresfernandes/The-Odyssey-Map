@@ -43,7 +43,10 @@ export function projectEvent(event: StoredEvent, role: Role): Patch | null {
 		return null;
 	}
 
-	return { t: 'map.upsert', map: event.after as MapInfo };
+	// A map is only ever deleted along with the region that led to it, and
+	// the news of that region going is what tells a client.
+	const map = event.after as MapInfo | null;
+	return map && { t: 'map.upsert', map };
 }
 
 /**

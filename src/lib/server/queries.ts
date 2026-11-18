@@ -43,7 +43,7 @@ export function getMapSnapshot(
 			.select(regionColumns)
 			.from(regions)
 			.innerJoin(targetMap, eq(targetMap.id, regions.targetMapId))
-			.where(and(eq(regions.mapId, mapId), isNull(regions.deletedAt)))
+			.where(eq(regions.mapId, mapId))
 			.orderBy(regions.createdAt)
 			.all()
 			.filter((region) => canSeeRegion(role, region));

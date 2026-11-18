@@ -56,10 +56,10 @@
 					<!-- Each type is a pill in its own colour, which arrives as --c. -->
 					<label
 						class={[
-							'inline-flex cursor-pointer items-center gap-[5px] rounded-full border py-1 pr-2.5 pl-2 text-[13px]',
+							'inline-flex cursor-pointer items-center gap-1.25 rounded-full border py-1 pr-2.5 pl-2 text-[13px] touch:py-2',
 							'has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-accent',
 							type === option.id
-								? 'border-(color:--c) bg-(--c)/18 text-[color-mix(in_srgb,var(--c)_70%,white)]'
+								? 'border-(--c) bg-(--c)/18 text-[color-mix(in_srgb,var(--c)_70%,white)]'
 								: 'text-muted'
 						]}
 						style:--c={option.color}
@@ -92,7 +92,7 @@
 
 		{#if kind === 'world'}
 			<label class="flex cursor-pointer items-start gap-2.5">
-				<input class="mt-[3px] accent-accent" type="checkbox" bind:checked={hidden} />
+				<input class="mt-0.75 accent-accent" type="checkbox" bind:checked={hidden} />
 				<span>
 					Hidden from players
 					<small class="block text-muted">Only you see it until you reveal it.</small>

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { invalidateAll } from '$app/navigation';
+	import { refreshAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import type { Snippet } from 'svelte';
 	import { Live, setLive } from '#lib/client/live.svelte.ts';
@@ -28,7 +28,7 @@
 			// either the page loaded a moment ahead of the socket, or the
 			// connection was down for a while. Fetch a fresh snapshot.
 			const snapshot = (page.data as { snapshot?: MapSnapshot }).snapshot;
-			if (snapshot && seq > snapshot.lastSeq) invalidateAll();
+			if (snapshot && seq > snapshot.lastSeq) refreshAll();
 		}
 	});
 	setLive(live);

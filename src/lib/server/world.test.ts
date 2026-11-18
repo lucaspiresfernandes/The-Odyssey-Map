@@ -4,7 +4,15 @@ import { actorFor, createCampaign, getMembership, joinCampaign } from './campaig
 import { openDb, type Db } from './db';
 import { getMapSnapshot } from './queries';
 import { toLiveEvent } from './visibility';
-import { ActionError, eventsAfter, perform, setMapImage, undoable, type Actor } from './world';
+import {
+	ActionError,
+	deletedMaps,
+	eventsAfter,
+	perform,
+	setMapImage,
+	undoable,
+	type Actor
+} from './world';
 import type { Marker, Point, Region, StoredEvent } from '../shared/types';
 
 let db: Db;
@@ -259,14 +267,28 @@ describe('undo', () => {
 		expect((latest.after as Marker).title).toBe('The honest innkeeper');
 	});
 
-	test('everything but creating a map can be undone', () => {
+	test('drawing a region can be undone, creating its map on its own cannot', () => {
 		const drawn = perform(db, gm, { t: 'region.create', mapId, name: 'Port Varr', points: SQUARE });
 		expect(drawn.map((e) => `${e.entity}.${e.action}`)).toEqual(['map.create', 'region.create']);
 		expect(undoable(drawn)).toEqual([drawn[1].seq]);
 		expect(refusal(() => perform(db, gm, { t: 'history.revert', seq: drawn[0].seq }))).toBe('invalid');
 
-		perform(db, gm, { t: 'history.revert', seq: drawn[1].seq });
+		// The undo deletes the region and its map, and that is the end of it:
+		// there is nothing left to redo.
+		const undone = perform(db, gm, { t: 'history.revert', seq: drawn[1].seq });
 		expect(getMapSnapshot(db, gm.campaignId, mapId, 'gm')!.regions).toHaveLength(0);
+		expect(getMapSnapshot(db, gm.campaignId, drawn[0].entityId, 'gm')).toBeNull();
+		expect(undoable(undone)).toEqual([]);
+	});
+
+	test('undo leaves a region alone once something is inside it', () => {
+		const drawn = perform(db, gm, { t: 'region.create', mapId, name: 'Port Varr', points: SQUARE });
+		const inside = drawn[0].entityId;
+		perform(db, player, { t: 'marker.create', mapId: inside, kind: 'player', title: 'Dock 9', x: 0.5, y: 0.5 });
+
+		// Undoing the drawing would delete the note with it, without asking.
+		expect(refusal(() => perform(db, gm, { t: 'history.revert', seq: drawn[1].seq }))).toBe('conflict');
+		expect(getMapSnapshot(db, gm.campaignId, inside, 'player')!.markers).toHaveLength(1);
 	});
 
 	test('players cannot undo the GM\'s work', () => {
@@ -298,18 +320,53 @@ describe('nested maps', () => {
 		expect(refusal(() => setMapImage(db, player, mapId, { file: `${mapId}-abc.png`, width: 10, height: 10 }))).toBe('forbidden');
 	});
 
-	test('deleting a region keeps what is inside it for a restore', () => {
-		perform(db, gm, { t: 'region.create', mapId, name: 'Port Varr', points: SQUARE });
-		const [region] = getMapSnapshot(db, gm.campaignId, mapId, 'gm')!.regions;
-		perform(db, player, { t: 'marker.create', mapId: region.targetMapId, kind: 'player', title: 'Dock 9', x: 0.5, y: 0.5 });
+	test('deleting a region deletes everything inside it, for good', () => {
+		const draw = (on: string, name: string) =>
+			perform(db, gm, { t: 'region.create', mapId: on, name, points: SQUARE })[1].after as Region;
+		const city = draw(mapId, 'Port Varr');
+		const tavern = draw(city.targetMapId, 'The Gilded Eel');
+		const cellar = draw(tavern.targetMapId, 'The Cellar');
+		const kept = draw(mapId, 'The Ashen Wood');
+		const outside = note();
+		const [inside] = perform(db, player, { t: 'marker.create', mapId: cellar.targetMapId, kind: 'player', title: 'Dock 9', x: 0.5, y: 0.5 });
+		setMapImage(db, gm, tavern.targetMapId, { file: `${tavern.targetMapId}-abc.png`, width: 10, height: 10 });
 
-		const [deleted] = perform(db, gm, { t: 'region.delete', id: region.id });
-		expect(getMapSnapshot(db, gm.campaignId, mapId, 'gm')!.regions).toHaveLength(0);
-		perform(db, gm, { t: 'history.revert', seq: deleted.seq });
+		expect(refusal(() => perform(db, player, { t: 'region.delete', id: city.id }))).toBe('forbidden');
+		const made = perform(db, gm, { t: 'region.delete', id: city.id });
 
-		const [back] = getMapSnapshot(db, gm.campaignId, mapId, 'gm')!.regions;
-		expect(back.targetMapId).toBe(region.targetMapId);
-		expect(getMapSnapshot(db, gm.campaignId, back.targetMapId, 'player')!.markers).toHaveLength(1);
+		// One event says the region went, and one per map that went with it.
+		const gone = [city, tavern, cellar].map((r) => r.targetMapId);
+		expect(made.map((e) => `${e.entity}.${e.action}`)).toEqual(['region.delete', 'map.delete', 'map.delete', 'map.delete']);
+		expect(deletedMaps(made).sort()).toEqual([...gone].sort());
+		expect(toLiveEvent(db, made[0], 'player')!.patch).toEqual({
+			t: 'region.remove',
+			id: city.id,
+			mapId,
+			targetMapId: city.targetMapId
+		});
+		expect(made.slice(1).map((e) => toLiveEvent(db, e, 'gm'))).toEqual([null, null, null]);
+
+		// The maps are gone to the GM too, and so is what was on them.
+		for (const id of gone) expect(getMapSnapshot(db, gm.campaignId, id, 'gm')).toBeNull();
+		expect(refusal(() => perform(db, gm, { t: 'marker.update', id: inside.entityId, changes: { title: 'x' } }))).toBe('not_found');
+		expect(refusal(() => perform(db, gm, { t: 'region.update', id: tavern.id, hidden: true }))).toBe('not_found');
+		expect(refusal(() => perform(db, gm, { t: 'region.delete', id: city.id }))).toBe('not_found');
+
+		// What was beside it is untouched.
+		const root = getMapSnapshot(db, gm.campaignId, mapId, 'gm')!;
+		expect(root.regions.map((r) => r.id)).toEqual([kept.id]);
+		expect(root.markers.map((m) => m.id)).toEqual([outside.id]);
+		expect(getMapSnapshot(db, gm.campaignId, kept.targetMapId, 'gm')).not.toBeNull();
+
+		// Nothing brings it back, and its past went with it.
+		expect(undoable(made)).toEqual([]);
+		for (const event of made) {
+			expect(refusal(() => perform(db, gm, { t: 'history.revert', seq: event.seq }))).toBe('invalid');
+		}
+		expect(refusal(() => perform(db, player, { t: 'history.revert', seq: inside.seq }))).toBe('not_found');
+		const log = JSON.stringify(eventsAfter(db, 0).filter((e) => e.seq < made[0].seq));
+		expect(log).toContain('The Ashen Wood');
+		for (const lost of ['Port Varr', 'The Gilded Eel', 'The Cellar', 'Dock 9']) expect(log).not.toContain(lost);
 	});
 
 	test('a region can be reshaped, and the reshape undone', () => {
@@ -389,12 +446,16 @@ describe('hidden regions', () => {
 			...perform(db, gm, { t: 'marker.create', mapId: inside, kind: 'world', title: 'SECRET altar', x: 0.5, y: 0.5 }),
 			...perform(db, gm, { t: 'marker.create', mapId: inside, kind: 'player', title: 'SECRET note', x: 0.5, y: 0.5 }),
 			...perform(db, gm, { t: 'region.create', mapId: inside, name: 'SECRET vault', points: SQUARE }),
-			...setMapImage(db, gm, inside, { file: `${inside}-abc.png`, width: 10, height: 10 }),
-			...perform(db, gm, { t: 'region.delete', id: region.id })
+			...setMapImage(db, gm, inside, { file: `${inside}-abc.png`, width: 10, height: 10 })
 		];
-		expect(events).toHaveLength(7);
+		expect(events).toHaveLength(6);
 		expect(sentToPlayer(events)).toBe('[]');
 		expect(JSON.stringify(playerSees(mapId))).not.toContain('SECRET');
+
+		// Nor does the news of it all being deleted: the region, its map and the vault's.
+		const deleted = perform(db, gm, { t: 'region.delete', id: region.id });
+		expect(deleted).toHaveLength(3);
+		expect(sentToPlayer(deleted)).toBe('[]');
 	});
 
 	test('a region can be drawn already hidden', () => {

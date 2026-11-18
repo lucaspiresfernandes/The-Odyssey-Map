@@ -6,7 +6,7 @@
 // writes the change, and appends one row per change to the event log, all in
 // a single transaction.
 
-import { and, eq, gt, max } from 'drizzle-orm';
+import { and, eq, gt, inArray, max, or } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import type { Db } from './db';
 import { newId } from './ids';
@@ -154,13 +154,9 @@ function findMarker(
 	return row;
 }
 
-function findRegion(
-	db: Db,
-	actor: Actor,
-	id: string
-): { region: Region; deletedAt: number | null } {
+function findRegion(db: Db, actor: Actor, id: string): Region {
 	const row = db
-		.select({ region: regionColumns, deletedAt: regions.deletedAt })
+		.select(regionColumns)
 		.from(regions)
 		.innerJoin(maps, eq(maps.id, regions.mapId))
 		.innerJoin(targetMap, eq(targetMap.id, regions.targetMapId))
@@ -446,8 +442,7 @@ function updateRegion(
 	changes: { points?: unknown; hidden?: unknown }
 ): StoredEvent[] {
 	requireWorldEdit(actor);
-	const { region: before, deletedAt } = findRegion(db, actor, id);
-	if (deletedAt !== null) fail('conflict', 'That region was deleted. Restore it first.');
+	const before = findRegion(db, actor, id);
 
 	const after: Region = { ...before };
 	if (changes.points !== undefined) after.points = asPoints(changes.points);
@@ -461,24 +456,49 @@ function updateRegion(
 	return [record(db, actor, before.mapId, 'region', 'update', before, after)];
 }
 
+/**
+ * Deletes a region for good, and with it everything that could only be
+ * reached through it: the map behind it, what is on that map, and every
+ * region and map further inside. Nothing brings any of it back, which is
+ * why the browser asks before sending this.
+ *
+ * The image files of those maps are not touched here. Whoever called
+ * `perform` removes them afterwards: see `deletedMaps`.
+ */
 function deleteRegion(db: Db, actor: Actor, id: string): StoredEvent[] {
 	requireWorldEdit(actor);
-	const { region, deletedAt } = findRegion(db, actor, id);
-	if (deletedAt !== null) fail('conflict', 'That region is already deleted.');
+	const region = findRegion(db, actor, id);
 
-	// The map behind the region is kept, so restoring the region restores
-	// the way into everything that was built inside it.
-	db.update(regions).set({ deletedAt: Date.now() }).where(eq(regions.id, id)).run();
-	return [record(db, actor, region.mapId, 'region', 'delete', region, null)];
+	// The map behind the region, then the maps inside that one, and so on down.
+	const doomed = [readMap(db, region.targetMapId)];
+	for (let i = 0; i < doomed.length; i++) {
+		doomed.push(...db.select(mapColumns).from(maps).where(eq(maps.parentId, doomed[i].id)).all());
+	}
+	const ids = doomed.map((map) => map.id);
+
+	// The regions go first: they point at these maps and would hold them in
+	// place. That is this region and every region drawn further inside.
+	db.delete(regions).where(inArray(regions.targetMapId, ids)).run();
+	// The markers on a map go with it.
+	db.delete(maps).where(inArray(maps.id, ids)).run();
+	// So does the past of all of it. None of it could be undone any more.
+	db.delete(events)
+		.where(
+			or(inArray(events.mapId, ids), and(eq(events.entity, 'region'), eq(events.entityId, id)))
+		)
+		.run();
+
+	return [
+		record(db, actor, region.mapId, 'region', 'delete', region, null),
+		...doomed.map((map) => record(db, actor, map.id, 'map', 'delete', map, null))
+	];
 }
 
-function restoreRegion(db: Db, actor: Actor, id: string): StoredEvent[] {
-	requireWorldEdit(actor);
-	const { region, deletedAt } = findRegion(db, actor, id);
-	if (deletedAt === null) fail('conflict', 'That region is already on the map.');
-
-	db.update(regions).set({ deletedAt: null }).where(eq(regions.id, id)).run();
-	return [record(db, actor, region.mapId, 'region', 'restore', null, readRegion(db, id))];
+/** True while nothing has been put on a map: no image, no markers, no regions. */
+function isBlank(db: Db, mapId: string): boolean {
+	const marker = db.select({ id: markers.id }).from(markers).where(eq(markers.mapId, mapId)).get();
+	const region = db.select({ id: regions.id }).from(regions).where(eq(regions.mapId, mapId)).get();
+	return !readMap(db, mapId).imageFile && !marker && !region;
 }
 
 function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): StoredEvent[] {
@@ -527,7 +547,7 @@ export function setMapImage(
 			requireWorldEdit(actor);
 			const before = findMap(tx, actor, mapId);
 			const sizeOk = [image.width, image.height].every(
-				(n) => Number.isInteger(n) && n >= 1 && n <= 30000
+				(n) => Number.isInteger(n) && n >= 1 && n <= LIMITS.imageSide
 			);
 			if (!sizeOk || !IMAGE_FILE_PATTERN.test(image.file) || !image.file.startsWith(`${mapId}-`)) {
 				fail('invalid', 'That image could not be used.');
@@ -549,16 +569,24 @@ const MARKER_FIELDS = ['type', 'title', 'description', 'x', 'y', 'hidden'] as co
 
 /**
  * The changes among these that `revert` can take back, as sequence numbers.
- * Creating a map is the one change with no opposite of its own.
+ * Creating a map has no opposite of its own, and deleting a region, with
+ * the maps behind it, is for good.
  */
 export function undoable(made: StoredEvent[]): number[] {
-	return made.filter((e) => !(e.entity === 'map' && e.action === 'create')).map((e) => e.seq);
+	const final = (e: StoredEvent) =>
+		(e.entity === 'map' && e.action !== 'update') || (e.entity === 'region' && e.action === 'delete');
+	return made.filter((e) => !final(e)).map((e) => e.seq);
+}
+
+/** The maps these changes deleted. Their image files are the caller's to remove. */
+export function deletedMaps(made: StoredEvent[]): string[] {
+	return made.filter((e) => e.entity === 'map' && e.action === 'delete').map((e) => e.entityId);
 }
 
 /**
  * Undoes one event from the log by performing its opposite as a new change.
- * Nothing is ever removed from the log, and the opposite goes through the
- * same permission checks as any other command. Reverting a revert redoes it.
+ * The opposite goes through the same permission checks as any other
+ * command. Reverting a revert redoes it.
  */
 function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 	if (typeof rawSeq !== 'number' || !Number.isInteger(rawSeq)) fail('invalid', 'Malformed request.');
@@ -587,8 +615,15 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 	}
 
 	if (event.entity === 'region') {
-		if (event.action === 'create' || event.action === 'restore') return deleteRegion(db, actor, id);
-		if (event.action === 'delete') return restoreRegion(db, actor, id);
+		if (event.action === 'delete') fail('invalid', "A deleted region can't be brought back.");
+		if (event.action === 'create' || event.action === 'restore') {
+			// Deleting is for good, so undo only does it to a region with
+			// nothing to lose: one whose map is still as empty as it was made.
+			if (!isBlank(db, findRegion(db, actor, id).targetMapId)) {
+				fail('conflict', "That region isn't empty any more. Delete it from the bar under the map.");
+			}
+			return deleteRegion(db, actor, id);
+		}
 		// As with markers, only what this edit changed is put back. Events
 		// from before regions could be hidden have no `hidden` to compare.
 		const before = event.before as Region;
@@ -600,6 +635,7 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 		});
 	}
 
+	if (event.action === 'delete') fail('invalid', "A deleted map can't be brought back.");
 	if (event.action !== 'update') {
 		fail('invalid', "A map can't be un-created. Delete the region that leads to it instead.");
 	}
@@ -634,8 +670,6 @@ function run(db: Db, actor: Actor, input: unknown): StoredEvent[] {
 			return updateRegion(db, actor, asId(cmd.id), cmd);
 		case 'region.delete':
 			return deleteRegion(db, actor, asId(cmd.id));
-		case 'region.restore':
-			return restoreRegion(db, actor, asId(cmd.id));
 		case 'map.update':
 			return renameMap(db, actor, asId(cmd.id), cmd.name);
 		case 'history.revert':

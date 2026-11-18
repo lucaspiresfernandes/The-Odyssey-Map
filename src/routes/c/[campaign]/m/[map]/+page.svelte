@@ -6,7 +6,9 @@
 	import { UndoStack, type Step } from '#lib/client/undo.ts';
 	import MapCanvas from '#lib/components/MapCanvas.svelte';
 	import MarkerForm from '#lib/components/MarkerForm.svelte';
+	import Modal from '#lib/components/Modal.svelte';
 	import NamePrompt from '#lib/components/NamePrompt.svelte';
+	import ToolButton from '#lib/components/ToolButton.svelte';
 	import { canEditWorld } from '#lib/shared/rules.ts';
 	import {
 		LIMITS,
@@ -63,11 +65,12 @@
 
 	let canvas = $state<ReturnType<typeof MapCanvas>>();
 	let fileInput = $state<HTMLInputElement>();
-	let editing = $state(false);
 	let placing = $state<Placing | null>(null);
 	let drawing = $state(false);
 	let form = $state<Form | null>(null);
 	let prompt = $state<Prompt | null>(null);
+	/** The region the GM has asked to delete, while they are being asked if they mean it. */
+	let deleting = $state<Region | null>(null);
 	let selectedMarkerId = $state<string | null>(null);
 	let selectedRegionId = $state<string | null>(null);
 	let inviteOpen = $state(false);
@@ -77,6 +80,10 @@
 	let notice = $state.raw<Notice | null>(null);
 
 	const tool = $derived(placing ? 'place' : drawing ? 'draw' : 'pan');
+	/** The region the GM has clicked. The region buttons under the map act on it. */
+	const selectedRegion = $derived(world.regions.find((r) => r.id === selectedRegionId) ?? null);
+	/** Why the region buttons are off, for their tooltips. */
+	const regionHint = $derived(selectedRegion ? undefined : 'Click a region first');
 	const inviteUrl = $derived(
 		data.invitePath && typeof location !== 'undefined' ? location.origin + data.invitePath : ''
 	);
@@ -92,6 +99,7 @@
 			drawing = false;
 			form = null;
 			prompt = null;
+			deleting = null;
 			selectedMarkerId = null;
 			selectedRegionId = null;
 			// Undo is for the map in front of you, not one you have left.
@@ -205,21 +213,25 @@
 	}
 
 	/**
-	 * A region a player could see has gone from some map: hidden, or deleted.
-	 * A player standing in the map it led to, or deeper, is walked back out
-	 * to the map the region was on.
+	 * A region has gone from some map: deleted, or to a player, hidden.
+	 * Whoever is standing in the map it led to, or deeper, is walked back out
+	 * to the map the region was on. The GM is only ever told of a deletion,
+	 * and then the map they are in no longer exists.
 	 */
 	function leaveIfShut(patch: Patch) {
-		if (isGm || patch.t !== 'region.remove') return;
+		if (patch.t !== 'region.remove') return;
 		if (world.trail.some((crumb) => crumb.id === patch.targetMapId)) {
 			goto(`/c/${campaignId}/m/${patch.mapId}`);
 		}
 	}
 
+	/** Runs once the GM has confirmed. There is no undo for this one. */
 	async function deleteRegion(region: Region) {
+		deleting = null;
 		selectedRegionId = null;
-		const { ok, step } = await attempt({ t: 'region.delete', id: region.id });
-		if (ok) say(`Deleted the region “${region.name}”. Its map is kept.`, step);
+		if (await run({ t: 'region.delete', id: region.id })) {
+			say(`Deleted “${region.name}” and everything inside it.`);
+		}
 	}
 
 	async function upload(file: File | undefined) {
@@ -229,17 +241,8 @@
 			if (file.size > LIMITS.imageBytes) {
 				throw new Error(`Map images can be up to ${LIMITS.imageBytes / 1024 / 1024} MB.`);
 			}
-			let bitmap: ImageBitmap;
-			try {
-				bitmap = await createImageBitmap(file);
-			} catch {
-				throw new Error("That file doesn't look like an image this browser can read.");
-			}
 			const body = new FormData();
 			body.set('file', file);
-			body.set('width', String(bitmap.width));
-			body.set('height', String(bitmap.height));
-			bitmap.close();
 
 			const response = await fetch(`/c/${campaignId}/m/${world.map.id}/image`, {
 				method: 'POST',
@@ -271,7 +274,7 @@
 	}
 
 	function onkeydown(e: KeyboardEvent) {
-		if (form || prompt) return;
+		if (form || prompt || deleting) return;
 
 		if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'z') {
 			// In a text field, Ctrl+Z belongs to the text.
@@ -298,7 +301,7 @@
 	}
 
 	// Looks shared by more than one element below.
-	const crumbLink = 'text-muted no-underline hover:text-accent';
+	const crumbLink = 'text-muted no-underline hover:text-accent touch:py-2';
 	/** A bar that floats over the map. */
 	const floating = 'rounded-xl border bg-panel/94 shadow-pop';
 
@@ -346,7 +349,7 @@
 			{#if world.regions.length}
 				<!-- The same doorways as on the map, for keyboards and screen readers. -->
 				<select
-					class="ml-1.5 cursor-pointer rounded-lg border bg-panel-2 px-1.5 py-0.75 font-sans text-[13px] text-muted"
+					class="ml-1.5 cursor-pointer rounded-lg border bg-panel-2 px-1.5 py-0.75 font-sans text-[13px] text-muted touch:min-h-9 touch:min-w-28 touch:text-base"
 					aria-label="Step into a region of this map"
 					onchange={(e) => {
 						const region = world.regions.find((r) => r.id === e.currentTarget.value);
@@ -362,7 +365,8 @@
 			{/if}
 		</nav>
 
-		<div class="flex shrink-0 items-center gap-2">
+		<!-- ml-auto keeps these on the right when a narrow screen wraps them onto a row of their own. -->
+		<div class="ml-auto flex shrink-0 items-center gap-2">
 			{#if live.status === 'offline'}
 				<span class="text-xs text-[#e8b85a]" role="status">Reconnecting…</span>
 			{/if}
@@ -383,20 +387,6 @@
 			</ul>
 
 			{#if isGm}
-				<button
-					class={['btn btn-sm', editing && 'btn-active']}
-					aria-pressed={editing}
-					onclick={() => {
-						editing = !editing;
-						if (!editing) {
-							drawing = false;
-							selectedRegionId = null;
-							if (placing && 'create' in placing && placing.create === 'world') placing = null;
-						}
-					}}
-				>
-					{editing ? 'Editing world' : 'Edit world'}
-				</button>
 				<div class="relative">
 					<button
 						class="btn btn-sm"
@@ -410,7 +400,7 @@
 							<p>Share this link. Anyone who opens it joins as a player.</p>
 							<div class="flex gap-1.5">
 								<input
-									class="input min-h-7 text-[13px]"
+									class="input min-h-7 text-[13px] touch:min-h-9 touch:text-base"
 									readonly
 									value={inviteUrl}
 									aria-label="Invite link"
@@ -435,7 +425,6 @@
 				{cursors}
 				role={data.role}
 				userId={data.me.id}
-				{editing}
 				{tool}
 				depth={world.trail.length}
 				bind:selectedMarkerId
@@ -448,10 +437,6 @@
 				}}
 				onenter={enter}
 				onreshape={(region, points) => run({ t: 'region.update', id: region.id, points })}
-				onregionhide={(region, hidden) => run({ t: 'region.update', id: region.id, hidden })}
-				onregionrename={(region) =>
-					(prompt = { kind: 'rename', mapId: region.targetMapId, initial: region.name })}
-				onregiondelete={deleteRegion}
 				onedit={(marker) => (form = { mode: 'edit', marker })}
 				onmove={(marker) => startPlacing({ move: marker })}
 				ondelete={deleteMarker}
@@ -459,74 +444,156 @@
 				oncursor={(at) => live.point(at && { mapId: world.map.id, x: at[0], y: at[1] })}
 			/>
 
-			{#if empty && isGm && !editing}
+			{#if empty && isGm && tool === 'pan'}
 				<p
-					class="absolute top-4.5 left-1/2 w-max max-w-[calc(100%-28px)] -translate-x-1/2 rounded-full border bg-night/90 px-3.5 py-2 text-center text-sm"
+					class="absolute top-4.5 left-1/2 w-max max-w-[calc(100%-28px)] -translate-x-1/2 rounded-full border bg-night/90 px-3.5 py-2 text-center text-sm max-[720px]:max-w-[calc(100%-136px)] max-[720px]:rounded-2xl"
 				>
-					This map is empty. Turn on <strong>Edit world</strong> to add a map image, markers and
-					regions.
+					This map is empty. Add a map image, markers and regions from the bar below.
 				</p>
 			{/if}
 
+			<!-- What floats over the bottom of the map: a notice when there is one,
+			     stacked on the tools. Only the two of them take the pointer. On a
+			     wide screen the bar keeps clear of the zoom buttons in the corner;
+			     on a narrow one those move to the top and it takes the full width. -->
 			<div
-				class="absolute bottom-3.5 left-1/2 flex w-max max-w-[calc(100%-120px)] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 p-1.5 max-[720px]:bottom-16 max-[720px]:max-w-[calc(100%-24px)] {floating}"
-				role="toolbar"
-				aria-label="Map tools"
+				class="pointer-events-none absolute inset-x-0 bottom-3.5 z-1 flex flex-col items-center gap-3"
 			>
-				{#if tool !== 'pan'}
-					<button class="btn" onclick={() => ((placing = null), (drawing = false))}>Cancel</button>
-				{:else}
-					<button class="btn" onclick={() => startPlacing({ create: 'player' })}>
-						<span aria-hidden="true">＋</span> Add note
-					</button>
-					{#if isGm && editing}
-						<span class="w-px self-stretch bg-line"></span>
-						<button class="btn" onclick={() => startPlacing({ create: 'world' })}>
-							<span aria-hidden="true">＋</span> World marker
+				{#if notice}
+					<div
+						class="pointer-events-auto flex max-w-[calc(100%-28px)] items-center gap-2 rounded-[10px] border border-[#4a5670] bg-[#2a3142] py-2 pr-2 pl-3.5 text-sm shadow-pop"
+						role="status"
+					>
+						<span>{notice.text}</span>
+						{#if notice.undo}
+							{@const step = notice.undo}
+							<button class="btn btn-sm" onclick={() => undo(step)}>Undo</button>
+						{/if}
+						<button class="btn btn-sm btn-ghost" aria-label="Dismiss" onclick={() => (notice = null)}>
+							×
 						</button>
-						<button
-							class="btn"
-							onclick={() => {
-								selectedMarkerId = null;
-								selectedRegionId = null;
-								drawing = true;
-							}}>Draw region</button
-						>
-						<button class="btn" disabled={uploading} onclick={() => fileInput?.click()}>
-							{uploading ? 'Uploading…' : world.map.imageFile ? 'Replace image' : 'Add map image'}
-						</button>
-						<button
-							class="btn"
-							onclick={() =>
-								(prompt = { kind: 'rename', mapId: world.map.id, initial: world.map.name })}
-							>Rename map</button
-						>
-						<input
-							bind:this={fileInput}
-							type="file"
-							accept="image/png,image/jpeg,image/webp,image/gif,image/avif"
-							hidden
-							onchange={(e) => upload(e.currentTarget.files?.[0])}
-						/>
-					{/if}
+					</div>
 				{/if}
-			</div>
 
-			{#if notice}
 				<div
-					class="absolute bottom-18.5 left-1/2 flex w-max max-w-[calc(100%-28px)] -translate-x-1/2 items-center gap-2 rounded-[10px] border border-[#4a5670] bg-[#2a3142] py-2 pr-2 pl-3.5 text-sm shadow-pop max-[720px]:bottom-31"
-					role="status"
+					class="pointer-events-auto flex max-w-[calc(100%-120px)] flex-wrap items-center justify-center gap-1.5 p-1.5 max-[720px]:max-w-[calc(100%-24px)] max-[720px]:flex-col {floating}"
+					role="toolbar"
+					aria-label="Map tools"
 				>
-					<span>{notice.text}</span>
-					{#if notice.undo}
-						{@const step = notice.undo}
-						<button class="btn btn-sm" onclick={() => undo(step)}>Undo</button>
+					{#if tool !== 'pan'}
+						<button class="btn" onclick={() => ((placing = null), (drawing = false))}>Cancel</button>
+					{:else}
+						<!-- The tools for the map. This wrapper only exists on a narrow
+						     screen, where it makes them a row of their own. -->
+						<div class="contents flex-wrap items-center justify-center gap-1.5 max-[720px]:flex">
+							<!-- Icons, each with a tooltip that names it. A player has the one
+							     tool, so theirs keeps its words. -->
+							<ToolButton
+								icon="note"
+								label={isGm ? 'Add a note' : 'Add note'}
+								named={!isGm}
+								onclick={() => startPlacing({ create: 'player' })}
+							/>
+							{#if isGm}
+								<span class="w-px self-stretch bg-line"></span>
+								<ToolButton
+									icon="marker"
+									label="Add a world marker"
+									onclick={() => startPlacing({ create: 'world' })}
+								/>
+								<ToolButton
+									icon="region"
+									label="Draw a region"
+									onclick={() => {
+										selectedMarkerId = null;
+										selectedRegionId = null;
+										drawing = true;
+									}}
+								/>
+								<ToolButton
+									icon="image"
+									label={uploading
+										? 'Uploading…'
+										: world.map.imageFile
+											? 'Replace the map image'
+											: 'Add a map image'}
+									disabled={uploading}
+									onclick={() => fileInput?.click()}
+								/>
+								<ToolButton
+									icon="rename"
+									label="Rename this map"
+									onclick={() =>
+										(prompt = { kind: 'rename', mapId: world.map.id, initial: world.map.name })}
+								/>
+							{/if}
+						</div>
+						{#if isGm}
+							<!-- What can be done with a region. Always here, so the bar keeps its
+							     shape, and live once a region on the map has been clicked. A
+							     narrow screen has no room for that: there they are a second
+							     row, which shows up with the selection. -->
+							<span class="w-px self-stretch bg-line max-[720px]:hidden"></span>
+							<div
+								class={['flex items-center gap-1.5', !selectedRegion && 'max-[720px]:hidden']}
+								role="group"
+								aria-label={selectedRegion ? `Region ${selectedRegion.name}` : 'Region'}
+							>
+								<ToolButton
+									icon="enter"
+									label="Enter the region"
+									hint={regionHint}
+									disabled={!selectedRegion}
+									onclick={() => {
+										const region = selectedRegion;
+										selectedRegionId = null;
+										if (region) enter(region);
+									}}
+								/>
+								<ToolButton
+									icon={selectedRegion?.hidden ? 'reveal' : 'hide'}
+									label={selectedRegion?.hidden
+										? 'Reveal the region to players'
+										: 'Hide the region from players'}
+									hint={regionHint}
+									disabled={!selectedRegion}
+									onclick={() =>
+										selectedRegion &&
+										run({ t: 'region.update', id: selectedRegion.id, hidden: !selectedRegion.hidden })}
+								/>
+								<ToolButton
+									icon="rename"
+									label="Rename the region"
+									hint={regionHint}
+									disabled={!selectedRegion}
+									onclick={() =>
+										selectedRegion &&
+										(prompt = {
+											kind: 'rename',
+											mapId: selectedRegion.targetMapId,
+											initial: selectedRegion.name
+										})}
+								/>
+								<ToolButton
+									icon="delete"
+									label="Delete the region"
+									hint={regionHint}
+									danger
+									disabled={!selectedRegion}
+									onclick={() => (deleting = selectedRegion)}
+								/>
+							</div>
+							<input
+								bind:this={fileInput}
+								type="file"
+								accept="image/png,image/jpeg,image/webp,image/gif,image/avif"
+								hidden
+								onchange={(e) => upload(e.currentTarget.files?.[0])}
+							/>
+						{/if}
 					{/if}
-					<button class="btn btn-sm btn-ghost" aria-label="Dismiss" onclick={() => (notice = null)}>
-						×
-					</button>
 				</div>
-			{/if}
+			</div>
 		</main>
 	</div>
 </div>
@@ -554,4 +621,20 @@
 		onsubmit={saveName}
 		onclose={() => (prompt = null)}
 	/>
+{/if}
+
+{#if deleting}
+	{@const region = deleting}
+	<Modal title="Delete “{region.name}”?" onclose={() => (deleting = null)}>
+		<p>
+			This deletes the region and the map behind it, with everything on that map: its image,
+			its markers and notes, and every region and map further inside.
+		</p>
+		<p class="text-[13px] text-muted">It can't be undone.</p>
+		<!-- Cancel comes first, so that is where the dialog puts the focus. -->
+		<div class="flex justify-end gap-2">
+			<button class="btn btn-ghost" onclick={() => (deleting = null)}>Cancel</button>
+			<button class="btn btn-danger" onclick={() => deleteRegion(region)}>Delete</button>
+		</div>
+	</Modal>
 {/if}

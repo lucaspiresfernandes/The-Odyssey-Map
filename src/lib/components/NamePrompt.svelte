@@ -43,7 +43,7 @@
 		{#if hint}<p class="text-[13px] text-muted">{hint}</p>{/if}
 		{#if canHide}
 			<label class="flex cursor-pointer items-start gap-2.5">
-				<input class="mt-[3px] accent-accent" type="checkbox" bind:checked={hidden} />
+				<input class="mt-0.75 accent-accent" type="checkbox" bind:checked={hidden} />
 				<span>
 					Hidden from players
 					<small class="block text-muted">

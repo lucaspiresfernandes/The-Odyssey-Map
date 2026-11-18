@@ -43,7 +43,7 @@
 		<span class="text-muted">{marker.kind === 'world' ? 'World' : 'Table note'}</span>
 		{#if pinned}
 			<button
-				class="-my-1.5 -mr-2 ml-auto size-7 cursor-pointer rounded-md text-xl leading-none text-muted hover:bg-panel-2 hover:text-cream"
+				class="-my-1.5 -mr-2 ml-auto size-7 cursor-pointer touch:-my-2.5 touch:size-9 rounded-md text-xl leading-none text-muted hover:bg-panel-2 hover:text-cream"
 				aria-label="Close"
 				onclick={onclose}>×</button
 			>

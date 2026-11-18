@@ -14,8 +14,13 @@ export default defineConfig({
 			},
 			// The origin check lives in src/hooks.server.ts, where it also works over plain http.
 			csrf: { trustedOrigins: ['*'] },
-			// Map images are uploaded through the app, so raise the default 512 KB body limit.
-			adapter: adapter({ serverOptions: { maxRequestBodySize: 32 * 1024 * 1024 } })
+			// Map images are uploaded through the app, so raise the default 512 KB body
+			// limit to a little over LIMITS.imageBytes. A big one takes a while to cut
+			// into tiles, and the upload sits silent meanwhile, so give a quiet
+			// connection minutes rather than the default 10 seconds.
+			adapter: adapter({
+				serverOptions: { maxRequestBodySize: 264 * 1024 * 1024, idleTimeout: 240 }
+			})
 		})
 	]
 });

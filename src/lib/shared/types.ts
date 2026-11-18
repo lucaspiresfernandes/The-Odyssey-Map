@@ -72,10 +72,18 @@ export interface MapInfo {
 	height: number;
 }
 
-/** Where the browser loads a map image from. The file name doubles as a cache key. */
-export function mapImageUrl(map: Pick<MapInfo, "campaignId" | "id" | "imageFile">): string | null {
+/**
+ * Where the browser loads a map image from. The file name doubles as a cache key.
+ * `part` asks for a piece of a big image instead of the whole file: its
+ * small preview, or one tile as `level/x/y` (see src/lib/shared/tiles.ts).
+ */
+export function mapImageUrl(
+	map: Pick<MapInfo, "campaignId" | "id" | "imageFile">,
+	part?: string
+): string | null {
 	if (!map.imageFile) return null;
-	return `/c/${map.campaignId}/m/${map.id}/image?v=${encodeURIComponent(map.imageFile)}`;
+	const url = `/c/${map.campaignId}/m/${map.id}/image?v=${encodeURIComponent(map.imageFile)}`;
+	return part ? `${url}&part=${part}` : url;
 }
 
 export interface Crumb {
@@ -113,8 +121,8 @@ export type Command =
 	| { t: 'region.create'; mapId: string; name: string; points: Point[]; hidden?: boolean }
 	/** Reshapes a region, hides or reveals it, or both. */
 	| { t: 'region.update'; id: string; points?: Point[]; hidden?: boolean }
+	/** For good, along with the map behind the region and everything inside it. */
 	| { t: 'region.delete'; id: string }
-	| { t: 'region.restore'; id: string }
 	| { t: 'map.update'; id: string; name: string }
 	/** Takes back the change with this sequence number by performing its opposite. */
 	| { t: 'history.revert'; seq: number };
@@ -242,7 +250,10 @@ export const LIMITS = {
 	description: 4000,
 	name: 80,
 	regionPoints: 200,
-	imageBytes: 25 * 1024 * 1024
+	// Room for a big map that has been through an upscaler.
+	imageBytes: 256 * 1024 * 1024,
+	/** The longest a map image may be on either side, in pixels. */
+	imageSide: 30000
 } as const;
 
 export const DEFAULT_MAP_SIZE = { width: 1600, height: 1000 } as const;

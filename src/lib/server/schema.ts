@@ -103,8 +103,7 @@ export const regions = sqliteTable(
 		points: text('points', { mode: 'json' }).$type<Point[]>().notNull(),
 		/** A hidden region keeps players out of its map, and of every map inside that one. */
 		hidden: integer('hidden', { mode: 'boolean' }).notNull().default(false),
-		createdAt: integer('created_at').notNull(),
-		deletedAt: integer('deleted_at')
+		createdAt: integer('created_at').notNull()
 	},
 	(t) => [index('regions_map').on(t.mapId)]
 );
@@ -135,8 +134,10 @@ export const markers = sqliteTable(
 	]
 );
 
-// Append-only. Every change to the world is one row here. Undo works from
-// it, and the same events are what the table is sent live.
+// Every change to the world is one row here. Undo works from it, and the
+// same events are what the table is sent live. Rows are only ever added,
+// with one exception: deleting a region takes the events of the maps behind
+// it along, since nothing in them can be undone any more.
 export const events = sqliteTable(
 	'events',
 	{

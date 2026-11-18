@@ -8,6 +8,7 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import sharp from 'sharp';
 
 const APP_PORT = 4173;
 const WS_PORT = 3101;
@@ -302,17 +303,30 @@ async function run() {
 		planted.status === 403 && !JSON.stringify(playerSocket.messages).includes('999999')
 	);
 
-	// Larger than the adapter's default 512 KB request limit.
-	const pixels = new Uint8Array(2 * 1024 * 1024);
-	pixels.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+	// Noise, so the file is far larger than the adapter's default 512 KB
+	// request limit, and wide enough to be cut into tiles.
+	const pixels = await sharp({
+		create: {
+			width: 2400,
+			height: 1500,
+			channels: 3,
+			background: 'black',
+			noise: { type: 'gaussian', mean: 128, sigma: 40 }
+		}
+	})
+		.png()
+		.toBuffer();
 	const upload = new FormData();
 	upload.set('file', new File([pixels], 'map.png', { type: 'image/png' }));
-	upload.set('width', '1200');
-	upload.set('height', '800');
 	const imagePath = `/c/${campaign}/m/${mapId}/image`;
 	const uploaded = await gm.request(imagePath, { method: 'POST', body: upload });
-	const file = (await uploaded.json().catch(() => null))?.events?.[0]?.patch.map.imageFile;
-	check('the GM can upload a 2 MB map image', uploaded.status === 200 && !!file, `status ${uploaded.status}`);
+	const uploadedMap = (await uploaded.json().catch(() => null))?.events?.[0]?.patch.map;
+	const file = uploadedMap?.imageFile;
+	check('the GM can upload a large map image', uploaded.status === 200 && !!file, `status ${uploaded.status}`);
+	check('the server measures it', uploadedMap?.width === 2400 && uploadedMap?.height === 1500);
+	const notAnImage = new FormData();
+	notAnImage.set('file', new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4])], 'map.png'));
+	check('a file that only claims to be an image is refused', (await gm.request(imagePath, { method: 'POST', body: notAnImage })).status === 415);
 	check('the player cannot upload one', (await player.request(imagePath, { method: 'POST', body: upload })).status === 403);
 	await pause(500);
 	check(
@@ -322,6 +336,11 @@ async function run() {
 	const fetched = await player.request(`${imagePath}?v=${file}`);
 	check('the player can load the image', fetched.status === 200 && (await fetched.arrayBuffer()).byteLength === pixels.length);
 	check('a stranger cannot', (await new Visitor().request(imagePath)).status === 401);
+	const preview = await player.request(`${imagePath}?v=${file}&part=preview`);
+	check('a big image has a preview', preview.status === 200 && preview.headers.get('content-type') === 'image/webp');
+	// 2400 x 1500 in 512 pixel tiles: five across, three down.
+	check('and tiles', (await player.request(`${imagePath}?v=${file}&part=0/4/2`)).status === 200);
+	check('but none past its edge', (await player.request(`${imagePath}?v=${file}&part=0/5/0`)).status === 404);
 
 	// A hidden region takes its whole map away from players: the outline, the
 	// page behind it, and the news of anything that happens in there.
@@ -361,6 +380,28 @@ async function run() {
 		playerSocket.messages.some((m) => m.t === 'event' && m.event.patch.t === 'region.remove' && m.event.patch.targetMapId === cellar?.targetMapId)
 	);
 	check('and shuts it', (await player.request(cellarPath)).status === 404);
+
+	// Deleting a region is for good. The map behind it goes, and the files
+	// of that map's image with it.
+	const furnished = await gm.request(`${cellarPath}/image`, { method: 'POST', body: upload });
+	const cellarFile: string = (await furnished.json().catch(() => null))?.events?.[0]?.patch.map.imageFile ?? '';
+	const cellarFiles = [join(dataDir, 'uploads', cellarFile), join(dataDir, 'tiles', cellarFile.replace(/\.png$/, ''))];
+	const onDisk = () => cellarFiles.filter((path) => existsSync(path)).length;
+	check('the map behind a region gets an image and tiles of its own', furnished.status === 200 && onDisk() === 2);
+	const shuts = () => playerSocket.messages.filter((m) => m.t === 'event' && m.event.patch.t === 'region.remove').length;
+	const shutsBefore = shuts();
+	gmSocket.ws.send(JSON.stringify({ t: 'cmd', id: 22, cmd: { t: 'region.delete', id: cellar?.id } }));
+	const gmAck = (id: number) => gmSocket.messages.find((m) => m.t === 'ack' && m.id === id);
+	for (let i = 0; i < 50 && !gmAck(22); i++) await pause(100);
+	check('the GM can delete a region, and is offered no undo', gmAck(22)?.ok === true && gmAck(22).undo.length === 0);
+	check(
+		'the GM is told it went',
+		gmSocket.messages.some((m) => m.t === 'event' && m.event.patch.t === 'region.remove' && m.event.patch.id === cellar?.id)
+	);
+	check('its map is gone, for the GM too', (await gm.request(cellarPath)).status === 404);
+	check('and so are the image and its tiles', onDisk() === 0, `${onDisk()} left`);
+	check('the first map keeps its own', existsSync(join(dataDir, 'uploads', file)));
+	check('a hidden region goes without a word to the player', shuts() === shutsBefore);
 
 	// The app checks the login on every forwarded command, so an open socket
 	// stops working the moment its session ends.

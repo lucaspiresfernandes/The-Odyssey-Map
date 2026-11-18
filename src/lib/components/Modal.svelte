@@ -15,7 +15,7 @@
 
 <dialog
 	bind:this={dialog}
-	class="m-auto w-[min(440px,calc(100vw-24px))] rounded-[14px] border bg-panel text-cream shadow-pop backdrop:bg-[rgb(6_8_12/0.6)]"
+	class="m-auto max-h-[calc(100dvh-24px)] w-[min(440px,calc(100vw-24px))] overflow-y-auto rounded-[14px] border bg-panel text-cream shadow-pop backdrop:bg-[rgb(6_8_12/0.6)]"
 	aria-label={title}
 	oncancel={(e) => (e.preventDefault(), onclose())}
 	onclick={(e) => e.target === dialog && onclose()}

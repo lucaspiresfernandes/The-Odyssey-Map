@@ -31,9 +31,12 @@ on port 3001.
 ## Running a session
 
 1. Create a GM account and a campaign.
-2. Turn on **Edit world** to upload a map image, place world markers and draw regions.
+2. Use the bar under the map to upload a map image, place world markers and draw regions.
    Each region gets a name and its own map: double-click it to step inside and build that
-   one too.
+   one too. Click a region to select it: the Region buttons in the bar then enter, hide,
+   rename or delete it, and its corners reshape it. Drag a corner to move it, drag the dot in the
+   middle of an edge to add a corner, double-click a corner to remove it. Deleting a region
+   asks first: the map behind it goes too, with everything inside, and there is no undo.
 3. Click **Invite** and send the link to your players. They pick a name and they're in.
    Players need no account.
 
@@ -58,6 +61,17 @@ bun run start:lan
 That serves the app on port 3000 (set `PORT` to change it). Everything is stored in
 `data/`: the database and the uploaded map images. Back up that folder.
 
+### Map images
+
+A map image can be up to 256 MB and 30000 pixels on a side. One with a side over 2048
+pixels is cut into tiles when it is uploaded, so that only the part on screen is loaded,
+at the size the zoom calls for. The tiles are kept in `data/tiles/`. That folder needs no
+backup: whatever is missing from it is made again when the map is next opened.
+
+The zoom stops at twice the image's own pixels, where it would only get blurrier. For a
+map that should zoom further, enlarge the image with an upscaler such as
+[Upscayl](https://upscayl.org) and upload the result.
+
 ### On the map
 
 | | |
@@ -74,6 +88,9 @@ That serves the app on port 3000 (set `PORT` to change it). Everything is stored
 
 Everyone's mouse shows on the map as it moves, with their name, for the people looking at
 the same map.
+
+It works on a phone too: a tap is a click and a double-tap a double-click, and the tools
+sit in a bar along the bottom of the screen.
 
 ## Who can do what
 
@@ -120,10 +137,13 @@ scripts/            run both servers, seed a demo, end-to-end check
   table, with full before and after snapshots. After each change the app hands the new
   events to the WebSocket server, already filtered for each role, so a change reaches the
   table the same way however it was made.
-- **Undo is one more change.** The server can take any event back by performing its
+- **Undo is one more change.** The server can take an event back by performing its
   opposite, which goes through the same permission checks and is logged like anything
   else. The browser remembers the numbers of the events its own commands made:
   `Ctrl+Z` asks for the latest to be taken back, and redo is undoing the undo.
+- **Deleting a region is the exception.** It removes the region, the map behind it, every
+  map further inside, their markers, their image files and their events. Nothing is kept
+  to undo it with, so the GM is asked to confirm first.
 - **Pointers skip the app.** Where each mouse is goes from browser to browser through the
   WebSocket server alone. It isn't a change to the world, so it is never stored.
 - **One login.** When a browser connects, the WebSocket server passes its session cookie
@@ -191,6 +211,9 @@ Type-checks everything.
   no longer delete the notes the old one added. The GM still can.
 - Undo remembers what you did since you opened the map. It is forgotten when you step
   into another map or reload the page.
-- Replaced map images stay on disk so that undo can bring them back.
+- Replaced map images stay on disk so that undo can bring them back. They go when the
+  map itself is deleted, along with the region that leads to it.
+- Undoing the drawing of a region only works while the map behind it is still empty.
+  After that the region has to be deleted from the bar, which asks first.
 - Everyone's pointer is shown, the GM's included, also while it hovers over something
   hidden from the players.

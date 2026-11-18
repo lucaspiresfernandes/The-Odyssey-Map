@@ -7,6 +7,7 @@ import { getDb, uploadsDir } from '#lib/server/db.ts';
 import { newId } from '#lib/server/ids.ts';
 import { maps } from '#lib/server/schema.ts';
 import { requireMemberApi } from '#lib/server/session.ts';
+import { imageSize, tilesOf } from '#lib/server/tiles.ts';
 import { toLiveEvent } from '#lib/server/visibility.ts';
 import {
 	ActionError,
@@ -16,6 +17,7 @@ import {
 	undoable
 } from '#lib/server/world.ts';
 import { canEditWorld } from '#lib/shared/rules.ts';
+import { tileLevels } from '#lib/shared/tiles.ts';
 import { LIMITS, type CommandResponse } from '#lib/shared/types.ts';
 
 const CONTENT_TYPES = {
@@ -66,13 +68,25 @@ export const GET: RequestHandler = async (event) => {
 	const file = pinned ? wanted : row.imageFile;
 	if (!file) return refuse(404, 'This map has no image');
 
-	const blob = Bun.file(join(uploadsDir(), file));
+	let blob = Bun.file(join(uploadsDir(), file));
 	if (!(await blob.exists())) return refuse(404, 'Image not found');
+	let type: string = CONTENT_TYPES[file.slice(file.lastIndexOf('.') + 1) as Extension];
 
-	const extension = file.slice(file.lastIndexOf('.') + 1) as Extension;
+	// `part` asks for a piece of a big image instead of the file itself:
+	// its small preview, or one tile as `level/x/y`.
+	const part = event.url.searchParams.get('part');
+	if (part !== null) {
+		const tile = part.match(/^(\d+)\/(\d+)\/(\d+)$/);
+		if (!tile && part !== 'preview') return refuse(404, 'Image not found');
+		const pieces = await tilesOf(file);
+		blob = Bun.file(tile ? pieces.tile(+tile[1], +tile[2], +tile[3]) : pieces.preview);
+		if (!(await blob.exists())) return refuse(404, 'Image not found');
+		type = 'image/webp';
+	}
+
 	return new Response(blob, {
 		headers: {
-			'content-type': CONTENT_TYPES[extension],
+			'content-type': type,
 			'cache-control': pinned ? 'private, max-age=31536000, immutable' : 'private, no-cache',
 			'x-content-type-options': 'nosniff',
 			'content-security-policy': "default-src 'none'; sandbox"
@@ -111,6 +125,11 @@ export const POST: RequestHandler = async (event) => {
 	const bytes = new Uint8Array(await upload.arrayBuffer());
 	const extension = sniff(bytes);
 	if (!extension) return refuse(415, 'Use a PNG, JPEG, WebP, GIF or AVIF image.');
+	const size = await imageSize(bytes);
+	if (!size) return refuse(415, "That file doesn't look like an image that can be read.");
+	if (Math.max(size.width, size.height) > LIMITS.imageSide) {
+		return refuse(413, `Map images can be up to ${LIMITS.imageSide} pixels on a side.`);
+	}
 
 	// The id came out of the database, so it is safe as part of a file name.
 	const file = `${mapId}-${newId(12)}.${extension}`;
@@ -119,11 +138,17 @@ export const POST: RequestHandler = async (event) => {
 	await Bun.write(path, bytes);
 
 	try {
-		const events = setMapImage(db, actor, mapId, {
-			file,
-			width: Number(form.get('width')),
-			height: Number(form.get('height'))
-		});
+		// A big image is cut into tiles before anyone hears of it, so that it
+		// is ready to be looked at the moment it appears.
+		if (tileLevels(size.width, size.height) > 0) await tilesOf(file);
+	} catch (err) {
+		rmSync(path, { force: true });
+		console.error(`Could not cut ${file} into tiles:`, err);
+		return refuse(500, "The image couldn't be cut into tiles. The server's output says why.");
+	}
+
+	try {
+		const events = setMapImage(db, actor, mapId, { file, ...size });
 		await announce(db, events);
 		return json({
 			ok: true,

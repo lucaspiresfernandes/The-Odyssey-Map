@@ -7,8 +7,15 @@ import { json, type RequestHandler } from '@sveltejs/kit';
 import { announce } from '#lib/server/bridge.ts';
 import { getDb } from '#lib/server/db.ts';
 import { requireMemberApi } from '#lib/server/session.ts';
+import { dropImagesOf } from '#lib/server/tiles.ts';
 import { toLiveEvent } from '#lib/server/visibility.ts';
-import { ActionError, perform, undoable, type ErrorCode } from '#lib/server/world.ts';
+import {
+	ActionError,
+	deletedMaps,
+	perform,
+	undoable,
+	type ErrorCode
+} from '#lib/server/world.ts';
 import type { CommandResponse } from '#lib/shared/types.ts';
 
 const STATUS: Record<ErrorCode, number> = {
@@ -37,6 +44,10 @@ export const POST: RequestHandler = async (event) => {
 		// Deliver the change before answering, so the sender has already seen
 		// its effect by the time their request resolves.
 		await announce(db, events);
+		// The database has let go of a deleted map already. Its images are
+		// files, so they are taken away here.
+		const gone = deletedMaps(events);
+		if (gone.length) await dropImagesOf(gone);
 		return json({
 			ok: true,
 			events: events.map((e) => toLiveEvent(db, e, actor.role)).filter((e) => e !== null),
