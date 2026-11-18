@@ -9,8 +9,9 @@
 	<title>{data.campaign.name} · The Odyssey Map</title>
 </svelte:head>
 
-{#key data.campaign.id}
-	<LiveProvider campaignId={data.campaign.id} ws={data.ws}>
+<!-- A table display listens as a player does, so it is a connection of its own. -->
+{#key `${data.campaign.id}:${data.display}`}
+	<LiveProvider campaignId={data.campaign.id} ws={data.ws} display={data.display}>
 		{@render children()}
 	</LiveProvider>
 {/key}

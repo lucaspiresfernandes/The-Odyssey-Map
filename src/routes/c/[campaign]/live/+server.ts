@@ -11,7 +11,8 @@ export const GET: RequestHandler = (event) => {
 	const { user, campaign } = requireMemberApi(event, event.params.campaign!);
 	const identity: LiveIdentity = {
 		user: { id: user.id, name: user.name },
-		role: campaign.role,
+		// A table display is shown what a player is, whoever opened it.
+		role: event.url.searchParams.has('display') ? 'player' : campaign.role,
 		seq: latestSeq(getDb(), campaign.id)
 	};
 	return json(identity, { headers: { 'cache-control': 'no-store' } });

@@ -3,11 +3,11 @@
 // `canLoadImage` for the ones that have been taken out of it.
 
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { join } from 'node:path';
-import { getDb, uploadsDir } from '#lib/server/db.ts';
+import { getDb } from '#lib/server/db.ts';
 import { canLoadImage } from '#lib/server/gallery.ts';
 import { requireMemberApi } from '#lib/server/session.ts';
-import { thumbOf, tilesOf } from '#lib/server/tiles.ts';
+import { getStorage } from '#lib/server/storage.ts';
+import { thumbOf, tilesOf, uploadKey } from '#lib/server/tiles.ts';
 import { IMAGE_FILE_PATTERN } from '#lib/server/world.ts';
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -30,8 +30,9 @@ export const GET: RequestHandler = async (event) => {
 		return refuse(404, 'Image not found');
 	}
 
-	let blob = Bun.file(join(uploadsDir(), file));
-	if (!(await blob.exists())) return refuse(404, 'Image not found');
+	const storage = getStorage();
+	let key = uploadKey(file);
+	if (!(await storage.has(key))) return refuse(404, 'Image not found');
 	let type = CONTENT_TYPES[file.slice(file.lastIndexOf('.') + 1)];
 
 	// `part` asks for something made from the picture instead of the file
@@ -41,16 +42,17 @@ export const GET: RequestHandler = async (event) => {
 	if (part !== null) {
 		const tile = part.match(/^(\d+)\/(\d+)\/(\d+)$/);
 		if (part === 'thumb') {
-			blob = Bun.file(await thumbOf(file));
+			key = await thumbOf(file);
 		} else if (tile || part === 'preview') {
 			const pieces = await tilesOf(file);
-			blob = Bun.file(tile ? pieces.tile(+tile[1], +tile[2], +tile[3]) : pieces.preview);
+			key = tile ? pieces.tile(+tile[1], +tile[2], +tile[3]) : pieces.preview;
 		} else {
 			return refuse(404, 'Image not found');
 		}
-		if (!(await blob.exists())) return refuse(404, 'Image not found');
 		type = 'image/webp';
 	}
+	const blob = await storage.get(key);
+	if (!blob) return refuse(404, 'Image not found');
 
 	return new Response(blob, {
 		headers: {

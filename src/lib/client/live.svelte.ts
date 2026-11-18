@@ -15,9 +15,12 @@ import type {
 	CommandResponse,
 	Cursor,
 	CursorSpot,
+	Gather,
+	GatherResponse,
 	LiveEvent,
 	Presence,
-	ServerMessage
+	ServerMessage,
+	Sight
 } from '#lib/shared/types.ts';
 
 interface Options {
@@ -54,6 +57,9 @@ export class Live {
 	#options: Options;
 	#ws: WebSocket | null = null;
 	#listeners = new Set<(event: LiveEvent) => void>();
+	#gatherers = new Set<(gather: Gather) => void>();
+	/** Names this browser, so that its own call to gather passes it by. */
+	#name = Math.random().toString(36).slice(2);
 	#pending = new Map<number, Pending>();
 	#nextId = 1;
 	#attempt = 0;
@@ -127,6 +133,10 @@ export class Live {
 			case 'event':
 				this.#dispatch(message.event);
 				break;
+			case 'gather':
+				if (message.gather.from === this.#name) break;
+				for (const listener of this.#gatherers) listener(message.gather);
+				break;
 			case 'ack': {
 				const pending = this.#pending.get(message.id);
 				if (!pending) break;
@@ -183,6 +193,33 @@ export class Live {
 		if (!body.ok) throw new Error(body.error ?? 'Something went wrong.');
 		this.receive(body.events ?? []);
 		return body.undo ?? [];
+	}
+
+	/** Calls `listener` whenever the GM brings everyone somewhere. Returns the unsubscribe function. */
+	onGather(listener: (gather: Gather) => void): () => void {
+		this.#gatherers.add(listener);
+		return () => this.#gatherers.delete(listener);
+	}
+
+	/**
+	 * Brings everyone else to this part of a map: the GM's to do. Resolves to
+	 * whether the players may follow, which they may not onto a map behind a
+	 * hidden region. Rejects with the server's reason if it refuses.
+	 */
+	async gather(mapId: string, view: Sight): Promise<boolean> {
+		let body: GatherResponse;
+		try {
+			const response = await fetch(`/c/${this.#options.campaignId}/gather`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ mapId, view, from: this.#name })
+			});
+			body = await response.json();
+		} catch {
+			throw new Error("Can't reach the server.");
+		}
+		if (!body.ok) throw new Error(body.error ?? 'Something went wrong.');
+		return body.players === true;
 	}
 
 	/** Feeds in events that arrived some other way, such as an HTTP response. */

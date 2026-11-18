@@ -3,7 +3,18 @@
 // The server enforces these in `server/world.ts` and `server/visibility.ts`.
 // The browser imports the same functions only to decide which buttons to show.
 
-import type { Drawing, Marker, MarkerKind, Region, Role, StoredEvent, Token } from './types';
+import { isFogged } from './fog';
+import {
+	NO_FOG,
+	type Drawing,
+	type Fog,
+	type Marker,
+	type MarkerKind,
+	type Region,
+	type Role,
+	type StoredEvent,
+	type Token
+} from './types';
 
 /** The GM owns world markers. Anyone at the table can add notes and edit them. */
 export function canEditMarkerKind(role: Role, kind: MarkerKind): boolean {
@@ -67,9 +78,22 @@ export function canChangeDrawing(
 	return role === 'gm' || drawing.authorId === userId;
 }
 
-/** Hidden tokens exist only for the GM: the ambush waiting behind the door. */
-export function canSeeToken(role: Role, token: Pick<Token, 'hidden'>): boolean {
-	return role === 'gm' || !token.hidden;
+/**
+ * Hidden tokens exist only for the GM: the ambush waiting behind the door.
+ * So do the ones standing under the fog of war, which is the fog of the
+ * map the token is on.
+ */
+export function canSeeToken(
+	role: Role,
+	token: Pick<Token, 'hidden' | 'x' | 'y'>,
+	fog: Fog = NO_FOG
+): boolean {
+	return role === 'gm' || (!token.hidden && !isFogged(fog, [token.x, token.y]));
+}
+
+/** The party is the GM's to move: it goes where the story has taken everyone. */
+export function canMoveParty(role: Role): boolean {
+	return role === 'gm';
 }
 
 /**

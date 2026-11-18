@@ -4,17 +4,46 @@ import { and, eq, isNull } from 'drizzle-orm';
 import type { Db } from './db';
 import { drawings, maps, markers, regions, tokens } from './schema';
 import { canSeeMarker, canSeeRegion, canSeeToken } from '../shared/rules';
-import type { Crumb, MapSnapshot, Role } from '../shared/types';
+import type { Crumb, MapInfo, MapSnapshot, Role, Token } from '../shared/types';
 import {
 	drawingColumns,
 	isConcealed,
 	latestSeq,
 	mapColumns,
 	markerColumns,
+	readParty,
 	regionColumns,
 	targetMap,
 	tokenColumns
 } from './world';
+
+/**
+ * The tokens on a map that `role` may see. For a player that leaves out
+ * the hidden ones, and the ones standing under the map's fog.
+ */
+export function tokensOn(db: Db, map: Pick<MapInfo, 'id' | 'fog'>, role: Role): Token[] {
+	return db
+		.select(tokenColumns)
+		.from(tokens)
+		.where(and(eq(tokens.mapId, map.id), isNull(tokens.deletedAt)))
+		.orderBy(tokens.createdAt)
+		.all()
+		.filter((token) => canSeeToken(role, token, map.fog));
+}
+
+/**
+ * Who can open a map of this campaign: everyone at the table, or only the
+ * GM when a hidden region is on the way there. Null if there is no such map.
+ */
+export function audienceOf(db: Db, campaignId: string, mapId: string): 'table' | 'gm' | null {
+	const map = db
+		.select({ id: maps.id })
+		.from(maps)
+		.where(and(eq(maps.id, mapId), eq(maps.campaignId, campaignId)))
+		.get();
+	if (!map) return null;
+	return isConcealed(db, mapId) ? 'gm' : 'table';
+}
 
 /** A map with everything on it that `role` may see, or null if it isn't in this campaign. */
 export function getMapSnapshot(
@@ -58,14 +87,6 @@ export function getMapSnapshot(
 			.all()
 			.filter((marker) => canSeeMarker(role, marker));
 
-		const tokenList = tx
-			.select(tokenColumns)
-			.from(tokens)
-			.where(and(eq(tokens.mapId, mapId), isNull(tokens.deletedAt)))
-			.orderBy(tokens.createdAt)
-			.all()
-			.filter((token) => canSeeToken(role, token));
-
 		const drawingList = tx
 			.select(drawingColumns)
 			.from(drawings)
@@ -73,13 +94,18 @@ export function getMapSnapshot(
 			.orderBy(drawings.createdAt)
 			.all();
 
+		// The party never stands where players are kept out. The check is
+		// the net under that rule.
+		const party = readParty(tx, campaignId);
+
 		return {
 			map,
 			trail,
 			regions: regionList,
 			markers: markerList,
-			tokens: tokenList,
+			tokens: tokensOn(tx, map, role),
 			drawings: drawingList,
+			party: party && (role === 'gm' || !isConcealed(tx, party.mapId)) ? party : null,
 			lastSeq: latestSeq(tx, campaignId)
 		};
 	});

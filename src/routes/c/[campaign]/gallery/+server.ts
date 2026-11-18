@@ -3,9 +3,7 @@
 // The pictures themselves are served by ../image/[file].
 
 import { json, type RequestHandler } from '@sveltejs/kit';
-import { mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { getDb, uploadsDir } from '#lib/server/db.ts';
+import { getDb } from '#lib/server/db.ts';
 import {
 	addToGallery,
 	asGalleryKind,
@@ -14,7 +12,8 @@ import {
 	newImageFile
 } from '#lib/server/gallery.ts';
 import { requireMemberApi } from '#lib/server/session.ts';
-import { imageSize, shrunk, thumbOf, tilesOf } from '#lib/server/tiles.ts';
+import { getStorage } from '#lib/server/storage.ts';
+import { imageSize, shrunk, thumbOf, tilesOf, uploadKey } from '#lib/server/tiles.ts';
 import { ActionError } from '#lib/server/world.ts';
 import { tileLevels } from '#lib/shared/tiles.ts';
 import { LIMITS, TOKEN_IMAGE_SIZE, type GalleryResponse } from '#lib/shared/types.ts';
@@ -95,9 +94,8 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	const file = newImageFile(extension);
-	const path = join(uploadsDir(), file);
-	mkdirSync(uploadsDir(), { recursive: true });
-	await Bun.write(path, picture.bytes);
+	const storage = getStorage();
+	await storage.put(uploadKey(file), picture.bytes);
 
 	try {
 		// A big image is cut into tiles before it can be picked, so that it is
@@ -105,7 +103,7 @@ export const POST: RequestHandler = async (event) => {
 		if (kind === 'map' && tileLevels(picture.width, picture.height) > 0) await tilesOf(file);
 		await thumbOf(file);
 	} catch (err) {
-		rmSync(path, { force: true });
+		await storage.remove(uploadKey(file));
 		console.error(`Could not prepare ${file}:`, err);
 		return refuse(500, "The image couldn't be prepared. The server's output says why.");
 	}
@@ -121,7 +119,7 @@ export const POST: RequestHandler = async (event) => {
 		});
 		return json({ ok: true, items: listGallery(db, actor) } satisfies GalleryResponse);
 	} catch (err) {
-		rmSync(path, { force: true });
+		await storage.remove(uploadKey(file));
 		if (err instanceof ActionError) return refuse(400, err.message);
 		throw err;
 	}

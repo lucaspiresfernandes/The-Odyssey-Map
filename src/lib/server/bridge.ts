@@ -4,7 +4,7 @@
 // tells it what to deliver, already filtered for each role by `toLiveEvent`,
 // so nothing hidden is ever handed over to be sent to a player.
 
-import type { Broadcast, StoredEvent } from '../shared/types';
+import type { Broadcast, Gather, Role, StoredEvent } from '../shared/types';
 import type { Db } from './db';
 import { toLiveEvent } from './visibility';
 
@@ -36,20 +36,31 @@ async function deliver(message: Broadcast) {
 	}
 }
 
+/** One at a time, so everything arrives in the order it happened. */
+function send(message: Broadcast): Promise<void> {
+	queue = queue.then(() => deliver(message));
+	return queue;
+}
+
 /**
  * Hands the events of one change to the WebSocket server. Resolves once they
  * are on their way to the table (or delivery failed); it never rejects.
  */
 export function announce(db: Db, events: StoredEvent[]): Promise<void> {
 	if (events.length === 0) return Promise.resolve();
-	const message: Broadcast = {
+	return send({
 		campaignId: events[0].campaignId,
 		events: events.map((event) => ({
 			seq: event.seq,
 			to: { gm: toLiveEvent(db, event, 'gm'), player: toLiveEvent(db, event, 'player') }
 		}))
-	};
-	// One at a time, so events arrive in the order they were written.
-	queue = queue.then(() => deliver(message));
-	return queue;
+	});
+}
+
+/**
+ * Has the GM's call to gather delivered, to each role that may follow it:
+ * a null keeps a role where it is.
+ */
+export function summon(campaignId: string, gather: Record<Role, Gather | null>): Promise<void> {
+	return send({ campaignId, events: [], gather });
 }

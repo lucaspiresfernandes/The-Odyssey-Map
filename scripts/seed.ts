@@ -8,14 +8,14 @@
 // delete the account before putting a server on the internet.
 
 import { eq } from 'drizzle-orm';
-import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
 import { createGuest, registerUser } from '#lib/server/auth.ts';
 import { actorFor, createCampaign, getInviteToken, getMembership, joinCampaign } from '#lib/server/campaigns.ts';
-import { openDb, uploadsDir } from '#lib/server/db.ts';
+import { openDb } from '#lib/server/db.ts';
 import { addToGallery, newImageFile } from '#lib/server/gallery.ts';
 import { getMapSnapshot } from '#lib/server/queries.ts';
 import { users } from '#lib/server/schema.ts';
+import { getStorage } from '#lib/server/storage.ts';
+import { uploadKey } from '#lib/server/tiles.ts';
 import { perform, type Actor } from '#lib/server/world.ts';
 import { TOKEN_COLORS, type MapKind, type Marker, type Point } from '#lib/shared/types.ts';
 import { interior, terrain, type Painting } from './demo-art.ts';
@@ -38,12 +38,10 @@ const guest = createGuest(db, 'Mira');
 joinCampaign(db, campaign.id, guest.id);
 const mira = actorFor(guest, getMembership(db, campaign.id, guest.id)!);
 
-mkdirSync(uploadsDir(), { recursive: true });
-
 /** Puts a painting in the gallery under the name of the map it is for, and lays it under that map. */
 async function paint(mapId: string, painting: Painting) {
 	const file = newImageFile('png');
-	await Bun.write(join(uploadsDir(), file), painting.png);
+	await getStorage().put(uploadKey(file), painting.png);
 	const name = getMapSnapshot(db, campaign.id, mapId, 'gm')!.map.name;
 	addToGallery(db, gm, { kind: 'map', name, file, width: painting.width, height: painting.height });
 	perform(db, gm, { t: 'map.update', id: mapId, image: file });
@@ -133,6 +131,9 @@ piece(gm, 'Smuggler', 9, 6);
 piece(gm, 'Smuggler 2', 11, 9, { outline: TOKEN_COLORS[2] });
 piece(gm, 'Brute', 17.5, 11.5, { size: 2, color: TOKEN_COLORS[1] });
 piece(gm, 'Lookout', 21, 3, { color: TOKEN_COLORS[6], hidden: true });
+
+// The party has made it to the port: the world map shows it in there.
+perform(db, gm, { t: 'party.move', mapId: port, x: 0.47, y: 0.62 });
 
 mark(gm, world, {
 	type: 'quest',

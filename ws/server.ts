@@ -9,7 +9,8 @@
 //   - A command from a browser is forwarded to the app exactly as the browser
 //     would have posted it, and the app's answer is sent back.
 //   - After every change the app tells this server what to deliver, already
-//     filtered for each role.
+//     filtered for each role. The same goes for the GM bringing everyone to
+//     what they are looking at: the app says who may follow.
 //   - Where each browser's pointer is goes straight from one browser to the
 //     others, along with the token it is dragging or the distance it is
 //     measuring. None of that is a change to the world, so the app never
@@ -66,6 +67,11 @@ interface Connection {
 	campaignId: string;
 	user: { id: string; name: string };
 	role: Role;
+	/**
+	 * A table display: a screen that shows the players' view and takes no
+	 * part. It is nobody at the table, and has no pointer of its own.
+	 */
+	display: boolean;
 	/** The browser's cookies. They go to the app with every command, and the app decides who is asking. */
 	cookie: string;
 	/** The newest event the app had when this browser was identified. */
@@ -100,8 +106,8 @@ function send(ws: Socket, message: ServerMessage) {
 function presence(campaignId: string): Presence[] {
 	const seen = new Map<string, Presence>();
 	for (const ws of rooms.get(campaignId) ?? []) {
-		const { user, role } = ws.data;
-		seen.set(user.id, { id: user.id, name: user.name, role });
+		const { user, role, display } = ws.data;
+		if (!display) seen.set(user.id, { id: user.id, name: user.name, role });
 	}
 	return [...seen.values()];
 }
@@ -141,15 +147,22 @@ function askApp(path: string, cookie: string, init: RequestInit = {}): Promise<R
 	});
 }
 
-/** Asks the app who these cookies belong to in this campaign. */
-async function identify(campaignId: string, cookie: string): Promise<LiveIdentity | Response> {
+/**
+ * Asks the app who these cookies belong to in this campaign. For a table
+ * display the app answers with the role its screen is to be shown as.
+ */
+async function identify(
+	campaignId: string,
+	cookie: string,
+	display: boolean
+): Promise<LiveIdentity | Response> {
 	if (!cookie) return new Response('Not logged in', { status: 401 });
 	// The id becomes part of a URL, so only the shape of a real id gets through.
 	if (!ID_SHAPE.test(campaignId)) {
 		return new Response('Campaign not found', { status: 404 });
 	}
 	try {
-		const response = await askApp(`/c/${campaignId}/live`, cookie);
+		const response = await askApp(`/c/${campaignId}/live${display ? '?display=1' : ''}`, cookie);
 		if (response.status === 401) return new Response('Not logged in', { status: 401 });
 		if (!response.ok) return new Response('Campaign not found', { status: 404 });
 		return (await response.json()) as LiveIdentity;
@@ -220,6 +233,7 @@ const nearMap = (n: unknown): n is number => typeof n === 'number' && Math.abs(n
 
 /** A browser saying where its pointer is, or (with null) that it has left the map. */
 function point(ws: Socket, at: unknown) {
+	if (ws.data.display) return;
 	if (at === null) {
 		if (!ws.data.cursor) return;
 		ws.data.cursor = null;
@@ -275,7 +289,14 @@ async function publish(request: Request): Promise<Response> {
 	if (request.method !== 'POST' || request.headers.get('authorization') !== `Bearer ${SECRET}`) {
 		return new Response('Forbidden', { status: 403 });
 	}
-	const { campaignId, events } = (await request.json()) as Broadcast;
+	const { campaignId, events, gather } = (await request.json()) as Broadcast;
+	// The GM bringing everyone along: the app has said which roles may follow.
+	for (const role of ROLES) {
+		const call = gather?.[role];
+		if (!call) continue;
+		const message: ServerMessage = { t: 'gather', gather: call };
+		server.publish(topic(campaignId, role), JSON.stringify(message));
+	}
 	for (const event of events) {
 		delivered.set(campaignId, Math.max(delivered.get(campaignId) ?? 0, event.seq));
 		for (const role of ROLES) {
@@ -304,7 +325,8 @@ const server = Bun.serve({
 
 		const campaignId = url.searchParams.get('campaign') ?? '';
 		const cookie = request.headers.get('cookie') ?? '';
-		const identity = await identify(campaignId, cookie);
+		const display = url.searchParams.has('display');
+		const identity = await identify(campaignId, cookie, display);
 		if (identity instanceof Response) return identity;
 
 		const data: Connection = {
@@ -312,6 +334,7 @@ const server = Bun.serve({
 			campaignId,
 			user: identity.user,
 			role: identity.role,
+			display,
 			cookie,
 			seq: identity.seq,
 			recent: [],
@@ -346,7 +369,7 @@ const server = Bun.serve({
 				online: presence(campaignId),
 				cursors: cursors(ws)
 			});
-			announcePresence(campaignId);
+			if (!ws.data.display) announcePresence(campaignId);
 		},
 
 		message(ws, raw) {
@@ -381,7 +404,7 @@ const server = Bun.serve({
 			room?.delete(ws);
 			if (ws.data.cursor) relay(ws, { t: 'cursor.left', id: ws.data.id });
 			if (room?.size === 0) rooms.delete(campaignId);
-			else announcePresence(campaignId);
+			else if (!ws.data.display) announcePresence(campaignId);
 		}
 	}
 });

@@ -71,6 +71,13 @@
       "when": 1795041587059,
       "tag": "0009_cell_feet",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1795044649389,
+      "tag": "0010_party_and_fog",
+      "breakpoints": true
     }
   ]
 }

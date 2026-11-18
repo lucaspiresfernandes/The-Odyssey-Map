@@ -87,9 +87,10 @@ class Visitor {
 		return { status: response.status, body: await response.json() };
 	}
 
-	connect(campaign: string, origin = app) {
+	/** `display` connects the way a table display does: as a screen, not as someone at the table. */
+	connect(campaign: string, origin = app, display = false) {
 		const messages: any[] = [];
-		const ws = new WebSocket(`${live}/?campaign=${campaign}`, {
+		const ws = new WebSocket(`${live}/?campaign=${campaign}${display ? '&display=1' : ''}`, {
 			headers: { cookie: this.cookie, origin }
 		} as any);
 		ws.onmessage = (event) => messages.push(JSON.parse(String(event.data)));
@@ -629,6 +630,83 @@ async function run() {
 	}
 	await pause(200);
 	check('a malformed drag or ruler goes nowhere', cursorsSeen(gmSocket).length === shownSoFar, `${cursorsSeen(gmSocket).length - shownSoFar} delivered`);
+
+	// The party: the GM's to move, and news for the whole table.
+	const marched = await gm.command(campaign, { t: 'party.move', mapId, x: 0.4, y: 0.6 });
+	await pause(300);
+	const partyNews = playerSocket.messages.filter((m) => m.t === 'event' && m.event.patch.t === 'party.set');
+	check('the GM moves the party, and the player is shown where', marched.status === 200 && partyNews.at(-1)?.event.patch.party?.x === 0.4);
+	check('a player cannot', (await player.command(campaign, { t: 'party.move', mapId, x: 0.1, y: 0.1 })).status === 403);
+	check('nor does it go on a battle map', (await gm.command(campaign, { t: 'party.move', mapId: bridgeId, x: 0.5, y: 0.5 })).status === 400);
+
+	// Fog of war: what stands under it is not in the page a player loads, and
+	// when it moves they are sent the tokens they may see now.
+	const bridgePage = async () => (await player.request(`/c/${campaign}/m/${bridgeId}`)).text();
+	const inSight = (await bridgePage()).includes(ogreId);
+	const fogged = await gm.command(campaign, { t: 'map.update', id: bridgeId, fog: { on: true, clear: [] } });
+	await pause(300);
+	const fogNews = playerSocket.messages.filter((m) => m.t === 'event' && m.event.patch.t === 'map.upsert' && m.event.patch.map.fog?.on);
+	check('the GM covers a battle map with fog', fogged.status === 200 && inSight);
+	check('the player is told there is nothing left to see on it', Array.isArray(fogNews.at(-1)?.event.patch.tokens) && fogNews.at(-1).event.patch.tokens.length === 0);
+	check('and loads none of what is under it', !(await bridgePage()).includes(ogreId));
+	check('nor can they act on it', (await player.command(campaign, { t: 'token.update', id: ogreId, changes: { name: 'Seen' } })).status === 404);
+	check('a player cannot lift it', (await player.command(campaign, { t: 'map.update', id: bridgeId, fog: { on: false } })).status === 403);
+	await gm.command(campaign, { t: 'map.update', id: bridgeId, fog: { on: false } });
+	check('lifted, it is all back', (await bridgePage()).includes(ogreId));
+
+	// A table display is whoever opened it, shown what a player is: the GM's
+	// own login gets a player's page and a player's events.
+	const displayPage = await (await gm.request(`${mapPath}?display`)).text();
+	check('a display opened by the GM is not handed the invite link', !displayPage.includes('/join/'));
+	const displaySocket = gm.connect(campaign, app, true);
+	check('a display connects', await displaySocket.opened);
+	await pause(300);
+	check('and listens as a player does', displaySocket.messages[0]?.role === 'player');
+	const atTable = gmSocket.messages.findLast((m) => m.t === 'presence')?.online ?? [];
+	check('it is nobody at the table: the GM is still the GM there', atTable.some((p: any) => p.role === 'gm') && atTable.length === 2, JSON.stringify(atTable));
+	const shrouded = `SHROUDED ${crypto.randomUUID()}`;
+	const crypt = await gm.command(campaign, { t: 'region.create', mapId, name: shrouded, points: [[0.6, 0.6], [0.9, 0.6], [0.9, 0.9], [0.6, 0.9]], hidden: true });
+	const cryptId: string = crypt.body.events?.find((e: any) => e.patch.t === 'region.upsert')?.patch.region.targetMapId;
+	await pause(400);
+	check('a hidden region reaches the GM, and never the display', JSON.stringify(gmSocket.messages).includes(shrouded) && !JSON.stringify(displaySocket.messages).includes(shrouded));
+	const strayed = await gm.request(`/c/${campaign}/m/${cryptId}?display`);
+	check(
+		'a display sent where players can\'t go falls back to the first map',
+		strayed.status === 307 && strayed.headers.get('location') === `${mapPath}?display`,
+		`${strayed.status} ${strayed.headers.get('location')}`
+	);
+
+	// Bringing everyone here: the app says who may follow, and the WebSocket
+	// server passes the call on.
+	const gathers = (socket: { messages: any[] }) => socket.messages.filter((m) => m.t === 'gather');
+	const call = (who: Visitor, to: string, view: unknown = { x: 0.5, y: 0.5, w: 0.4, h: 0.3 }) =>
+		who.request(`/c/${campaign}/gather`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ mapId: to, view, from: 'e2e' })
+		});
+	const called = await call(gm, bridgeId);
+	await pause(300);
+	check('the GM brings everyone to a map', called.status === 200 && (await called.json()).players === true);
+	check(
+		'the player and the display are sent there, to the same part of it',
+		[playerSocket, displaySocket].every((socket) => {
+			const got = gathers(socket).at(-1)?.gather;
+			return got?.mapId === bridgeId && got.view.w === 0.4 && got.from === 'e2e';
+		})
+	);
+	check('a player cannot bring anyone anywhere', (await call(player, mapId)).status === 403);
+	check('nor is a view that makes no sense passed on', (await call(gm, mapId, { x: 0.5, y: 0.5, w: 0, h: 'all' })).status === 400);
+	check('nor one of a map that is not there', (await call(gm, 'nosuchmap')).status === 404);
+	const before = [gathers(playerSocket).length, gathers(displaySocket).length, gathers(gmSocket).length];
+	const secretly = await call(gm, cryptId);
+	await pause(300);
+	check('behind a hidden region the GM is told the players stay', (await secretly.json()).players === false);
+	check(
+		'and only the GM\'s own windows follow',
+		gathers(playerSocket).length === before[0] && gathers(displaySocket).length === before[1] && gathers(gmSocket).length === before[2] + 1
+	);
+	displaySocket.ws.close();
 
 	// The app checks the login on every forwarded command, so an open socket
 	// stops working the moment its session ends.

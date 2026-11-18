@@ -8,6 +8,7 @@ import type {
 	MapInfo,
 	MapSnapshot,
 	Marker,
+	Party,
 	Region,
 	Token
 } from '#lib/shared/types.ts';
@@ -19,6 +20,8 @@ export class MapState {
 	markers = $state<Marker[]>([]);
 	tokens = $state<Token[]>([]);
 	drawings = $state<Drawing[]>([]);
+	/** Where the party is, on this map or any other. */
+	party = $state<Party | null>(null);
 
 	/** Events up to this sequence number are already part of the snapshot. */
 	readonly lastSeq: number;
@@ -30,6 +33,7 @@ export class MapState {
 		this.markers = snapshot.markers;
 		this.tokens = snapshot.tokens;
 		this.drawings = snapshot.drawings;
+		this.party = snapshot.party;
 		this.lastSeq = snapshot.lastSeq;
 	}
 
@@ -68,12 +72,20 @@ export class MapState {
 				// the trail of every map beneath it, and on the region leading to
 				// it. That region says what kind of map it is, too.
 				const { map } = patch;
-				if (map.id === here) this.map = map;
+				if (map.id === here) {
+					this.map = map;
+					// Fog that moved comes with the tokens that can be seen now.
+					if (patch.tokens) this.tokens = patch.tokens;
+				}
 				this.trail = this.trail.map((c) => (c.id === map.id ? { ...c, name: map.name } : c));
 				this.regions = this.regions.map((r) =>
 					r.targetMapId === map.id ? { ...r, name: map.name, kind: map.kind } : r
 				);
+				break;
 			}
+			// The party is the campaign's, so it is news on whichever map this is.
+			case 'party.set':
+				this.party = patch.party;
 		}
 	}
 }

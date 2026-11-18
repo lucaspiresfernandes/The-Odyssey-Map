@@ -86,6 +86,36 @@ export const DEFAULT_GRID: Grid = { size: 50, x: 0, y: 0, shown: true };
 /** How many feet a cell stands for until the GM says otherwise. */
 export const DEFAULT_CELL_FEET = 8;
 
+/** A box on a map, in map space: its left, top, right and bottom. */
+export type Rect = [number, number, number, number];
+
+/**
+ * The fog of war on a battle map. While it is on, the map is covered but
+ * for the boxes in `clear`, which never overlap. Players see nothing of
+ * what is under it; the GM sees through it.
+ */
+export interface Fog {
+	on: boolean;
+	clear: Rect[];
+}
+
+export const NO_FOG: Fog = { on: false, clear: [] };
+
+/**
+ * Where the party is: one spot, on one world map of the campaign. Every
+ * map on the way down to that one shows the party in the region that leads
+ * there. It never stands where players can't go.
+ */
+export interface Party {
+	/** The campaign's id: it has one party. */
+	id: string;
+	mapId: string;
+	x: number;
+	y: number;
+	/** The maps on the way to it, by id: the first map of the campaign first, its own last. */
+	trail: string[];
+}
+
 export const TOKEN_COLORS = [
 	'#e5544b',
 	'#d9783a',
@@ -182,6 +212,8 @@ export interface MapInfo {
 	grid: Grid;
 	/** How many feet one cell of the grid stands for. Distances on the map are told in feet. */
 	cellFeet: number;
+	/** What of a battle map is under the fog of war. A world map has none. */
+	fog: Fog;
 	/** File name of the map image, out of the gallery, or null for a blank map. */
 	imageFile: string | null;
 	width: number;
@@ -249,6 +281,8 @@ export interface MapSnapshot {
 	tokens: Token[];
 	/** Empty on a world map. */
 	drawings: Drawing[];
+	/** Where the party is, on this map or any other, or null while it is nowhere. */
+	party: Party | null;
 	/** Sequence number of the newest event already reflected in this snapshot. */
 	lastSeq: number;
 }
@@ -329,9 +363,9 @@ export type Command =
 	| { t: 'region.delete'; id: string }
 	/**
 	 * Renames a map, sets up its grid, says how many feet a cell stands for,
-	 * lays an image under it: whichever are given. `image` is the file name of
-	 * a map image in the gallery. A map's kind is not here: it is chosen when
-	 * its region is drawn, and stays.
+	 * lays an image under it, covers it with fog or clears some: whichever are
+	 * given. `image` is the file name of a map image in the gallery. A map's
+	 * kind is not here: it is chosen when its region is drawn, and stays.
 	 */
 	| {
 			t: 'map.update';
@@ -340,7 +374,10 @@ export type Command =
 			grid?: Partial<Grid>;
 			cellFeet?: number;
 			image?: string;
+			fog?: Partial<Fog>;
 	  }
+	/** Puts the party at a spot of a world map, wherever it was before. */
+	| { t: 'party.move'; mapId: string; x: number; y: number }
 	/** Takes back the change with this sequence number by performing its opposite. */
 	| { t: 'history.revert'; seq: number }
 	/**
@@ -351,10 +388,10 @@ export type Command =
 
 // ------------------------------------------------------------------ events
 
-export type EntityType = 'marker' | 'region' | 'map' | 'token' | 'drawing';
+export type EntityType = 'marker' | 'region' | 'map' | 'token' | 'drawing' | 'party';
 
 /** A full copy of one of them, as the event log keeps it. */
-export type Entity = Marker | Region | MapInfo | Token | Drawing;
+export type Entity = Marker | Region | MapInfo | Token | Drawing | Party;
 export type EventAction = 'create' | 'update' | 'delete' | 'restore';
 
 /**
@@ -383,7 +420,13 @@ export type Patch =
 	| { t: 'region.upsert'; region: Region }
 	/** `targetMapId` is the map that can no longer be reached through it. */
 	| { t: 'region.remove'; id: string; mapId: string; targetMapId: string }
-	| { t: 'map.upsert'; map: MapInfo }
+	/**
+	 * `tokens` comes along when the fog on the map changed for a player: the
+	 * tokens of that map they can see now, in place of the ones they had.
+	 */
+	| { t: 'map.upsert'; map: MapInfo; tokens?: Token[] }
+	/** Where the party is now, or null once it is nowhere. */
+	| { t: 'party.set'; party: Party | null }
 	| { t: 'token.upsert'; token: Token }
 	| { t: 'token.remove'; id: string; mapId: string }
 	| { t: 'drawing.upsert'; drawing: Drawing }
@@ -430,6 +473,40 @@ export interface Cursor extends CursorSpot {
 	role: Role;
 }
 
+/**
+ * What of a map someone has on screen: the spot in the middle, and how much
+ * of the map shows across and down. All in map space, so a screen of
+ * another shape can frame the same part.
+ */
+export interface Sight {
+	x: number;
+	y: number;
+	w: number;
+	h: number;
+}
+
+/**
+ * The GM bringing everyone to what they are looking at. It is not a change
+ * to the world, so it is never stored: the app checks who may follow, and
+ * the WebSocket server passes it on.
+ */
+export interface Gather {
+	mapId: string;
+	view: Sight;
+	/** The name of whoever is bringing everyone along. */
+	by: string;
+	/** Names the browser it came from, which is there already and stays put. */
+	from: string;
+}
+
+/** What the gather endpoint answers with. */
+export interface GatherResponse {
+	ok: boolean;
+	error?: string;
+	/** False when the map is one players are kept out of: only the GM's own screens follow. */
+	players?: boolean;
+}
+
 export type ClientMessage =
 	| { t: 'cmd'; id: number; cmd: Command }
 	/** Where this browser's pointer is, or null once it has left the map. */
@@ -448,6 +525,7 @@ export type ServerMessage =
 	| { t: 'event'; event: LiveEvent }
 	| { t: 'cursor'; cursor: Cursor }
 	| { t: 'cursor.left'; id: string }
+	| { t: 'gather'; gather: Gather }
 	| { t: 'ack'; id: number; ok: true; undo: number[] }
 	| { t: 'ack'; id: number; ok: false; error: string };
 
@@ -475,10 +553,15 @@ export interface LiveIdentity {
 	seq: number;
 }
 
-/** Events the app has just written, each already cut down to what a role may see. */
+/**
+ * What the app hands the WebSocket server to deliver: events it has just
+ * written, each already cut down to what a role may see, or the GM bringing
+ * everyone along, to the roles that may follow.
+ */
 export interface Broadcast {
 	campaignId: string;
 	events: { seq: number; to: Record<Role, LiveEvent | null> }[];
+	gather?: Record<Role, Gather | null>;
 }
 
 export const LIMITS = {
@@ -504,6 +587,8 @@ export const LIMITS = {
 	/** The fewest and the most feet a cell can stand for. */
 	cellFeetMin: 0.5,
 	cellFeetMax: 1000,
+	/** The most boxes the fog on one map is cleared by. */
+	fogRects: 400,
 	regionPoints: 200,
 	// Room for a big map that has been through an upscaler.
 	imageBytes: 256 * 1024 * 1024,

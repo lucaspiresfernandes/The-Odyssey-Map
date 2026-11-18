@@ -17,9 +17,11 @@ import {
 import {
 	DEFAULT_CELL_FEET,
 	DEFAULT_GRID,
+	NO_FOG,
 	type Entity,
 	type EntityType,
 	type EventAction,
+	type Fog,
 	type GalleryKind,
 	type Grid,
 	type MarkerType,
@@ -88,6 +90,8 @@ export const maps = sqliteTable(
 		grid: text('grid', { mode: 'json' }).$type<Grid>().notNull().default(DEFAULT_GRID),
 		/** How many feet one cell of the grid stands for. */
 		cellFeet: real('cell_feet').notNull().default(DEFAULT_CELL_FEET),
+		/** The fog of war on a battle map: whether it is on, and where it has been cleared. */
+		fog: text('fog', { mode: 'json' }).$type<Fog>().notNull().default(NO_FOG),
 		imageFile: text('image_file'),
 		width: integer('width').notNull(),
 		height: integer('height').notNull(),
@@ -114,6 +118,20 @@ export const regions = sqliteTable(
 	},
 	(t) => [index('regions_map').on(t.mapId)]
 );
+
+// Where each campaign's party is: one row at most, on one of its world
+// maps. It goes with that map when the region leading there is deleted.
+export const parties = sqliteTable('parties', {
+	campaignId: text('campaign_id')
+		.primaryKey()
+		.references(() => campaigns.id, { onDelete: 'cascade' }),
+	mapId: text('map_id')
+		.notNull()
+		.references(() => maps.id, { onDelete: 'cascade' }),
+	x: real('x').notNull(),
+	y: real('y').notNull(),
+	updatedAt: integer('updated_at').notNull()
+});
 
 export const markers = sqliteTable(
 	'markers',

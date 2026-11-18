@@ -34,6 +34,13 @@
 		duplicate:
 			'M10 8h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2Z M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2',
 		filter: 'M22 3H2l8 9.46V19l4 2v-8.54Z',
+		// A banner on a pole: where the party is.
+		party: 'M5 21V4 M5 4h14l-3.5 4.5L19 13H5',
+		// A cloud: the fog of war.
+		fog: 'M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z',
+		// Four ways in to one spot: everyone is brought here.
+		gather:
+			'M12 2v5 M12 17v5 M2 12h5 M17 12h5 M9.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0 M10 5l2 2 2-2 M10 19l2-2 2 2 M5 10l2 2-2 2 M19 10l-2 2 2 2',
 		plus: 'M12 5v14 M5 12h14',
 		up: 'M6 15l6-6 6 6',
 		down: 'M6 9l6 6 6-6',

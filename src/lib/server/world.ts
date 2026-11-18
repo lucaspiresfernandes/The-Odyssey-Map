@@ -16,14 +16,17 @@ import {
 	gallery,
 	maps,
 	markers,
+	parties,
 	regions,
 	tokens
 } from './schema';
+import { isFogged } from '../shared/fog';
 import { wrapOffset } from '../shared/grid';
 import {
 	canChangeDrawing,
 	canEditMarkerKind,
 	canEditWorld,
+	canMoveParty,
 	canRemoveMarker,
 	canRemoveToken,
 	canSeeEvent
@@ -41,6 +44,7 @@ import {
 	type DrawingKind,
 	type EntityType,
 	type EventAction,
+	type Fog,
 	type GalleryKind,
 	type Grid,
 	type MapInfo,
@@ -49,7 +53,9 @@ import {
 	type MarkerInput,
 	type MarkerKind,
 	type MarkerType,
+	type Party,
 	type Point,
+	type Rect,
 	type Region,
 	type Role,
 	type StoredEvent,
@@ -131,6 +137,7 @@ export const mapColumns = {
 	kind: maps.kind,
 	grid: maps.grid,
 	cellFeet: maps.cellFeet,
+	fog: maps.fog,
 	imageFile: maps.imageFile,
 	width: maps.width,
 	height: maps.height
@@ -225,16 +232,31 @@ function findMarker(
 
 function findToken(db: Db, actor: Actor, id: string): { token: Token; deletedAt: number | null } {
 	const row = db
-		.select({ token: tokenColumns, deletedAt: tokens.deletedAt })
+		.select({ token: tokenColumns, deletedAt: tokens.deletedAt, fog: maps.fog })
 		.from(tokens)
 		.innerJoin(maps, eq(maps.id, tokens.mapId))
 		.where(and(eq(tokens.id, id), eq(maps.campaignId, actor.campaignId)))
 		.get();
-	// As with a hidden marker: to a player, a token they cannot see was never there.
+	// As with a hidden marker: to a player, a token they cannot see was never
+	// there. That goes for one under the fog as well.
 	const secret =
-		row && actor.role !== 'gm' && (row.token.hidden || isConcealed(db, row.token.mapId));
+		row &&
+		actor.role !== 'gm' &&
+		(row.token.hidden ||
+			isFogged(row.fog, [row.token.x, row.token.y]) ||
+			isConcealed(db, row.token.mapId));
 	if (!row || secret) fail('not_found', 'That token does not exist.');
-	return row;
+	return { token: row.token, deletedAt: row.deletedAt };
+}
+
+/**
+ * A player puts a token only where they can see: one that went under the
+ * fog would be lost to them. The GM puts them anywhere.
+ */
+function requireInSight(actor: Actor, fog: Fog, x: number, y: number) {
+	if (actor.role !== 'gm' && isFogged(fog, [x, y])) {
+		fail('conflict', 'That spot is under the fog.');
+	}
 }
 
 function findDrawing(
@@ -641,6 +663,7 @@ function createToken(db: Db, actor: Actor, raw: Record<string, unknown>): Stored
 	const input = asTokenChanges(raw);
 	if (input.name === undefined) fail('invalid', "The name can't be empty.");
 	if (input.x === undefined || input.y === undefined) fail('invalid', 'The token needs a position.');
+	requireInSight(actor, map.fog, input.x, input.y);
 
 	// A token wears a picture out of the gallery. For a player that is one
 	// the GM has revealed.
@@ -697,6 +720,7 @@ function duplicateToken(db: Db, actor: Actor, id: string): StoredEvent[] {
 	const fallback = token.x + step <= 1 ? token.x + step : Math.max(0, token.x - step);
 	const x =
 		spots.filter((x) => x > token.x).find(free) ?? spots.find(free) ?? fallback;
+	requireInSight(actor, map.fog, x, token.y);
 	const copy = newId();
 	const now = Date.now();
 	db.insert(tokens)
@@ -757,6 +781,9 @@ function updateToken(
 	// A lock holds until it is taken off. The same change can do both.
 	if (before.locked && after.locked && TOKEN_PLACING.some((f) => before[f] !== after[f])) {
 		fail('conflict', 'That token is locked. Unlock it first.');
+	}
+	if (before.x !== after.x || before.y !== after.y) {
+		requireInSight(actor, readMap(db, before.mapId).fog, after.x, after.y);
 	}
 	if (after.image && after.image !== before.image) {
 		// Undo may hand a player's token back a picture the GM gave it and
@@ -1030,6 +1057,12 @@ function updateRegion(
 	if (changes.points !== undefined) after.points = asPoints(changes.points);
 	if (changes.hidden !== undefined) after.hidden = asBool(changes.hidden);
 	if (samePoints(before.points, after.points) && before.hidden === after.hidden) return [];
+	// The party is where the players are, so never somewhere they are kept out of.
+	if (after.hidden && !before.hidden) {
+		if (readParty(db, actor.campaignId)?.trail.includes(before.targetMapId)) {
+			fail('conflict', 'The party is in there. Move it out before hiding the region.');
+		}
+	}
 
 	db.update(regions)
 		.set({ points: after.points, hidden: after.hidden })
@@ -1058,6 +1091,9 @@ function deleteRegion(db: Db, actor: Actor, id: string): StoredEvent[] {
 		doomed.push(...db.select(mapColumns).from(maps).where(eq(maps.parentId, doomed[i].id)).all());
 	}
 	const ids = doomed.map((map) => map.id);
+	// The party goes with the map it stands on, like everything else there.
+	const party = readParty(db, actor.campaignId);
+	const lost = party && ids.includes(party.mapId) ? party : null;
 
 	// The regions go first: they point at these maps and would hold them in
 	// place. That is this region and every region drawn further inside.
@@ -1073,12 +1109,16 @@ function deleteRegion(db: Db, actor: Actor, id: string): StoredEvent[] {
 
 	return [
 		record(db, actor, region.mapId, 'region', 'delete', region, null),
-		...doomed.map((map) => record(db, actor, map.id, 'map', 'delete', map, null))
+		...doomed.map((map) => record(db, actor, map.id, 'map', 'delete', map, null)),
+		...(lost ? [record(db, actor, region.mapId, 'party', 'delete', lost, null)] : [])
 	];
 }
 
-/** True while nothing has been put on a map: no image, no markers, no tokens, no drawings, no regions. */
+/** True while nothing has been put on a map: no image, no markers, no tokens, no drawings, no regions, no party. */
 function isBlank(db: Db, mapId: string): boolean {
+	if (db.select({ id: parties.mapId }).from(parties).where(eq(parties.mapId, mapId)).get()) {
+		return false;
+	}
 	const marker = db.select({ id: markers.id }).from(markers).where(eq(markers.mapId, mapId)).get();
 	const token = db.select({ id: tokens.id }).from(tokens).where(eq(tokens.mapId, mapId)).get();
 	const drawing = db
@@ -1093,11 +1133,33 @@ function isBlank(db: Db, mapId: string): boolean {
 const sameGrid = (a: Grid, b: Grid) =>
 	a.size === b.size && a.x === b.x && a.y === b.y && a.shown === b.shown;
 
+const sameFog = (a: Fog, b: Fog) => JSON.stringify(a) === JSON.stringify(b);
+
+/** Fog with whichever of its settings are present changed, and checked. */
+function asFog(value: unknown, current: Fog): Fog {
+	const raw = asRecord(value);
+	const on = raw.on === undefined ? current.on : asBool(raw.on);
+	if (raw.clear === undefined) return { on, clear: current.clear };
+	if (!Array.isArray(raw.clear)) fail('invalid', 'Malformed fog.');
+	if (raw.clear.length > LIMITS.fogRects) {
+		fail('conflict', 'The fog is in too many pieces. Cover the whole map and start again.');
+	}
+	const clear = raw.clear.map((box): Rect => {
+		if (!Array.isArray(box) || box.length !== 4) fail('invalid', 'Malformed fog.');
+		// Six decimal places put an edge within a thirtieth of a pixel on any map.
+		const [x0, y0, x1, y1] = box.map((n) => Math.round(asCoord(n) * 1e6) / 1e6);
+		if (x0 >= x1 || y0 >= y1) fail('invalid', 'Malformed fog.');
+		return [x0, y0, x1, y1];
+	});
+	return { on, clear };
+}
+
 function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): StoredEvent[] {
 	if (
 		before.name === after.name &&
 		sameGrid(before.grid, after.grid) &&
 		before.cellFeet === after.cellFeet &&
+		sameFog(before.fog, after.fog) &&
 		before.imageFile === after.imageFile &&
 		before.width === after.width &&
 		before.height === after.height
@@ -1115,6 +1177,7 @@ function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): Stored
 			name: after.name,
 			grid: after.grid,
 			cellFeet: after.cellFeet,
+			fog: after.fog,
 			imageFile: after.imageFile,
 			width: after.width,
 			height: after.height
@@ -1126,22 +1189,30 @@ function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): Stored
 
 /**
  * Renames a map, sets up its grid, says how many feet a cell stands for,
- * lays an image from the gallery under it: whichever are asked for. What
- * kind of map it is was settled when its region was drawn, and stays so.
+ * lays an image from the gallery under it, covers it with fog or clears
+ * some: whichever are asked for. What kind of map it is was settled when
+ * its region was drawn, and stays so.
  */
 function updateMap(
 	db: Db,
 	actor: Actor,
 	id: string,
-	changes: { name?: unknown; kind?: unknown; grid?: unknown; cellFeet?: unknown; image?: unknown }
+	changes: {
+		name?: unknown;
+		kind?: unknown;
+		grid?: unknown;
+		cellFeet?: unknown;
+		image?: unknown;
+		fog?: unknown;
+	}
 ): StoredEvent[] {
 	requireWorldEdit(actor);
 	const before = findMap(db, actor, id);
-	const { name, kind, grid, cellFeet, image } = changes;
+	const { name, kind, grid, cellFeet, image, fog } = changes;
 	if (kind !== undefined) {
 		fail('invalid', 'A map stays the kind it was made as. Draw a region for the other kind.');
 	}
-	if ([name, grid, cellFeet, image].every((change) => change === undefined)) {
+	if ([name, grid, cellFeet, image, fog].every((change) => change === undefined)) {
 		fail('invalid', 'Malformed request.');
 	}
 
@@ -1149,6 +1220,10 @@ function updateMap(
 	if (changes.name !== undefined) after.name = asText(changes.name, 'The name', LIMITS.name, true);
 	if (changes.grid !== undefined) after.grid = asGrid(changes.grid, before.grid);
 	if (cellFeet !== undefined) after.cellFeet = asCellFeet(cellFeet);
+	if (fog !== undefined) {
+		if (before.kind !== 'battle') fail('invalid', 'Fog of war goes on battle maps.');
+		after.fog = asFog(fog, before.fog);
+	}
 	if (image !== undefined) {
 		// The map takes the size of its picture. Everything on it is placed
 		// in fractions of the map, so it all stays where it was.
@@ -1158,6 +1233,64 @@ function updateMap(
 		after.height = picture.height;
 	}
 	return writeMap(db, actor, before, after);
+}
+
+// ------------------------------------------------------------------- party
+
+/** The maps on the way to one, by id: the first map of the campaign first, its own last. */
+function trailOf(db: Db, mapId: string): string[] {
+	const trail: string[] = [];
+	for (let id: string | null = mapId, depth = 0; id && depth < 64; depth++) {
+		trail.unshift(id);
+		id = db.select({ parentId: maps.parentId }).from(maps).where(eq(maps.id, id)).get()?.parentId ?? null;
+	}
+	return trail;
+}
+
+/** Where a campaign's party is, or null while it is nowhere. */
+export function readParty(db: Db, campaignId: string): Party | null {
+	const row = db.select().from(parties).where(eq(parties.campaignId, campaignId)).get();
+	if (!row) return null;
+	return { id: campaignId, mapId: row.mapId, x: row.x, y: row.y, trail: trailOf(db, row.mapId) };
+}
+
+/** Puts the party at `to`, or with null takes it off the maps altogether. */
+function writeParty(
+	db: Db,
+	actor: Actor,
+	to: { mapId: string; x: number; y: number } | null
+): StoredEvent[] {
+	const before = readParty(db, actor.campaignId);
+	if (!to) {
+		if (!before) return [];
+		db.delete(parties).where(eq(parties.campaignId, actor.campaignId)).run();
+		return [record(db, actor, before.mapId, 'party', 'delete', before, null)];
+	}
+	if (before && before.mapId === to.mapId && before.x === to.x && before.y === to.y) return [];
+
+	const row = { ...to, updatedAt: Date.now() };
+	db.insert(parties)
+		.values({ campaignId: actor.campaignId, ...row })
+		.onConflictDoUpdate({ target: parties.campaignId, set: row })
+		.run();
+	const after = readParty(db, actor.campaignId);
+	return [record(db, actor, to.mapId, 'party', before ? 'update' : 'create', before, after)];
+}
+
+/**
+ * Moves the party to a spot of a world map: the one it is on, or any other.
+ * It stands where the players are, so never on a map they are kept out of.
+ */
+function moveParty(db: Db, actor: Actor, raw: Record<string, unknown>): StoredEvent[] {
+	if (!canMoveParty(actor.role)) fail('forbidden', 'Only the GM moves the party.');
+	const map = findMap(db, actor, asId(raw.mapId));
+	if (map.kind === 'battle') {
+		fail('invalid', 'The party goes on world maps. On a battle map, tokens stand for it.');
+	}
+	if (isConcealed(db, map.id)) {
+		fail('conflict', "Players can't go there yet. Reveal the region that leads there first.");
+	}
+	return writeParty(db, actor, { mapId: map.id, x: asCoord(raw.x), y: asCoord(raw.y) });
 }
 
 // ------------------------------------------------------------------ revert
@@ -1170,8 +1303,12 @@ const MARKER_FIELDS = ['type', 'title', 'description', 'x', 'y', 'hidden'] as co
  * the maps behind it, is for good.
  */
 export function undoable(made: StoredEvent[]): number[] {
+	const gone = deletedMaps(made);
 	const final = (e: StoredEvent) =>
-		(e.entity === 'map' && e.action !== 'update') || (e.entity === 'region' && e.action === 'delete');
+		(e.entity === 'map' && e.action !== 'update') ||
+		(e.entity === 'region' && e.action === 'delete') ||
+		// A party that went with the map it stood on has no map to come back to.
+		(e.entity === 'party' && e.action === 'delete' && gone.includes((e.before as Party).mapId));
 	return made.filter((e) => !final(e)).map((e) => e.seq);
 }
 
@@ -1263,13 +1400,26 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 		});
 	}
 
+	if (event.entity === 'party') {
+		// Back to where it stood before, or off the map if it stood nowhere.
+		// Going back is a move like any other: the map still has to be there,
+		// and open to the players.
+		const before = event.before as Party | null;
+		if (!before) return writeParty(db, actor, null);
+		return moveParty(db, actor, { mapId: before.mapId, x: before.x, y: before.y });
+	}
+
 	if (event.action === 'delete') fail('invalid', "A deleted map can't be brought back.");
 	if (event.action !== 'update') {
 		fail('invalid', "A map can't be un-created. Delete the region that leads to it instead.");
 	}
 	requireWorldEdit(actor);
 	const old = event.before as MapInfo;
+	const made = event.after as MapInfo;
 	const current = findMap(db, actor, id);
+	// The fog goes back only if this change was to the fog: it is changed
+	// often, between other things, and those should not take it along.
+	const fogged = old.fog && made.fog && !sameFog(old.fog, made.fog);
 	return writeMap(db, actor, current, {
 		...current,
 		name: old.name,
@@ -1278,6 +1428,7 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 		// the map is left alone, whatever an old change did to it.
 		grid: old.grid ?? current.grid,
 		cellFeet: old.cellFeet ?? current.cellFeet,
+		fog: fogged ? old.fog : current.fog,
 		imageFile: old.imageFile,
 		width: old.width,
 		height: old.height
@@ -1324,6 +1475,8 @@ function run(db: Db, actor: Actor, input: unknown, nested = false): StoredEvent[
 			return deleteRegion(db, actor, asId(cmd.id));
 		case 'map.update':
 			return updateMap(db, actor, asId(cmd.id), cmd);
+		case 'party.move':
+			return moveParty(db, actor, cmd);
 		case 'token.create':
 			return createToken(db, actor, cmd);
 		case 'token.update':

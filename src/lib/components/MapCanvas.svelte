@@ -13,6 +13,7 @@
 	import { untrack } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
 	import { boxOf, capped, linePath, thinOut, touchesBox } from '#lib/shared/drawing.ts';
+	import { cellBox, cleared, covered, fogPath } from '#lib/shared/fog.ts';
 	import {
 		cellsToFeet,
 		feetBetween,
@@ -20,7 +21,12 @@
 		sitsOnCorner,
 		snapToGrid
 	} from '#lib/shared/grid.ts';
-	import { canChangeDrawing, canEditWorld, canMoveToken } from '#lib/shared/rules.ts';
+	import {
+		canChangeDrawing,
+		canEditWorld,
+		canMoveParty,
+		canMoveToken
+	} from '#lib/shared/rules.ts';
 	import { tileLevelFor, tileLevels, tilesIn, type Tile } from '#lib/shared/tiles.ts';
 	import {
 		DRAWING_SIZE,
@@ -36,9 +42,11 @@
 		type Drawing,
 		type MapInfo,
 		type Marker,
+		type Party,
 		type Point,
 		type Region,
 		type Role,
+		type Sight,
 		type Token,
 		type TokenInput
 	} from '#lib/shared/types.ts';
@@ -57,19 +65,36 @@
 		tokens: Token[];
 		/** What has been drawn and written on a battle map. */
 		drawings: Drawing[];
+		/** Where the party is, on this map or on another. */
+		party: Party | null;
 		/** Where the other people looking at this map are pointing. */
 		cursors: Cursor[];
 		role: Role;
 		userId: string;
+		/**
+		 * A table display: the map is shown and can be moved about, and nothing
+		 * on it can be picked up or changed.
+		 */
+		passive?: boolean;
 		/**
 		 * `pan` is the hand: it moves the map, and on a battle map selects and
 		 * drags what is on it. `place` waits for a click that positions a
 		 * marker, `draw` outlines a region. The rest are a battle map's:
 		 * `select` drags a box around several things, `measure` a ruler across
 		 * the map, `sketch` draws a line freehand, `text` waits for a click to
-		 * start writing at.
+		 * start writing at. `reveal` and `cover` are the GM's: each drags a
+		 * box that the fog of war is cleared from, or put back over.
 		 */
-		tool: 'pan' | 'place' | 'draw' | 'measure' | 'select' | 'sketch' | 'text';
+		tool:
+			| 'pan'
+			| 'place'
+			| 'draw'
+			| 'measure'
+			| 'select'
+			| 'sketch'
+			| 'text'
+			| 'reveal'
+			| 'cover';
 		/** The colour `sketch` draws in and `text` writes in. */
 		ink: string;
 		/** How many maps deep this one is. Decides which way the arrival animation zooms. */
@@ -92,6 +117,8 @@
 		ondrawn: (points: Point[]) => void;
 		onenter: (region: Region) => void;
 		onreshape: (region: Region, points: Point[]) => Promise<boolean>;
+		/** The party was dragged to another spot of this map. Resolves once it stands there, or was refused. */
+		onparty: (x: number, y: number) => Promise<boolean>;
 		onedit: (marker: Marker) => void;
 		onmove: (marker: Marker) => void;
 		ondelete: (marker: Marker) => void;
@@ -108,9 +135,11 @@
 		markers,
 		tokens,
 		drawings,
+		party,
 		cursors,
 		role,
 		userId,
+		passive = false,
 		tool,
 		ink,
 		depth,
@@ -124,6 +153,7 @@
 		ondrawn,
 		onenter,
 		onreshape,
+		onparty,
 		onedit,
 		onmove,
 		ondelete,
@@ -200,6 +230,16 @@
 	let inked = $state.raw<{ points: Point[]; color: string }[]>([]);
 	/** The box being dragged around things to select them: one corner, and the other. */
 	let marquee = $state.raw<[Point, Point] | null>(null);
+	/**
+	 * The box the GM is dragging over the fog, to clear it there or to put
+	 * it back: from, to, and whether Alt is keeping it off the grid.
+	 */
+	let veil = $state.raw<{ from: Point; to: Point; free: boolean } | null>(null);
+	/**
+	 * Where the GM is dragging the party to. Once let go it waits here, no
+	 * longer `held`, until the server has moved it for everyone.
+	 */
+	let leading = $state.raw<{ at: Point; held: boolean } | null>(null);
 	/** A text being typed onto the map: a new one, or with an `id`, one being reworded. */
 	let writing = $state.raw<{ id: string | null; at: Point; color: string } | null>(null);
 	/** What has been typed of it so far. Kept apart, so the box has it to the last. */
@@ -278,6 +318,22 @@
 		active && cardSpot([active.x, active.y], PIN_HEIGHT + 12, 12, cardW, cardH)
 	);
 
+	// ------------------------------------------------------------ the party
+
+	/** The GM moves the party by dragging it. */
+	const canLead = $derived(canMoveParty(role) && !passive);
+	/** Where the party stands on this map, if this is the map it is on. */
+	const partySpot = $derived.by((): Point | null => {
+		if (!party || party.mapId !== map.id) return null;
+		return leading?.at ?? [party.x, party.y];
+	});
+	/** The region of this map that the party is somewhere inside of, when it is further in. */
+	const partyRegionId = $derived(
+		party && party.mapId !== map.id
+			? (regions.find((region) => party.trail.includes(region.targetMapId))?.id ?? null)
+			: null
+	);
+
 	// ---------------------------------------------------------- battle maps
 
 	const battle = $derived(map.kind === 'battle');
@@ -351,7 +407,9 @@
 		isToken(thing) ? canGrabToken(thing) : canGrabDrawing(thing);
 
 	/** The hand is out on a battle map: what is on it can be selected and dragged. */
-	const selecting = $derived(battle && tool === 'pan');
+	const selecting = $derived(battle && tool === 'pan' && !passive);
+	/** The box being dragged over the fog, as it will be cleared or covered: whole cells, unless Alt is held. */
+	const veilBox = $derived(veil && cellBox(map, veil.from, veil.to, veil.free));
 	const selectedTokens = $derived(
 		selecting ? tokens.filter((t) => selectedIds.includes(t.id)) : []
 	);
@@ -546,6 +604,7 @@
 		if (tool !== 'measure') measure = null;
 		if (tool !== 'sketch') stroke = null;
 		if (tool !== 'select') marquee = null;
+		if (tool !== 'reveal' && tool !== 'cover') veil = null;
 	});
 
 	// --------------------------------------------------- drawing and writing
@@ -786,6 +845,27 @@
 		fit();
 	}
 
+	/** What of the map is on screen: the spot in the middle, and how much shows across and down. */
+	export function sight(): Sight {
+		return {
+			x: (cw / 2 - view.x) / (view.k * W),
+			y: (ch / 2 - view.y) / (view.k * H),
+			w: cw / (view.k * W),
+			h: ch / (view.k * H)
+		};
+	}
+
+	/**
+	 * Brings the same part of the map on screen here: the same middle, and
+	 * zoomed so that all of what they saw fits, whatever shape this screen is.
+	 */
+	export function lookAt(seen: Sight) {
+		if (cw === 0 || ch === 0) return;
+		const k = within(Math.min(cw / (seen.w * W), ch / (seen.h * H)), minK, maxK);
+		fitting = false;
+		animateTo(bounded({ k, x: cw / 2 - seen.x * W * k, y: ch / 2 - seen.y * H * k }), 600);
+	}
+
 	function zoomBy(factor: number) {
 		fitting = false;
 		animateTo(zoomedAt(cw / 2, ch / 2, view.k * factor), 180);
@@ -833,6 +913,8 @@
 				stroke = null;
 				inked = [];
 				marquee = null;
+				veil = null;
+				leading = null;
 				writing = null;
 			}
 			shown = { key, id: map.id, depth };
@@ -979,7 +1061,11 @@
 		| { type: 'measure' }
 		| { type: 'sketch' }
 		/** `add` keeps what was already selected. */
-		| { type: 'marquee'; add: boolean };
+		| { type: 'marquee'; add: boolean }
+		/** A box over the fog of war, to clear it there or to put it back. */
+		| { type: 'veil'; how: 'reveal' | 'cover' }
+		/** The party, in the GM's hand. */
+		| { type: 'lead'; sx: number; sy: number; moved: boolean; target: Element };
 
 	const pointers = new Map<number, { x: number; y: number }>();
 	let gesture: Gesture | null = null;
@@ -1133,6 +1219,8 @@
 			measure = null;
 			stroke = null;
 			marquee = null;
+			veil = null;
+			if (leading?.held) leading = null;
 			const mid = midpoint();
 			gesture = {
 				type: 'pinch',
@@ -1221,6 +1309,20 @@
 			marquee = [at, at];
 			gesture = { type: 'marquee', add: e.shiftKey };
 			capture(e.pointerId);
+			return;
+		}
+
+		if (tool === 'reveal' || tool === 'cover') {
+			const at = toMap(e.clientX, e.clientY);
+			veil = { from: at, to: at, free: e.altKey };
+			gesture = { type: 'veil', how: tool };
+			capture(e.pointerId);
+			return;
+		}
+
+		// The party, under the GM's pointer: it is led to another spot of the map.
+		if (canLead && tool === 'pan' && target.closest('[data-party]')) {
+			gesture = { type: 'lead', sx: e.clientX, sy: e.clientY, moved: false, target };
 			return;
 		}
 
@@ -1392,6 +1494,16 @@
 			if (Math.hypot((at[0] - lx) * W, (at[1] - ly) * H) * view.k >= 2) stroke = [...stroke, at];
 		} else if (g?.type === 'marquee' && marquee) {
 			marquee = [marquee[0], toMap(e.clientX, e.clientY)];
+		} else if (g?.type === 'veil' && veil) {
+			veil = { from: veil.from, to: toMap(e.clientX, e.clientY), free: e.altKey };
+		} else if (g?.type === 'lead') {
+			const far = Math.hypot(e.clientX - g.sx, e.clientY - g.sy);
+			if (!g.moved && far > (e.pointerType === 'mouse' ? 4 : 10)) {
+				g.moved = true;
+				dragging = true;
+				capture(e.pointerId);
+			}
+			if (g.moved) leading = { at: clamped(toMap(e.clientX, e.clientY)), held: true };
 		}
 	}
 
@@ -1429,6 +1541,29 @@
 			const box = marquee;
 			marquee = null;
 			if (box && completed) catchIn(box, g.add);
+		}
+		if (g?.type === 'veil') {
+			const box = veilBox;
+			veil = null;
+			if (box && completed) {
+				const fog = g.how === 'reveal' ? cleared(map.fog, box) : covered(map.fog, box);
+				// Fog that is off has nothing to clear, and comes back as it was.
+				if (fog !== map.fog) send([{ t: 'map.update', id: map.id, fog }]);
+			}
+		}
+		if (g?.type === 'lead') {
+			const led = leading;
+			if (g.moved && led && completed) {
+				// Kept where it was let go until the server has moved it, so it
+				// never flickers back to where it stood.
+				const settled = { at: led.at, held: false };
+				leading = settled;
+				onparty(led.at[0], led.at[1]).then(() => {
+					if (leading === settled) leading = null;
+				});
+			} else {
+				leading = null;
+			}
 		}
 		if (g?.type === 'grab') {
 			const held = carry;
@@ -1548,6 +1683,9 @@
 			lastTap = { at: now, x: e.clientX, y: e.clientY, regionId: null, thingId: thing.id };
 			return;
 		}
+
+		// The party is not a spot of the map: clicking it starts nothing.
+		if (target.closest('[data-party]')) return;
 
 		const markerId = target.closest<HTMLElement>('[data-marker-id]')?.dataset.markerId;
 		if (markerId) {
@@ -1686,6 +1824,8 @@
 
 	/** A token with the focus: Enter selects it, the arrow keys walk it a cell at a time. */
 	function tokenKey(e: KeyboardEvent, token: Token) {
+		// On a table display nothing is picked up or moved.
+		if (passive) return;
 		if (e.key === 'Enter' || e.key === ' ') {
 			e.preventDefault();
 			const only = selectedIds.length === 1 && selectedIds[0] === token.id;
@@ -2039,6 +2179,7 @@
 			{#each orderedRegions as region (region.id)}
 				{@const [x, y] = labelSpot(pointsOf(region))}
 				{@const lit = litRegionId === region.id}
+				{@const camped = partyRegionId === region.id}
 				<div
 					class="pointer-events-none absolute w-max max-w-[300px] -translate-1/2 scale-(--inv) text-center text-shadow-map"
 					style:left="{x * W}px"
@@ -2047,8 +2188,21 @@
 					<strong
 						class={[
 							'block font-serif text-[17px] leading-[1.2] font-semibold tracking-[0.02em] wrap-anywhere transition-[opacity,color] duration-150',
-							lit ? 'text-white' : 'text-[#fff8e4] opacity-55'
-						]}>{region.name}</strong
+							lit ? 'text-white' : camped ? 'text-[#fff8e4]' : 'text-[#fff8e4] opacity-55'
+						]}
+						>{#if camped}<!-- The party's banner, before the name of the region it is
+							     somewhere inside of: the way to it from here. --><svg
+								class="mr-1 inline-block size-[0.95em] -translate-y-px drop-shadow-[0_0_2px_rgb(8_10_15/0.9)]"
+								viewBox="0 0 24 24"
+								role="img"
+								aria-label="The party is in here:"
+							>
+								<path
+									class="fill-accent stroke-[#12151c] stroke-[1.5] [stroke-linejoin:round]"
+									d="M5 3.5h15l-4 5 4 5H5Z"
+								/>
+								<path class="stroke-[#fff8e4] stroke-[2.5] [stroke-linecap:round]" d="M5 3v19" />
+							</svg>{/if}{region.name}</strong
 					>
 					{#if lit || region.hidden}
 						<!-- How to get in, and for the GM whether players can. Out of the flow,
@@ -2078,7 +2232,7 @@
 			{#if battle}
 				{#each tokens as token (token.id)}
 					{@const [x, y] = spotOf(token)}
-					{@const mine = canGrabToken(token)}
+					{@const mine = canGrabToken(token) && !passive}
 					{@const inHand = !!carry?.held && token.id in carry.origins}
 					{@const selected = selecting && selectedIds.includes(token.id)}
 					{@const across = sizeOf(token) * cell}
@@ -2117,7 +2271,7 @@
 								? '. Arrow keys move it.'
 								: ''}"
 							aria-pressed={selected}
-							tabindex={tool === 'pan' ? 0 : -1}
+							tabindex={tool === 'pan' && !passive ? 0 : -1}
 							onkeydown={(e) => tokenKey(e, token)}
 						>
 							{initials(token.name)}
@@ -2201,6 +2355,41 @@
 				{/each}
 			{/if}
 
+			<!-- The fog of war, over everything that stands on a battle map: one dark
+			     sheet with a hole for each box that has been cleared. Players can't
+			     see through it. The GM can, enough to tell what is under it. The box
+			     being dragged to clear some or cover some is drawn with it. -->
+			{#if battle && (map.fog.on || veilBox)}
+				<svg
+					class="pointer-events-none absolute inset-0 z-2 overflow-visible"
+					viewBox="0 0 {W} {H}"
+					width={W}
+					height={H}
+					aria-hidden="true"
+				>
+					{#if map.fog.on}
+						<path
+							class={canShape ? 'fill-[#0b0d12]/55' : 'fill-[#0d1017]'}
+							fill-rule="evenodd"
+							d={fogPath(map.fog, W, H)}
+						/>
+					{/if}
+					{#if veilBox}
+						{@const [x0, y0, x1, y1] = veilBox}
+						<rect
+							class={[
+								'stroke-[1.5] stroke-steady [stroke-dasharray:5_4]',
+								tool === 'cover' ? 'fill-[#0b0d12]/45 stroke-[#fff8e4]' : 'fill-white/20 stroke-white'
+							]}
+							x={x0 * W}
+							y={y0 * H}
+							width={(x1 - x0) * W}
+							height={(y1 - y0) * H}
+						/>
+					{/if}
+				</svg>
+			{/if}
+
 			<!-- Pins live in the scaled layer, so they follow the map for free. World
 			     markers are teardrops in their type's colour (--c). Table notes look
 			     like paper tags, so the two can be told apart at a glance. -->
@@ -2263,6 +2452,48 @@
 				</button>
 			{/each}
 
+			<!-- The party: a banner planted where it stands, the same size on screen
+			     at any zoom. It glides to wherever it is moved to, so the table sees
+			     the road it took. Not in the hand that is dragging it. -->
+			{#if partySpot}
+				{@const [x, y] = partySpot}
+				<div
+					class={[
+						'absolute top-0 left-0 z-1 size-0',
+						!leading &&
+							'transition-[translate] duration-700 ease-in-out motion-reduce:transition-none'
+					]}
+					style:translate="{x * W}px {y * H}px"
+				>
+					<div
+						class={[
+							'absolute top-0 left-0 origin-[7px_100%] -translate-x-[7px] -translate-y-full scale-(--inv) [-webkit-tap-highlight-color:transparent]',
+							tool !== 'pan' && 'pointer-events-none opacity-60',
+							canLead && (leading?.held ? 'cursor-grabbing' : 'cursor-grab')
+						]}
+						data-party
+						role="img"
+						aria-label="The party is here"
+						title={canLead ? 'The party · drag to move it' : 'The party'}
+					>
+						<svg
+							class={['block', leading?.held ? 'pin-selected' : 'pin-shadow']}
+							viewBox="0 0 38 46"
+							width="38"
+							height="46"
+							aria-hidden="true"
+						>
+							<path class="stroke-[#12151c] stroke-[5] [stroke-linecap:round]" d="M7 43V5" />
+							<path
+								class="fill-accent stroke-[#12151c] stroke-[1.5] [stroke-linejoin:round]"
+								d="M7 5h28l-7 9 7 9H7Z"
+							/>
+							<path class="stroke-[#fff8e4] stroke-[2.5] [stroke-linecap:round]" d="M7 43V5" />
+						</svg>
+					</div>
+				</div>
+			{/if}
+
 			<!-- Everyone else's mouse, each in its own colour (--c). On top of the map,
 			     and never in the way of your own. Only the position glides from one
 			     report to the next, not the size in a zoom. -->
@@ -2314,7 +2545,9 @@
 	<!-- What floats over the map. Only the parts that ask for the pointer get it. -->
 	<div class="pointer-events-none absolute inset-0">
 		{#if active && cardPosition}
-			{@const pinned = active.id === selectedMarkerId}
+			{@const pinned = active.id === selectedMarkerId && !passive}
+			<!-- A table display only ever informs: its cards are never pinned, and offer nothing to do. -->
+
 			<!-- Kept out of sight until its size is known, so it never flashes in the wrong place. -->
 			<div
 				class={['absolute', cardW === 0 && 'invisible', pinned && 'pointer-events-auto']}
@@ -2424,6 +2657,20 @@
 				Drag across the map to draw.
 				<span class={keys}>Esc puts the pen away</span>
 			</p>
+		{:else if tool === 'reveal'}
+			<p class={hint}>
+				{#if map.fog.on}
+					Drag a box over what the players may see.
+					<span class={keys}>Alt leaves the grid · Esc puts it away</span>
+				{:else}
+					There is no fog on this map yet. Cover some of it first.
+				{/if}
+			</p>
+		{:else if tool === 'cover'}
+			<p class={hint}>
+				Drag a box over what the fog should cover.
+				<span class={keys}>Alt leaves the grid · Esc puts it away</span>
+			</p>
 		{:else if tool === 'text' && !writing}
 			<p class={hint}>
 				<span class="touch:hidden">Click the map where the text goes.</span>
@@ -2436,11 +2683,12 @@
 		     whole bottom edge to the tools, so there it sits in the top corner:
 		     the right one, or on a battle map, where the tools are docked in
 		     that one, the left. Fingers zoom by pinching, which leaves only Fit
-		     to offer them. -->
+		     to offer them. A table display has none: its keys still zoom. -->
 		<div
 			class={[
 				'pointer-events-auto absolute right-3.5 bottom-3.5 grid overflow-hidden rounded-[10px] border bg-panel max-[720px]:top-3.5 max-[720px]:bottom-auto',
-				battle && 'max-[720px]:right-auto max-[720px]:left-3.5'
+				battle && 'max-[720px]:right-auto max-[720px]:left-3.5',
+				passive && 'hidden'
 			]}
 		>
 			<button

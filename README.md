@@ -45,6 +45,8 @@ on port 3001.
    dock underneath and hand each player's to them. See [Battle maps](#battle-maps).
 4. Click **Invite** and send the link to your players. They pick a name and they're in.
    Players need no account.
+5. Around a real table, click **Display** and put the window that opens on the screen
+   everyone can see. See [At the table](#at-the-table).
 
 To let other devices on your network reach it:
 
@@ -66,6 +68,33 @@ bun run start:lan
 
 That serves the app on port 3000 (set `PORT` to change it). Everything is stored in
 `data/`: the database and the pictures in the gallery. Back up that folder.
+
+### At the table
+
+Three things are for running the session, not for building the world. All three are the
+GM's.
+
+- **The party.** The banner button in the bar under a world map, then a click on the map,
+  plants the party's banner there. From then on, drag the banner to move it: everyone
+  sees it glide to where it went. A campaign has one party, on one map. Every map on the
+  way down to that one shows the banner beside the name of the region to go through, so
+  "where are we?" has an answer from anywhere. The party stands where the players are:
+  it can't be put on a map behind a hidden region, and a region can't be hidden while
+  the party is inside. On a battle map, tokens stand for it.
+- **Bring everyone here.** The button with four arrows, in the bar under a world map and
+  among the tools of a battle map. Every other browser in the campaign steps to the map
+  you are on and is shown the part of it you are looking at, zoomed so all of what you
+  see fits on their screen. Players are not brought onto a map behind a hidden region:
+  you are told so, and only your own other windows follow.
+- **The table display.** **Display**, at the top, opens the map you are on in a window
+  of its own, to drag onto a TV or a second screen and make full screen (`F11`). It is
+  the players' view and nothing around it: no bars, no tools, and nothing a player
+  would not be sent, even though it is your login that opened it. It can be panned and
+  zoomed, and regions stepped into, but nothing on it can be changed. It follows
+  **Bring everyone here**, which is how you turn the page for the table. It asks the
+  screen to stay awake, which browsers allow on the machine the app runs on and over
+  https. Any map's address with `?display` on the end is a display, so a player's tablet
+  in the middle of the table can be one too.
 
 ### The gallery
 
@@ -129,8 +158,8 @@ them. It has two palettes of its own, and each folds away with the arrow at its 
   the gallery straight from here.
 - **The tools**, in the upper right corner: select and move, select several, measure,
   draw, write text. Each has a key: `Q`, `W`, `E`, `R` and `T`, in that order. The GM's
-  also has the map image, the name and the grid. A tool stays in hand until you click it
-  again, take another or press `Esc`.
+  also has the map image, the name, the grid, the fog of war and **Bring everyone
+  here**. A tool stays in hand until you click it again, take another or press `Esc`.
 
 What is on a battle map:
 
@@ -165,6 +194,13 @@ What is on a battle map:
   drawing and text it touches is selected. `Shift`-click adds one or takes one out.
   Drag any of them and the rest come along, and the buttons act on all of them at once.
   `Delete` takes off the map what is yours to take off, and one `Ctrl+Z` brings it all back.
+- **Fog of war.** The cloud among the GM's tools brings out three more beside it. The
+  cloud there covers the whole map, or once there is fog, lifts all of it. With the eye
+  in hand, drag a box over what the players may see; with the crossed-out eye, drag one
+  over what to cover again. A box grows to the grid cells it touches, and a click is one
+  cell. Hold `Alt` for the box exactly as dragged. The GM sees through the fog, dimly.
+  To the players it is solid, and what stands under it is not sent to them at all: see
+  [Who can do what](#who-can-do-what). `Ctrl+Z` takes back each change to the fog.
 - **A ruler.** Dragging a token shows how many feet it has moved. **Measure a distance**
   measures between any two spots, and the table sees your ruler while you do. Distances
   are in feet, at the scale the map was set up with, and a diagonal step counts as one
@@ -191,6 +227,7 @@ always a world map.
 | Double-click a region | Step into its map |
 | Click a region, as the GM | Open its menu: enter, hide or reveal, rename, delete |
 | Double-click a bare spot | Start a note there, on a world map |
+| Drag the party's banner, as the GM | Move the party across the map it is on |
 | Drag a token | Move it, if it isn't locked. It snaps to the grid, unless `Alt` is held |
 | Drag a handle of a selected token | Turn it, 15 degrees at a time, or resize it, half a cell at a time |
 | `Q` `W` `E` `R` `T` | On a battle map: select and move, select several, measure, draw, write text |
@@ -218,7 +255,10 @@ tokens, and the tools are in the corner.
 | Maps, regions | create, edit, hide, reveal, delete | read (never the hidden ones) |
 | The gallery | add, rename, reveal, hide, take out, lay an image under a map | look through what the GM has revealed, pick one of those for a token |
 | Battle maps and grids | make one behind a new region, set up the grid | read |
-| Tokens | create, give any picture, hide, reveal, delete | create, give a revealed picture |
+| The party | put on a world map, move | see where it is |
+| Fog of war, on battle maps | cover, clear, lift, see through | see what has been cleared |
+| Bring everyone here | call everyone to a map and a view of it | follow |
+| Tokens | create anywhere, give any picture, hide, reveal, delete | create where there is no fog, give a revealed picture |
 | Any token they can see | move, resize, turn, recolour, outline, label, lock, unlock, duplicate | move, resize, turn, recolour, outline, label, lock, unlock, duplicate |
 | Drawings and text, on battle maps | create, move, change, rub out, anyone's | create, and move, change, rub out their own |
 | Undo and redo | their own changes | their own changes to table notes, tokens and drawings |
@@ -231,6 +271,13 @@ put a token on the map, or duplicated one, can take that back with `Ctrl+Z`.
 Hidden world markers are filtered on the server. They are not in the page a player loads,
 not in the events their browser receives, and out of reach of a player's undo. Hidden
 tokens are filtered the same way, and the GM's browser doesn't show one being dragged.
+
+A token under the fog of war is filtered the same way again. To a player it is not on
+the map: not in the page, not in the events, and not there to act on by its id. Moving
+out of the fog looks to them like a token being added, and going under like one being
+taken away. When the fog itself moves, they are sent the tokens they may see now. A
+player can't put a token down under the fog, or move one there: it would be lost to
+them. A table display is sent what a player is, whoever opened it.
 
 A hidden region works the same way, and takes its map with it: players can't open the map
 behind it or any map further inside, can't load its image, and hear nothing of what happens
@@ -246,6 +293,8 @@ src/lib/server/     database, sessions, and the modules that matter most:
   world.ts            every change: validate, check permission, write, log an event
   gallery.ts          the campaign's pictures, and who may load which
   visibility.ts       the only path from the event log to a client, filtered by role
+  db.ts, drivers/     where the database is kept: one driver per kind of place
+  storage.ts          where the pictures are kept, behind one small interface
 drizzle/            SQL migrations generated from schema.ts
 src/routes/         the SvelteKit app: pages, plus HTTP endpoints for the gallery, its
                     pictures and a command fallback
@@ -285,6 +334,12 @@ scripts/            run both servers, seed a demo, end-to-end check
 - **A drawn line is thinned before it is sent.** The browser keeps the points that give
   the line its shape, to within a pixel on screen, and the server stores at most 800 of
   them. A line appears for the table when it is finished, not while it is being drawn.
+- **Bringing everyone here goes through the app.** It changes nothing in the world, so
+  nothing is stored. But who may follow depends on what is hidden, and only the app
+  knows that: it tells the WebSocket server which roles to pass the call on to.
+- **A display is a role, not a login.** A window opened with `?display` loads its pages
+  as a player would, and its socket is put with the players', so nothing hidden is ever
+  on its way to that screen. It is left out of who is at the table, and has no pointer.
 - **One login.** When a browser connects, the WebSocket server passes its session cookie
   to the app, which says who that is. Commands are forwarded with the same cookie, so the
   app checks the login on every one.
@@ -304,6 +359,36 @@ bun run db:generate
 That writes a new SQL file into `drizzle/`. Commit it with the schema change. The app
 applies any migrations it hasn't seen yet when it starts, so there is nothing else to run.
 
+### Keeping the data somewhere else
+
+Out of the box everything is in `data/`: one SQLite file and three folders of pictures.
+Both are behind a seam, so that either can move without the rest of the app knowing.
+
+**The pictures.** Everything that reads or writes one goes through the `Storage`
+interface in [src/lib/server/storage.ts](src/lib/server/storage.ts): `put`, `get`, `has`
+and `remove`, by keys such as `uploads/abc-def.png` and `tiles/abc-def/preview.webp`.
+`STORAGE_URL` picks the storage by its scheme. `file:` is a folder on this machine, and
+what you get without setting anything. `memory:` keeps nothing past a restart, and is
+there for tests. To add another, such as an S3 bucket, write the four methods and add
+it to `KINDS` at the bottom of that file. A storage that is not on this machine's disk
+leaves out `pathOf`, and the tiles of a big map are then cut in a scratch folder and
+sent over piece by piece. The tests run the whole of that path against `memory:`.
+
+**The database.** [src/lib/server/db.ts](src/lib/server/db.ts) opens it through a driver,
+picked by the scheme of `DATABASE_URL`. The one driver there is,
+[drivers/bun-sqlite.ts](src/lib/server/drivers/bun-sqlite.ts), answers to `file:` and is a
+SQLite file opened with `bun:sqlite`. A driver is an object with the schemes it answers to
+and an `open` that returns a Drizzle database with the migrations applied: add it to
+`DRIVERS` in `db.ts`.
+
+One thing a new driver has to match: every query in the app is synchronous, and a
+transaction is a plain function. That fits any SQLite that Drizzle drives the same way,
+on this machine or embedded in a host. A database reached over the network, such as
+Turso or D1, answers with promises. Moving to one of those means first putting `await`
+in front of the queries in `world.ts`, `queries.ts`, `gallery.ts`, `campaigns.ts` and
+`auth.ts`, and making their callers wait. The seam is where that driver would plug in. It
+does not do that work.
+
 ## Configuration
 
 All optional. Copy [.env.example](.env.example) to `.env` to change a default.
@@ -311,6 +396,8 @@ All optional. Copy [.env.example](.env.example) to `.env` to change a default.
 | Variable | Default | |
 |---|---|---|
 | `DATA_DIR` | `data` | database and uploaded images |
+| `DATABASE_URL` | `file:` the database in `DATA_DIR` | where the database is, for another file or another driver |
+| `STORAGE_URL` | `file:` and `DATA_DIR` | where the pictures are kept, for another folder or another storage |
 | `PORT` | `3000` | app port in production |
 | `WS_PORT` | `3001` | WebSocket server port |
 | `APP_URL` | set by `bun run dev` / `start` | where the WebSocket server forwards requests to the app |
@@ -325,7 +412,8 @@ bun run test
 ```
 
 Unit tests for the rules: permissions, hidden markers and regions, battle maps, tokens
-and drawings, the grid's arithmetic, undo and restore, campaign isolation.
+and drawings, the party, the fog of war and what it keeps from players, the grid's
+arithmetic, undo and restore, campaign isolation, and the storage, on disk and off.
 
 ```bash
 bun run test:e2e
@@ -361,7 +449,20 @@ Type-checks everything.
   After that the region has to be deleted from the bar, which asks first.
 - Everyone's pointer is shown, the GM's included, also while it hovers over something
   hidden from the players.
-- A battle map has no fog of war and no initiative order.
+- A battle map has no initiative order.
+- The fog of war is cleared and covered by hand, in boxes. It doesn't follow the tokens,
+  and knows nothing of walls or of what a token could see.
+- The fog keeps tokens from the players, not the picture of the map: their browser
+  still loads the whole image, and draws the fog over it. Drawings and text under the
+  fog are sent to players as well, and covered the same way.
+- A token is under the fog or not by its middle. A big one at the edge of the clear
+  shows with part of it covered.
+- There is one party per campaign, and it is the GM's to move. It can't be taken off
+  the maps again, except by undoing the click that put it there.
+- **Bring everyone here** is a call, not a leash: once there, everyone is free to pan
+  away or step elsewhere. Someone who connects after the call isn't brought along.
+- A table display shows the map as a player sees it, and no more: it has no view of its
+  own to tidy for a far-away screen, such as bigger names or hidden pointers.
 - The pen draws freehand lines in one thickness, and text is one size: no shapes, no
   eraser that rubs out part of a line. A drawing can't be hidden from the players.
 - A token's label is its name: it can be changed by anyone, but not left empty.
