@@ -1,0 +1,165 @@
+:root {
+	--bg: #10131a;
+	--panel: #1a1f29;
+	--panel-2: #232a37;
+	--line: #323b4b;
+	--text: #ece7db;
+	--muted: #99a2b3;
+	--accent: #e0a526;
+	--accent-ink: #1c1503;
+	--danger: #e5645b;
+	--ok: #45b584;
+	--radius: 10px;
+	--shadow: 0 10px 30px rgb(0 0 0 / 0.45);
+	--serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+	--sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+	color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	height: 100%;
+	margin: 0;
+}
+
+body {
+	background: var(--bg);
+	color: var(--text);
+	font-family: var(--sans);
+	font-size: 15px;
+	line-height: 1.45;
+	-webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+	font-family: var(--serif);
+	font-weight: 600;
+	line-height: 1.2;
+	margin: 0;
+}
+
+p {
+	margin: 0;
+}
+
+a {
+	color: var(--accent);
+}
+
+button,
+input,
+select,
+textarea {
+	font: inherit;
+	color: inherit;
+}
+
+.btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.45em;
+	min-height: 34px;
+	padding: 0 0.85em;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: var(--panel-2);
+	color: var(--text);
+	text-decoration: none;
+	white-space: nowrap;
+	cursor: pointer;
+	transition:
+		background 0.12s,
+		border-color 0.12s;
+}
+
+.btn:hover {
+	background: #2c3545;
+	border-color: #465166;
+}
+
+.btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.btn.primary {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--accent-ink);
+	font-weight: 600;
+}
+
+.btn.primary:hover {
+	background: #ecb53e;
+}
+
+.btn.danger {
+	color: var(--danger);
+}
+
+.btn.ghost {
+	background: transparent;
+	border-color: transparent;
+}
+
+.btn.ghost:hover {
+	background: var(--panel-2);
+}
+
+.btn.active {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+.btn.small {
+	min-height: 28px;
+	padding: 0 0.6em;
+	font-size: 13px;
+}
+
+.field {
+	display: grid;
+	gap: 0.3em;
+}
+
+.field > span {
+	font-size: 13px;
+	color: var(--muted);
+}
+
+.input {
+	width: 100%;
+	min-height: 36px;
+	padding: 0.4em 0.65em;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: #12161e;
+}
+
+textarea.input {
+	resize: vertical;
+	min-height: 96px;
+}
+
+:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+.error-text {
+	color: var(--danger);
+	font-size: 14px;
+}
+
+.muted {
+	color: var(--muted);
+}
