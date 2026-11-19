@@ -10,9 +10,10 @@
 	// between, and lines, words and spell templates the table draws on it.
 	// It holds no markers and no regions.
 	//
-	// Nobody's mouse is shown to anyone else. What the table sees of the
-	// others is what they have in hand, a token or a ruler, and the spots
-	// they point out with a ping.
+	// Nobody's mouse is shown to anyone else as it wanders. What the table
+	// sees of the others is what they have in hand, a token or a ruler, the
+	// spots they point out with a ping, and where they point for as long as
+	// they hold the button down with the pointing tool.
 
 	import { untrack } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
@@ -130,10 +131,12 @@
 		 * each drags a box that the fog of war is cleared from, or put back
 		 * over. So is `align`, which drags a box over the squares of the map's
 		 * own picture to line the grid up by. `measure` drags a ruler across
-		 * either kind of map.
+		 * either kind of map. With `point` in hand, on either, the table is
+		 * shown where the pointer is for as long as its button is held down.
 		 */
 		tool:
 			| 'pan'
+			| 'point'
 			| 'align'
 			| 'place'
 			| 'draw'
@@ -321,6 +324,11 @@
 	let veil = $state.raw<{ from: Point; to: Point; free: boolean } | null>(null);
 	/** The box the GM is dragging over the squares of the map's picture: one corner, and the other. */
 	let aligning = $state.raw<[Point, Point] | null>(null);
+	/**
+	 * Where this person is pointing: where their pointer is on the map, for
+	 * as long as they hold it down with the pointing tool in hand.
+	 */
+	let pointing = $state.raw<Point | null>(null);
 	/**
 	 * Where the GM is dragging the party to. Once let go it waits here, no
 	 * longer `held`, until the server has moved it for everyone.
@@ -808,6 +816,7 @@
 		if (tool !== 'template') casting = null;
 		if (tool !== 'reveal' && tool !== 'cover') veil = null;
 		if (tool !== 'align') aligning = null;
+		if (tool !== 'point') pointing = null;
 	});
 
 	// --------------------------------------------------- drawing and writing
@@ -1147,6 +1156,7 @@
 				marquee = null;
 				veil = null;
 				aligning = null;
+				pointing = null;
 				leading = null;
 				writing = null;
 			}
@@ -1310,6 +1320,8 @@
 		| { type: 'veil'; how: 'reveal' | 'cover' }
 		/** A box over the squares of the map's picture, to line the grid up by. */
 		| { type: 'align' }
+		/** The pointer held down with the pointing tool: the table is shown where it is. */
+		| { type: 'point'; sx: number; sy: number; at: number; moved: boolean }
 		/** The party, in the GM's hand. */
 		| { type: 'lead'; sx: number; sy: number; moved: boolean; target: Element };
 
@@ -1383,13 +1395,14 @@
 
 	/**
 	 * Tells the table what this person has in hand: a token being dragged,
-	 * a distance being measured. With neither there is nothing to tell, and
-	 * where the mouse is stays here.
+	 * a distance being measured, a spot being pointed at. With none of them
+	 * there is nothing to tell, and where the mouse is stays here.
 	 */
 	function reportHand() {
 		if (!viewport || !ready) return onhand(null);
 		const held = carry && inHandAt(carry.lead);
 		const holding: Holding = {};
+		if (pointing) holding.point = pointing;
 		if (carry && held) {
 			// The table is shown the token under the pointer in this hand. The
 			// rest of a selection arrives when it is put down. A hidden token is
@@ -1404,14 +1417,47 @@
 		} else if (measure) {
 			holding.ruler = measure;
 		}
-		onhand(holding.drag || holding.ruler ? holding : null);
+		onhand(holding.drag || holding.ruler || holding.point ? holding : null);
 	}
 
-	// Whenever a token is picked up, carried or put down, or the ruler moves.
+	// Whenever a token is picked up, carried or put down, the ruler moves,
+	// or the pointer does while it is pointing.
 	$effect(() => {
-		void [map.id, ready, carry, measure];
+		void [map.id, ready, carry, measure, pointing];
 		untrack(reportHand);
 	});
+
+	/**
+	 * How long a press with the pointing tool can last and still be a click:
+	 * one that went nowhere and was let go at once. Nobody would have seen
+	 * that pointer, so it leaves a ping behind instead.
+	 */
+	const POINT_CLICK = 250;
+
+	/** Every spot being pointed at on this map right now: this person's, then everyone else's. */
+	const pointed = $derived.by(() => {
+		const shown: { key: string; at: Point; tint: string; name: string | null }[] = [];
+		// This person's own is drawn where their pointer is, in place of the cursor.
+		if (pointing) shown.push({ key: 'mine', at: pointing, tint: tintOf({ role, userId }), name: null });
+		for (const other of hands) {
+			if (!other.point) continue;
+			shown.push({ key: other.id, at: clamped(other.point), tint: tintOf(other), name: other.name });
+		}
+		return shown;
+	});
+
+	/**
+	 * The cursor of the pointing tool: a dot in a ring, so the spot it is on
+	 * shows through. While the button is down, the dot the table sees is
+	 * drawn there in its place.
+	 */
+	const POINT_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
+		'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">' +
+			'<circle cx="12" cy="12" r="8" fill="none" stroke="#12151c" stroke-width="3.5"/>' +
+			'<circle cx="12" cy="12" r="8" fill="none" stroke="#fff8e4" stroke-width="1.5"/>' +
+			'<circle cx="12" cy="12" r="3" fill="#fff8e4" stroke="#12151c" stroke-width="1.5"/>' +
+			'</svg>'
+	)}") 12 12, crosshair`;
 
 	$effect(() => () => onhand(null));
 
@@ -1481,6 +1527,7 @@
 			marquee = null;
 			veil = null;
 			aligning = null;
+			pointing = null;
 			if (leading?.held) leading = null;
 			const mid = midpoint();
 			gesture = {
@@ -1593,6 +1640,15 @@
 			const at = clamped(toMap(e.clientX, e.clientY));
 			aligning = [at, at];
 			gesture = { type: 'align' };
+			capture(e.pointerId);
+			return;
+		}
+
+		// With the pointing tool, a press is the start of pointing: the table
+		// is shown where the pointer is until it is let go.
+		if (tool === 'point' && !passive) {
+			pointing = clamped(toMap(e.clientX, e.clientY));
+			gesture = { type: 'point', sx: e.clientX, sy: e.clientY, at: performance.now(), moved: false };
 			capture(e.pointerId);
 			return;
 		}
@@ -1793,6 +1849,11 @@
 			veil = { from: veil.from, to: toMap(e.clientX, e.clientY), free: e.altKey };
 		} else if (g?.type === 'align' && aligning) {
 			aligning = [aligning[0], clamped(toMap(e.clientX, e.clientY))];
+		} else if (g?.type === 'point') {
+			if (Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > (e.pointerType === 'mouse' ? 4 : 10)) {
+				g.moved = true;
+			}
+			pointing = clamped(toMap(e.clientX, e.clientY));
 		} else if (g?.type === 'lead') {
 			const far = Math.hypot(e.clientX - g.sx, e.clientY - g.sy);
 			if (!g.moved && far > (e.pointerType === 'mouse' ? 4 : 10)) {
@@ -1852,6 +1913,13 @@
 				// Fog that is off has nothing to clear, and comes back as it was.
 				if (fog !== map.fog) send([{ t: 'map.update', id: map.id, fog }]);
 			}
+		}
+		if (g?.type === 'point') {
+			pointing = null;
+			// Let go at once without having gone anywhere, it was a click: too
+			// short for anyone to have seen, so the spot is pinged instead.
+			const clicked = !g.moved && performance.now() - g.at < POINT_CLICK;
+			if (clicked && completed) pingAt(e.clientX, e.clientY);
 		}
 		if (g?.type === 'align') {
 			const box = alignBox;
@@ -2246,6 +2314,7 @@
 						: 'cursor-grab'
 		]}
 		data-tool={tool}
+		style:cursor={tool === 'point' && !passive ? (pointing ? 'none' : POINT_CURSOR) : undefined}
 		bind:this={surface}
 		role="application"
 		aria-label="Map of {map.name}. Arrow keys pan, plus and minus zoom, zero fits the map."
@@ -3110,6 +3179,41 @@
 				</div>
 			{/each}
 
+			<!-- Where someone is pointing, for as long as they hold the button
+			     down: a dot in their colour (--c) with a glow around it, and for
+			     everyone but themself, their name under it. The same size on
+			     screen at any zoom. Another person's glides from one report of
+			     it to the next; this person's own is under their pointer. -->
+			{#each pointed as pointer (pointer.key)}
+				<div
+					class={[
+						'pointer-events-none absolute top-0 left-0 z-3 size-0 scale-(--inv)',
+						pointer.name !== null &&
+							'transition-[translate] duration-75 ease-linear motion-reduce:transition-none'
+					]}
+					style:translate="{pointer.at[0] * W}px {pointer.at[1] * H}px"
+					style:--c={pointer.tint}
+					data-pointer={pointer.key}
+					role={pointer.name === null ? undefined : 'status'}
+					aria-label={pointer.name === null ? undefined : `${pointer.name} is pointing here`}
+				>
+					<span
+						class="absolute size-7 -translate-1/2 rounded-full bg-(--c)/35 shadow-[0_0_10px_2px_var(--c)]"
+					></span>
+					<span
+						class="absolute size-3 -translate-1/2 rounded-full border-[1.5px] border-[#12151c] bg-(--c)"
+					></span>
+					{#if pointer.name !== null}
+						<span
+							class={[
+								'absolute left-0 w-max -translate-x-1/2 truncate rounded-full bg-(--c) px-2 leading-[1.6] font-semibold text-[#12151c] shadow-[0_1px_3px_rgb(0_0_0/0.5)]',
+								passive ? 'top-5 max-w-[240px] text-base' : 'top-4 max-w-[150px] text-xs'
+							]}>{pointer.name}</span
+						>
+					{/if}
+				</div>
+			{/each}
+
 			<!-- How long each ruler is, written at the end it is being pulled to. -->
 			{#each rulers as ruler (ruler.key)}
 				{#if ruler.length && (ruler.from[0] !== ruler.to[0] || ruler.from[1] !== ruler.to[1])}
@@ -3304,6 +3408,12 @@
 			<p class={hint}>
 				Drag a box over what the fog should cover.
 				<span class={keys}>Alt leaves the grid · Esc puts it away</span>
+			</p>
+		{:else if tool === 'point'}
+			<p class={hint}>
+				<span class="touch:hidden">Hold the button down: the table sees where you point.</span>
+				<span class="hidden touch:inline">Press and move a finger: the table sees where you point.</span>
+				<span class={keys}>A click leaves a ping · Esc puts it away</span>
 			</p>
 		{:else if tool === 'align'}
 			<p class={hint}>

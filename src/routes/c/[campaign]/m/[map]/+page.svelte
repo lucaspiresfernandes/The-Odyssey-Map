@@ -118,9 +118,18 @@
 	 * `sketch` is the pen, which draws a line freehand or one of the shapes:
 	 * see `pen`. `reveal` and `cover` are the GM's two ways with the fog
 	 * of war, and `align` is theirs too: it lines the grid up with the squares
-	 * of the map's own picture.
+	 * of the map's own picture. With `point` in hand, the table is shown
+	 * where the pointer is for as long as its button is held down.
 	 */
-	type BattleTool = 'pan' | 'select' | 'measure' | 'sketch' | 'reveal' | 'cover' | 'align';
+	type BattleTool =
+		| 'pan'
+		| 'select'
+		| 'measure'
+		| 'sketch'
+		| 'point'
+		| 'reveal'
+		| 'cover'
+		| 'align';
 	/** What the pen draws: a line freehand, or a shape dragged out. */
 	type Pen = 'line' | TemplateKind | 'text';
 	type Prompt =
@@ -141,6 +150,8 @@
 	let drawing = $state(false);
 	/** The ruler is out on a world map. */
 	let measuring = $state(false);
+	/** The pointing tool is in hand on a world map: held down, the pointer shows to the table. */
+	let pointing = $state(false);
 	let battleTool = $state<BattleTool>('pan');
 	/** The colour the pen draws in, text is written in and templates are laid down in. */
 	let ink = $state<string>(INK_COLORS[0]);
@@ -221,7 +232,9 @@
 					? 'draw'
 					: measuring
 						? 'measure'
-						: 'pan'
+						: pointing
+							? 'point'
+							: 'pan'
 	);
 	/** The GM has one of the two fog tools in hand. */
 	const fogging = $derived(battleTool === 'reveal' || battleTool === 'cover');
@@ -294,6 +307,7 @@
 			placing = null;
 			drawing = false;
 			measuring = false;
+			pointing = false;
 			battleTool = 'pan';
 			form = null;
 			tokenForm = null;
@@ -384,6 +398,7 @@
 	function startPlacing(next: Placing) {
 		drawing = false;
 		measuring = false;
+		pointing = false;
 		selectedMarkerId = null;
 		selectedRegionId = null;
 		placing = next;
@@ -479,9 +494,25 @@
 		}
 		placing = null;
 		drawing = false;
+		pointing = false;
 		selectedMarkerId = null;
 		selectedRegionId = null;
 		measuring = true;
+	}
+
+	/**
+	 * Takes up the pointing tool on a world map: from then on the table is
+	 * shown where the pointer is whenever its button is held down, until the
+	 * tool is put away again.
+	 */
+	function startPointing() {
+		placing = null;
+		drawing = false;
+		measuring = false;
+		selectedMarkerId = null;
+		selectedRegionId = null;
+		selectedParty = false;
+		pointing = true;
 	}
 
 	// ------------------------------------------------ a picture for the table
@@ -736,7 +767,8 @@
 		{ tool: 'pan', icon: 'pointer', label: 'Select and move', key: 'q' },
 		{ tool: 'select', icon: 'marquee', label: 'Select multiple', key: 'w' },
 		{ tool: 'measure', icon: 'ruler', label: 'Measure a distance', key: 'e' },
-		{ tool: 'sketch', icon: 'draw', label: 'Draw', key: 'r' }
+		{ tool: 'sketch', icon: 'draw', label: 'Draw', key: 'r' },
+		{ tool: 'point', icon: 'ping', label: 'Point at the map', key: 't' }
 	];
 
 	/**
@@ -898,7 +930,7 @@
 		}
 
 		if (e.key !== 'Escape') return;
-		if (placing || drawing || measuring || battleTool !== 'pan') {
+		if (placing || drawing || measuring || pointing || battleTool !== 'pan') {
 			putAway();
 		} else if (filterOpen || sharingRegion) {
 			filterOpen = false;
@@ -916,6 +948,7 @@
 		placing = null;
 		drawing = false;
 		measuring = false;
+		pointing = false;
 		battleTool = 'pan';
 		alignBox = null;
 	}
@@ -1493,7 +1526,9 @@
 					aria-label="Map tools"
 				>
 					{#if tool !== 'pan'}
-						<button class="btn" onclick={putAway}>{measuring ? 'Put the ruler away' : 'Cancel'}</button>
+						<button class="btn" onclick={putAway}>
+							{measuring ? 'Put the ruler away' : pointing ? 'Done pointing' : 'Cancel'}
+						</button>
 						{#if measuring && isGm}
 							<!-- What the ruler goes by, and the way to change it. -->
 							<button class="btn" onclick={() => (scaling = true)}>
@@ -1536,6 +1571,14 @@
 									onclick={startMeasuring}
 								/>
 							{/if}
+							<!-- Everyone's, like the ping itself: with it in hand, the
+							     table sees where the pointer is while its button is down. -->
+							<ToolButton
+								icon="ping"
+								label="Point at the map"
+								hint="Hold the button down: the table sees where you point"
+								onclick={startPointing}
+							/>
 							{#if isGm}
 								<span class="w-px self-stretch bg-line"></span>
 								<ToolButton
@@ -1549,6 +1592,7 @@
 									onclick={() => {
 										selectedMarkerId = null;
 										selectedRegionId = null;
+										pointing = false;
 										drawing = true;
 									}}
 								/>

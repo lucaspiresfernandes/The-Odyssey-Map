@@ -52,6 +52,8 @@
 		next: 'M5 4l10 8-10 8Z M19 5v14',
 		// A token with a pip on its rim.
 		mark: 'M4 13a7.5 7.5 0 1 0 15 0a7.5 7.5 0 1 0-15 0 M15 6.5a3 3 0 1 0 6 0a3 3 0 1 0-6 0',
+		// Rings spreading from a spot: pointing it out to the table.
+		ping: 'M11.5 12a.5.5 0 1 0 1 0a.5.5 0 1 0-1 0 M8 12a4 4 0 1 0 8 0a4 4 0 1 0-8 0 M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0',
 		// A number sign: what a token counts.
 		count: 'M4 9h16 M4 15h16 M10 3 8 21 M16 3l-2 18',
 		// Two heads: the players something is a secret with.

@@ -96,9 +96,19 @@ are everyone's. The rest are the GM's.
 
 - **A ping.** Hold `Alt` and click a spot of any map, or on a touch screen rest a finger
   on it for a moment: rings spread from it in your colour, with your name under it, for
-  everyone looking at that map, and it is gone again a couple of seconds later. That is
-  all anyone is shown of where you are pointing. Nobody's mouse is on anyone else's
-  screen: not the players', and not the GM's while it wanders over what is hidden.
+  everyone looking at that map, and it is gone again a couple of seconds later.
+- **Pointing.** The rings in the bar under a world map, and among the tools of a battle
+  map, where the key is `T`. With that tool in hand the cursor is a dot in a ring, and
+  for as long as you hold the button down, everyone looking at that map sees a dot in
+  your colour where your pointer is, with your name under it, following it as it moves:
+  the road to take, the wall to climb, "this one, not that one". Let go and it is gone.
+  A press let go at once leaves a ping. On a touch screen, press and move a finger. The
+  tool stays in hand until you put it away with `Esc` or its button, and while it is,
+  dragging points and doesn't move the map: the wheel and a pinch still do.
+
+  That, and a ping, are all anyone is shown of where you are pointing. Nobody's mouse
+  is on anyone else's screen otherwise: not the players', and not the GM's while it
+  wanders over what is hidden.
 - **The finder.** `Ctrl+K`, or the magnifier at the top, and type a few letters of a
   place or a marker. It searches every map of the campaign and every marker and note on
   them, and `Enter` takes you there, with a marker's card open. Nothing of it is on
@@ -294,7 +304,7 @@ them. It has two palettes of its own, and each folds away with the arrow at its 
   the view. Drag one and it goes down where you let go. The GM's **+** adds pictures to
   the gallery straight from here.
 - **The tools**, in the upper right corner: select and move, select several, measure,
-  draw. Each has a key: `Q`, `W`, `E` and `R`, in that order. The pen draws lines,
+  draw, point. Each has a key: `Q`, `W`, `E`, `R` and `T`, in that order. The pen draws lines,
   shapes and text: which of them is picked beside it. The GM's also has the map image, the name, the grid, the fog
   of war and **Bring everyone here**. A tool stays in hand until you click it again,
   take another or press `Esc`.
@@ -419,8 +429,9 @@ always a world map.
 | Drag a token | Move it, if it isn't locked. It snaps to the grid, unless `Alt` is held |
 | Drag a handle of a selected token | Turn it, 15 degrees at a time, or resize it, half a cell at a time |
 | `Alt`-click, or a finger held on a spot | Ping: point the spot out to everyone looking at that map |
+| The button held down, with the rings in hand | Point: everyone looking at that map sees where your pointer is until you let go |
 | `Ctrl+K` | Find a map or a marker by name, and go there |
-| `Q` `W` `E` `R` | On a battle map: select and move, select several, measure, draw lines, shapes and text |
+| `Q` `W` `E` `R` `T` | On a battle map: select and move, select several, measure, draw lines, shapes and text, point |
 | `N` | On a battle map: end the turn and go on to the next. The GM always can, a player for a token they can see |
 | Click a token, a drawing or a text | Select it: its buttons float under it. `Shift`-click selects several |
 | Double-click a text | Reword it, if it's yours |
@@ -431,8 +442,9 @@ always a world map.
 | Arrow keys, `+` `-` `0` | Pan, zoom and fit from the keyboard |
 | `Ctrl+Z`, `Ctrl+Shift+Z` | Undo and redo what you did on the map you're looking at |
 
-Nobody's mouse shows on anyone else's map. What the table sees of the others is what
-they have in hand, a token being dragged or a ruler, and the spots they ping.
+Nobody's mouse shows on anyone else's map as it wanders. What the table sees of the
+others is what they have in hand, a token being dragged or a ruler, the spots they
+ping, and where they point while they hold the button down with the pointing tool.
 
 It works on a phone too: a tap is a click and a double-tap a double-click, and the tools
 sit in a bar along the bottom of the screen. On a battle map that bar is the dock of
@@ -560,7 +572,9 @@ scripts/            run both servers, seed a demo, back up, end-to-end check
   server alone. It isn't a change to the world, so it is never stored. Where a mouse is
   otherwise is not sent to anyone.
 - **So does a token in someone's hand.** While a token is dragged, where it is goes the
-  same way, and so does a ruler. Nothing is sent while a hand is empty. Only letting go
+  same way, and so does a ruler, and so does the spot someone is pointing at with the
+  pointing tool, for as long as their button is down: about twenty times a second, and
+  not at all once it is let go. Nothing is sent while a hand is empty. Only letting go
   is a change: one `token.update` command, checked, stored and undoable like any other. A browser shows a
   token in someone's hand only if that person could really move it. When a whole
   selection is dragged, the table sees the token under the pointer move, and the rest

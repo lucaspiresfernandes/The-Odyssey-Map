@@ -779,11 +779,16 @@ export interface Presence {
 
 /**
  * What someone has in hand on a map: a token they are dragging, a distance
- * they are measuring. Where their mouse is otherwise is nobody's business,
- * and is not sent.
+ * they are measuring, a spot they are pointing at. Where their mouse is
+ * otherwise is nobody's business, and is not sent.
  */
 export interface HandSpot {
 	mapId: string;
+	/**
+	 * The spot they are pointing at: where their pointer is, for as long as
+	 * they hold it down with the pointing tool in hand.
+	 */
+	point?: Point;
 	/**
 	 * A token this person has in hand, and where they are holding it. It
 	 * only moves for good once they let go: that is a `token.update`.

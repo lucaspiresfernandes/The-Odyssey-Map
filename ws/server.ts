@@ -16,8 +16,9 @@
 //     So is the picture the GM is holding up, and who for, which the app
 //     also tells of whenever a browser connects.
 //   - What a browser has in hand goes straight from one browser to the
-//     others: the token it is dragging, the distance it is measuring. So
-//     does a ping, which points a spot out to the table. None of that is a
+//     others: the token it is dragging, the distance it is measuring, the
+//     spot it is pointing at while its button is held down. So does a ping,
+//     which points a spot out to the table for a moment. None of that is a
 //     change to the world, so the app never hears of it, and nothing about
 //     it is kept once the browser disconnects. A token only moves for good
 //     when it is let go: that is a command. Where a mouse is otherwise is
@@ -323,12 +324,17 @@ function hold(ws: Socket, at: unknown) {
 		return;
 	}
 
-	// A token being dragged, a distance being measured. Whether that token
-	// is theirs to move is not known here. The browsers that are shown this
-	// know the token, and decide.
-	const { drag, ruler } = spot;
+	// A token being dragged, a distance being measured, a spot being pointed
+	// at. Whether that token is theirs to move is not known here. The
+	// browsers that are shown this know the token, and decide.
+	const { drag, ruler, point } = spot;
 	// An empty hand is said with null.
-	if (drag === undefined && ruler === undefined) return;
+	if (drag === undefined && ruler === undefined && point === undefined) return;
+	if (point !== undefined) {
+		if (!Array.isArray(point) || point.length !== 2 || !nearMap(point[0]) || !nearMap(point[1])) {
+			return;
+		}
+	}
 	if (drag !== undefined) {
 		if (typeof drag !== 'object' || drag === null) return;
 		if (typeof drag.id !== 'string' || !ID_SHAPE.test(drag.id)) return;
@@ -351,6 +357,7 @@ function hold(ws: Socket, at: unknown) {
 	const hand: Hand = { id, userId: user.id, name: user.name, role, mapId: spot.mapId };
 	if (drag) hand.drag = { id: drag.id, x: drag.x, y: drag.y };
 	if (ruler) hand.ruler = [[ruler[0][0], ruler[0][1]], [ruler[1][0], ruler[1][1]]];
+	if (point) hand.point = [point[0], point[1]];
 	ws.data.hand = hand;
 	relay(ws, { t: 'hand', hand });
 }

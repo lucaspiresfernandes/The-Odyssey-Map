@@ -655,6 +655,28 @@ async function run() {
 	await pause(200);
 	check('a malformed drag or ruler goes nowhere', handsSeen(gmSocket).length === shownSoFar, `${handsSeen(gmSocket).length - shownSoFar} delivered`);
 
+	// Pointing: where a pointer is, for as long as its button is held down.
+	playerSocket.ws.send(JSON.stringify({ t: 'hand', at: { mapId: bridgeId, point: [0.62, 0.38] } }));
+	await pause(300);
+	const pointed = handsSeen(gmSocket).at(-1)?.hand;
+	check(
+		'a spot someone is pointing at is shown to the table, under their name',
+		pointed?.name === 'Tester' && pointed.mapId === bridgeId && pointed.point?.[0] === 0.62 && pointed.point[1] === 0.38 && !pointed.drag
+	);
+	const pointedSoFar = handsSeen(gmSocket).length;
+	for (const point of [[0.5], 'there', [0.5, 1e9], [0.5, '0.5']]) {
+		playerSocket.ws.send(JSON.stringify({ t: 'hand', at: { mapId: bridgeId, point } }));
+		await pause(40);
+	}
+	await pause(200);
+	check('a malformed one goes nowhere', handsSeen(gmSocket).length === pointedSoFar);
+	playerSocket.ws.send(JSON.stringify({ t: 'hand', at: null }));
+	await pause(300);
+	check(
+		'let go, it is gone for everyone',
+		gmSocket.messages.filter((m) => m.t === 'hand.left').at(-1)?.id === pointed?.id
+	);
+
 	// The party: the GM's to move, and news for the whole table.
 	const marched = await gm.command(campaign, { t: 'party.move', mapId, x: 0.4, y: 0.6 });
 	await pause(300);
