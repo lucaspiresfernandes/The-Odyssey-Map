@@ -56,6 +56,12 @@
 		ping: 'M11.5 12a.5.5 0 1 0 1 0a.5.5 0 1 0-1 0 M8 12a4 4 0 1 0 8 0a4 4 0 1 0-8 0 M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0',
 		// A number sign: what a token counts.
 		count: 'M4 9h16 M4 15h16 M10 3 8 21 M16 3l-2 18',
+		// Two tokens inside a ring: what a shape laid on the map catches.
+		inside:
+			'M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0 M7 10a2 2 0 1 0 4 0a2 2 0 1 0-4 0 M13 14.5a2 2 0 1 0 4 0a2 2 0 1 0-4 0',
+		// Three tokens close together: a group saved to put down again.
+		group:
+			'M3.5 8.5a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0-7 0 M13.5 8.5a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0-7 0 M8.5 17a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0-7 0',
 		// Two heads: the players something is a secret with.
 		people:
 			'M5 7a4 4 0 1 0 8 0a4 4 0 1 0-8 0 M2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1 M16 3.13a4 4 0 0 1 0 7.75 M22 21v-1a6 6 0 0 0-4-5.66',

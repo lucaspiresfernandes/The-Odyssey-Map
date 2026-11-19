@@ -42,6 +42,41 @@ function coneEnds(a: Point, b: Point): [Point, Point] {
 	];
 }
 
+/**
+ * Whether a spot lies inside a template, its edge included. It is how a
+ * template picks its targets: a token is caught when its middle is inside.
+ * `slack` lets a spot that far outside still count, for a middle that sits
+ * right on the line once the template is on the grid.
+ */
+export function templateHolds(kind: TemplateKind, a: Point, b: Point, at: Point, slack = 0): boolean {
+	if (kind === 'circle') {
+		return Math.hypot(at[0] - a[0], at[1] - a[1]) <= Math.hypot(b[0] - a[0], b[1] - a[1]) + slack;
+	}
+	if (kind === 'rect') {
+		const box = boxOf([a, b]);
+		return (
+			at[0] >= box.x0 - slack &&
+			at[0] <= box.x1 + slack &&
+			at[1] >= box.y0 - slack &&
+			at[1] <= box.y1 + slack
+		);
+	}
+	// A cone is a triangle: inside it is on the same side of all three edges,
+	// or as near as `slack` to one from outside.
+	const [left, right] = coneEnds(a, b);
+	const corners = [a, left, right];
+	const sides = corners.map((from, i) => {
+		const to = corners[(i + 1) % 3];
+		const long = Math.hypot(to[0] - from[0], to[1] - from[1]);
+		if (long === 0) return 0;
+		// How far the spot is to one side of the edge: the sign says which.
+		return ((to[0] - from[0]) * (at[1] - from[1]) - (to[1] - from[1]) * (at[0] - from[0])) / long;
+	});
+	// A cone with no length is a single spot.
+	if (sides.every((side) => side === 0)) return Math.hypot(at[0] - a[0], at[1] - a[1]) <= slack;
+	return sides.every((side) => side >= -slack) || sides.every((side) => side <= slack);
+}
+
 /** The box around a template. */
 export function templateBox(kind: TemplateKind, a: Point, b: Point): Box {
 	if (kind === 'rect') return boxOf([a, b]);

@@ -11,6 +11,7 @@ import {
 	canSeeRegion,
 	canSeeToken,
 	forEyes,
+	tokenForEyes,
 	roleOf,
 	type Who
 } from '../shared/rules';
@@ -55,7 +56,7 @@ export function tokensOn(db: Db, map: Pick<MapInfo, 'id' | 'fog'>, who: Who): To
 		.orderBy(tokens.createdAt)
 		.all()
 		.filter((token) => canSeeToken(who, token, map.fog))
-		.map((token) => forEyes(who, token));
+		.map((token) => tokenForEyes(who, token));
 }
 
 /**

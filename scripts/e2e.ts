@@ -970,6 +970,66 @@ async function run() {
 	check('and is not sent what the tokens rolled', turned?.event.patch.map.turns.rolls === undefined);
 	check('a token carries its number to everyone', fighter.body.events?.[0]?.patch.token.count === 12);
 
+	// A number the GM keeps: the token goes to the players without it, and
+	// what the GM does to it afterwards never leaves the app.
+	const heard = (id: string) =>
+		playerSocket.messages.filter((m) => m.t === 'event' && m.event.patch.t === 'token.upsert' && m.event.patch.token.id === id);
+	const brute = await gm.command(campaign, { t: 'token.create', mapId: bridgeId, name: 'Ogre', x: 0.6, y: 0.5, count: 40, countHidden: true });
+	const bruteId: string = brute.body.events?.[0]?.patch.token.id;
+	await pause(300);
+	check('the GM is sent a number they keep', brute.body.events?.[0]?.patch.token.count === 40 && brute.body.events?.[0]?.patch.token.countHidden === true);
+	check(
+		'a player is sent the token without it',
+		heard(bruteId).length === 1 && heard(bruteId)[0].event.patch.token.count === null && heard(bruteId)[0].event.patch.token.countHidden === false,
+		JSON.stringify(heard(bruteId))
+	);
+	await gm.command(campaign, { t: 'token.update', id: bruteId, changes: { count: 31 } });
+	await pause(300);
+	check('and hears nothing when it changes', heard(bruteId).length === 1 && !JSON.stringify(playerSocket.messages).includes('"count":31'));
+	const guessed = await player.command(campaign, { t: 'token.update', id: bruteId, changes: { count: 31 } });
+	check('nor can a player set it, right or wrong', guessed.status === 403 && (await player.command(campaign, { t: 'token.update', id: bruteId, changes: { count: 5 } })).status === 403);
+
+	// A group saved from tokens on the map, put down again hidden, and thrown away.
+	const groups = (who: Visitor, method = 'GET', body?: unknown) =>
+		who.request(`/c/${campaign}/groups`, {
+			method,
+			headers: body ? { 'content-type': 'application/json' } : {},
+			body: body ? JSON.stringify(body) : undefined
+		});
+	const savedGroup = await (await groups(gm, 'POST', { name: 'Bridge guard', tokens: [bruteId, fighterId] })).json();
+	const guard = savedGroup.items?.[0];
+	check(
+		'the GM saves tokens as a group, kept number and all',
+		savedGroup.ok && savedGroup.items.length === 1 && guard.name === 'Bridge guard' && guard.tokens.length === 2 && guard.tokens.some((t: any) => t.count === 31 && t.countHidden),
+		JSON.stringify(savedGroup)
+	);
+	check(
+		'saved groups are nothing a player sees, saves or throws away',
+		(await groups(player)).status === 403 &&
+			(await groups(player, 'POST', { name: 'Mine', tokens: [fighterId] })).status === 403 &&
+			(await groups(player, 'DELETE', { id: guard?.id })).status === 403
+	);
+	const heardBefore = playerSocket.messages.length;
+	const putDown = await gm.command(campaign, {
+		t: 'batch',
+		cmds: (guard?.tokens ?? []).map(({ dx, dy, ...token }: any) => ({
+			t: 'token.create',
+			mapId: bridgeId,
+			...token,
+			hidden: true,
+			x: 0.3 + dx * 0.01,
+			y: 0.3 + dy * 0.01
+		}))
+	});
+	await pause(300);
+	check(
+		'put down again it is hidden, and a player hears nothing of it',
+		putDown.status === 200 && putDown.body.events?.length === 2 && putDown.body.events.every((e: any) => e.patch.token.hidden) && playerSocket.messages.length === heardBefore,
+		JSON.stringify(putDown.body).slice(0, 300)
+	);
+	const thrown = await (await groups(gm, 'DELETE', { id: guard?.id })).json();
+	check('and thrown away, it is gone', thrown.ok && thrown.items.length === 0 && (await groups(gm, 'DELETE', { id: guard?.id })).status === 404);
+
 	// A whole campaign out to one file, and back in as a new one.
 	const exported = await gm.request(`/c/${campaign}/export`);
 	const archive = new Uint8Array(await exported.arrayBuffer());

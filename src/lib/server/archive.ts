@@ -1,7 +1,7 @@
 // A whole campaign in one file, and back out of one.
 //
 // The file is a tar archive: `campaign.json`, which lists every map, region,
-// marker, note, token and drawing and says what is in the gallery, followed
+// marker, note, token, drawing and saved group and says what is in the gallery, followed
 // by the gallery's pictures as they were uploaded. It is a backup that the
 // app itself can restore, and a way to hand a prepared world to another GM.
 //
@@ -31,6 +31,7 @@ import {
 	members,
 	parties,
 	regions,
+	tokenGroups,
 	tokens
 } from './schema';
 import { getStorage } from './storage';
@@ -52,6 +53,7 @@ import {
 	type Fog,
 	type GalleryKind,
 	type Grid,
+	type GroupToken,
 	type MapKind,
 	type MarkerKind,
 	type MarkerType,
@@ -139,6 +141,14 @@ function manifestOf(db: Db, campaignId: string) {
 					// One taken out of the gallery, and kept for the maps and tokens that still show it.
 					removed: deletedAt !== null
 				})),
+			// The groups of tokens the GM saved, to put down again.
+			groups: tx
+				.select()
+				.from(tokenGroups)
+				.where(eq(tokenGroups.campaignId, campaignId))
+				.orderBy(tokenGroups.createdAt)
+				.all()
+				.map(({ campaignId: _, ...group }) => group),
 			party: tx.select().from(parties).where(eq(parties.campaignId, campaignId)).get() ?? null
 		};
 	});
@@ -507,6 +517,7 @@ function build(
 							list(token.marks ?? [], 64).includes(mark)
 						),
 						count: token.count == null ? null : whole(token.count, LIMITS.countMin, LIMITS.countMax),
+						countHidden: flag(token.countHidden),
 						hidden: flag(token.hidden),
 						createdAt: time(token.createdAt),
 						updatedAt: time(token.updatedAt)
@@ -562,6 +573,46 @@ function build(
 								: null,
 						createdAt: time(picture.createdAt),
 						deletedAt: flag(picture.removed) ? now : null
+					})
+					.run();
+			}
+
+			// The saved groups, from files that have them. A token of one whose
+			// picture the file didn't bring is a plain disc, as on a map.
+			for (const group of list(manifest.groups ?? [], LIMITS.groups).map(record)) {
+				const saved = list(group.tokens, LIMITS.groupTokens)
+					.map(record)
+					.map((token): GroupToken => {
+						const size = number(token.size ?? 1, TOKEN_SIZE_STEP, LIMITS.tokenSize);
+						return {
+							name: text(token.name, LIMITS.tokenName),
+							color: oneOf(token.color, TOKEN_COLORS, TOKEN_COLORS[0]),
+							outline:
+								token.outline == null ? null : oneOf(token.outline, TOKEN_COLORS, TOKEN_COLORS[0]),
+							image: pictureOf(token.image, 'token')?.file ?? null,
+							size: Math.round(size / TOKEN_SIZE_STEP) * TOKEN_SIZE_STEP,
+							rotation:
+								(Math.round(number(token.rotation ?? 0, -3600, 3600) / ROTATION_STEP) * ROTATION_STEP +
+									3600) %
+								360,
+							marks: (TOKEN_MARK_IDS as TokenMark[]).filter((mark) =>
+								list(token.marks ?? [], 64).includes(mark)
+							),
+							count:
+								token.count == null ? null : whole(token.count, LIMITS.countMin, LIMITS.countMax),
+							countHidden: flag(token.countHidden),
+							dx: number(token.dx ?? 0, -LIMITS.groupReach, LIMITS.groupReach),
+							dy: number(token.dy ?? 0, -LIMITS.groupReach, LIMITS.groupReach)
+						};
+					});
+				if (saved.length === 0) continue;
+				tx.insert(tokenGroups)
+					.values({
+						id: newId(),
+						campaignId,
+						name: text(group.name, LIMITS.name),
+						tokens: saved,
+						createdAt: time(group.createdAt)
 					})
 					.run();
 			}

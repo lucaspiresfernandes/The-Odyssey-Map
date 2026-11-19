@@ -6,9 +6,11 @@
 	// A token is the whole table's: its label, its lock, its marks, the number
 	// it carries, its look, copying it, and taking it off the map. Hiding it
 	// is the GM's, and so are saying who it is a secret with, and whether it
-	// takes turns. Turning and resizing it are not done from
-	// here: the map has handles for those on the token itself. A drawing is
-	// changed and rubbed out by whoever made it, and by the GM.
+	// takes turns, whether its number is kept from the table, and saving
+	// what is selected as a group to put down again. Turning and resizing it
+	// are not done from here: the map has handles for those on the token
+	// itself. A drawing is changed and rubbed out by whoever made it, and by
+	// the GM. A shape that marks out an area selects the tokens inside it.
 
 	import { canChangeDrawing, canHideToken } from '#lib/shared/rules.ts';
 	import { countFrom, joinedTurns } from '#lib/shared/turns.ts';
@@ -32,6 +34,8 @@
 	interface Props {
 		tokens: Token[];
 		drawings: Drawing[];
+		/** The tokens standing inside the shapes selected: what a spell laid there would catch. */
+		inside: Token[];
 		/** Who takes turns on this map, for the button that puts a token among them. */
 		turns: Turns;
 		role: Role;
@@ -50,11 +54,16 @@
 		onwrite: (drawing: Drawing) => void;
 		/** What was selected is on its way out. */
 		onclear: () => void;
+		/** These tokens are to be what is selected, in place of what is. */
+		onpick: (tokens: Token[]) => void;
+		/** The GM saves these tokens as a group, under this name. True once it is kept. */
+		onsave: (name: string, tokens: Token[]) => Promise<boolean>;
 	}
 
 	let {
 		tokens,
 		drawings,
+		inside,
 		turns,
 		role,
 		userId,
@@ -64,7 +73,9 @@
 		oncopy,
 		onedit,
 		onwrite,
-		onclear
+		onclear,
+		onpick,
+		onsave
 	}: Props = $props();
 
 	const gm = $derived(canHideToken(role));
@@ -81,6 +92,14 @@
 		tokens.length > 0 && tokens.every((t) => turns.order.includes(t.id))
 	);
 	const several = $derived(tokens.length > 1);
+	/** Every token selected has its number kept from the table. */
+	const allKept = $derived(tokens.length > 0 && tokens.every((t) => t.countHidden));
+	/** Only shapes are selected, and tokens stand inside them: those are theirs to pick. */
+	const caught = $derived(
+		tokens.length === 0 && drawings.length > 0 && drawings.every((d) => isTemplate(d.kind))
+			? inside
+			: []
+	);
 	const removable = $derived(tokens.length + erasable.length);
 
 	let labelling = $state(false);
@@ -96,6 +115,11 @@
 	let sharing = $state(false);
 	/** The GM is saying whose the tokens selected are. */
 	let owning = $state(false);
+	/** The GM is naming the group the tokens selected are saved as. */
+	let grouping = $state(false);
+	let groupName = $state('');
+	/** The group is on its way to the server. */
+	let keeping = $state(false);
 	/** The player every token selected belongs to, by id: null when they are not all one player's. */
 	const owner = $derived(
 		tokens.length && tokens.every((t) => t.ownerId && t.ownerId === tokens[0].ownerId)
@@ -127,7 +151,7 @@
 
 	// The marks are put away with the last token, and so is the rest.
 	$effect(() => {
-		if (tokens.length === 0) marking = counting = sharing = owning = false;
+		if (tokens.length === 0) marking = counting = sharing = owning = grouping = false;
 	});
 
 	/**
@@ -164,6 +188,23 @@
 		}
 		send(changes);
 		counting = false;
+	}
+
+	/** Keeps the number of every token selected from the table, or when they all are, shows it again. */
+	function keep() {
+		const countHidden = !allKept;
+		send(tokens.filter((t) => t.countHidden !== countHidden).map((t) => update(t, { countHidden })));
+	}
+
+	/** Saves the tokens selected as a group, under the name typed. */
+	async function saveGroup(event: SubmitEvent) {
+		event.preventDefault();
+		const name = groupName.trim();
+		if (!name || keeping) return;
+		keeping = true;
+		const kept = await onsave(name, tokens);
+		keeping = false;
+		if (kept) grouping = false;
 	}
 
 	const update = (token: Token, changes: Partial<TokenInput>): Command => ({
@@ -243,7 +284,7 @@
 	}
 </script>
 
-{#if tokens.length > 0 || removable > 0}
+{#if tokens.length > 0 || removable > 0 || caught.length > 0}
 	<div
 		class="flex items-center gap-1 rounded-xl border border-[#55607a] bg-panel/94 p-1 shadow-pop"
 		role="toolbar"
@@ -266,6 +307,26 @@
 					}}
 				/>
 				<button class="btn btn-sm btn-primary">Save</button>
+			</form>
+		{:else if grouping && tokens.length}
+			<form class="flex items-center gap-1" onsubmit={saveGroup}>
+				<input
+					class="input min-h-7 w-44 py-0 text-[13px] touch:min-h-9 touch:text-base"
+					bind:value={groupName}
+					maxlength={LIMITS.name}
+					placeholder="Name of the group"
+					aria-label="Name of the group"
+					title="It goes in the dock, to put down on any battle map: hidden, and as it stands now"
+					required
+					use:takeFocus
+					onkeydown={(e) => {
+						if (e.key !== 'Escape') return;
+						// Only the name is put away, not the selection with it.
+						e.stopPropagation();
+						grouping = false;
+					}}
+				/>
+				<button class="btn btn-sm btn-primary" disabled={keeping}>Save</button>
 			</form>
 		{:else if counting && tokens.length}
 			<form class="flex items-center gap-1" onsubmit={saveCount}>
@@ -292,6 +353,19 @@
 				/>
 				<button class="btn btn-sm btn-primary">Save</button>
 			</form>
+			{#if gm}
+				<!-- Whose the number is to see. Beside the form and not in it, where
+				     a button would send the form. -->
+				<ToolButton
+					small
+					{tip}
+					icon={allKept ? 'hide' : 'reveal'}
+					label={allKept ? 'Only you see the number' : 'The table sees the number'}
+					hint={allKept ? 'Click to show it to the players' : 'Click to keep it to yourself'}
+					active={allKept}
+					onclick={keep}
+				/>
+			{/if}
 		{:else if sharing && tokens.length}
 			<!-- Who the tokens selected are shown to, and nobody else at the table. -->
 			<div class="grid max-w-72 gap-1.5 p-1">
@@ -401,7 +475,9 @@
 					{tip}
 					icon="count"
 					label="Number"
-					hint="Hit points, charges, rounds left: type +3 or -5 to change it"
+					hint={gm
+						? 'Hit points, charges, rounds left: +3 or -5 changes it. You can keep it to yourself'
+						: 'Hit points, charges, rounds left: type +3 or -5 to change it'}
 					active={tokens.some((t) => t.count !== null)}
 					onclick={() => {
 						count = one?.count != null ? String(one.count) : '';
@@ -428,6 +504,16 @@
 			{/if}
 			{#if text}
 				<ToolButton small {tip} icon="rename" label="Change the text" onclick={() => onwrite(text)} />
+			{/if}
+			{#if caught.length}
+				<ToolButton
+					small
+					{tip}
+					icon="inside"
+					label={caught.length === 1 ? 'Select the token inside' : `Select the ${caught.length} tokens inside`}
+					hint="Then give them a mark, or type -8 for their number"
+					onclick={() => onpick(caught)}
+				/>
 			{/if}
 			{#if gm && tokens.length}
 				<span class="w-px self-stretch bg-line"></span>
@@ -466,6 +552,17 @@
 					hint="A secret between them and you"
 					active={sharedWith.length > 0}
 					onclick={() => (sharing = true)}
+				/>
+				<ToolButton
+					small
+					{tip}
+					icon="group"
+					label={several ? 'Save as a group' : 'Save to put down again'}
+					hint="It goes in the dock, for any battle map"
+					onclick={() => {
+						groupName = one?.name ?? '';
+						grouping = true;
+					}}
 				/>
 			{/if}
 			{#if removable}

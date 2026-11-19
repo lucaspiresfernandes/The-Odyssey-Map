@@ -352,9 +352,15 @@ export interface Token {
 	marks: TokenMark[];
 	/**
 	 * A number the token carries, for whatever the table counts on it: hit
-	 * points, charges, rounds left. Null for none. Anyone's to set.
+	 * points, charges, rounds left. Null for none. Anyone's to set, unless
+	 * the GM keeps it: see `countHidden`.
 	 */
 	count: number | null;
+	/**
+	 * The GM keeps the number to themself: a monster's hit points. A player
+	 * is sent the token with no number and this false, and can't set one.
+	 */
+	countHidden: boolean;
 	/**
 	 * The player whose token this is, by user id, and what they are called:
 	 * null for one that is nobody's, like most of the GM's. It doesn't say
@@ -463,6 +469,43 @@ export interface MapInfo {
 	imageFile: string | null;
 	width: number;
 	height: number;
+}
+
+/**
+ * One token of a saved group: what a token put down from it starts out as,
+ * and where it stands from the middle of the group, in cells. So a group
+ * keeps its shape on a map whose grid is another size.
+ */
+export interface GroupToken {
+	name: string;
+	color: string;
+	outline: string | null;
+	image: string | null;
+	size: number;
+	rotation: number;
+	marks: TokenMark[];
+	count: number | null;
+	countHidden: boolean;
+	dx: number;
+	dy: number;
+}
+
+/**
+ * Tokens the GM saved together, to put down again on any battle map in one
+ * go: the ambush, the patrol, the party itself. It is the campaign's, and
+ * only the GM ever sees it.
+ */
+export interface TokenGroup {
+	id: string;
+	name: string;
+	tokens: GroupToken[];
+}
+
+/** What the endpoints for saved groups answer with: the groups as they are now. */
+export interface GroupsResponse {
+	ok: boolean;
+	error?: string;
+	items?: TokenGroup[];
 }
 
 /** What a picture in the gallery is for: to lay under a map, or to put on a token. */
@@ -636,8 +679,10 @@ export interface TokenInput {
 	locked: boolean;
 	/** Anyone's to set. */
 	marks: TokenMark[];
-	/** Anyone's to set. Null takes the number off. */
+	/** Anyone's to set, unless the GM keeps it. Null takes the number off. */
 	count: number | null;
+	/** The GM's to set: the number is kept from the players. */
+	countHidden: boolean;
 	/** The GM's to set: the player whose token it is, by user id, or null for nobody's. */
 	ownerId: string | null;
 	/** The GM's to set. */
@@ -1067,6 +1112,11 @@ export const LIMITS = {
 	fogRects: 400,
 	/** The most round patches the party has cleared the fog of one world map by. */
 	fogSpots: 2000,
+	/** The most groups of tokens a campaign keeps saved, and the most tokens in one. */
+	groups: 60,
+	groupTokens: 40,
+	/** How far from the middle of its group a saved token can stand, in cells. */
+	groupReach: 200,
 	/** The least and the most a token's number can be. */
 	countMin: -999,
 	countMax: 9999,

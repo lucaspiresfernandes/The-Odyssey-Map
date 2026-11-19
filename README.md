@@ -358,6 +358,14 @@ them. It has two palettes of its own, and each folds away with the arrow at its 
   the GM has revealed). Click one and it goes down in the free cell nearest the middle of
   the view. Drag one and it goes down where you let go. The GM's **+** adds pictures to
   the gallery straight from here.
+- **Saved groups**, in the GM's dock, between the plain disc and the pictures. Select
+  tokens, press **Save as a group** and name it: the ambush for tomorrow's road, the
+  patrol, the party itself. It is kept as the tokens are now, with their sizes, marks
+  and numbers, and how they stand to each other. Click or drag it from the dock and they
+  all go down together on any battle map of the campaign, hidden from the players and
+  selected, to drag into place and reveal when the moment comes. Undo takes the whole
+  group off again. The cross on a group throws it away, after asking. The tokens
+  already on the maps are not touched by any of it.
 - **The tools**, in the upper right corner: select and move, select several, measure,
   draw, point. Each has a key: `Q`, `W`, `E`, `R` and `T`, in that order. The pen draws lines,
   shapes and text: which of them is picked beside it. The GM's also has the map image, the name, the grid, the fog
@@ -405,7 +413,12 @@ What is on a battle map:
   left: hit points, charges, rounds left. Type a number to set it, `+3` or `-5` to
   change it by that much, or nothing to take it off. With several tokens selected it
   goes on all of them, so `-8` is the fireball. Everyone at the table sees it and
-  anyone changes it.
+  anyone changes it, unless you keep it.
+- **A number only you see.** Beside the field the number is typed in, the GM has an eye:
+  press it and the number is kept from the table, for a monster's hit points. It shows
+  to you in gold in a broken ring. The players are sent the token without it, hear
+  nothing when it changes, and can't set a number on that token themselves. A copy of
+  the token keeps it kept, and so does a saved group.
 - **Marks.** The marks button brings them out. **Down** greys the token and crosses it
   out. The rest are pips on the token's rim: six plain colours, and fourteen small
   icons, each in a colour of its own on a dark pip: a skull, a flame, a bolt, a drop, a
@@ -444,6 +457,11 @@ What is on a battle map:
   a cone from a corner, the middle of a cell or the middle of one of its sides. `Alt`
   leaves the grid, while drawing and while moving. A shape is moved and rubbed out like
   any drawing: by whoever drew it, and the GM.
+- **A shape picks its targets.** While you drag a shape out, and while one is selected,
+  the tokens whose middle is inside it wear a pale ring, on your screen only. A shape
+  you have just drawn is selected, and its buttons have one more: **Select the tokens
+  inside**. So a fireball is drag the circle, select what is inside, `#`, `-8`. Slide
+  the shape and the rings follow.
 - **Drawings.** With **Draw** in hand, and the line picked beside the
   tools, drag across the map to draw a line freehand in the colour you pick there. The
   pen stays in hand for the next line. Lines sit on the map under the tokens, and grow
@@ -539,6 +557,8 @@ tokens, and the tools are in the corner.
 | Bring everyone here | call everyone to a map and a view of it | follow |
 | Tokens | create anywhere, give any picture, hide, reveal, show to some players, hand to a player | create where there is no fog, give a revealed picture: what they put down is their own |
 | Any token they can see | move, resize, turn, recolour, outline, label, mark, number, lock, unlock, duplicate, delete | move, resize, turn, recolour, outline, label, mark, number, lock, unlock, duplicate, delete |
+| A token's number, kept | keep it from the table, see it, change it, show it again | nothing: they are sent the token without it |
+| Saved groups of tokens | save the tokens selected, put a group down hidden, throw one away | |
 | Drawings, text and shapes, on battle maps | create, move, change, rub out, anyone's | create, and move, change, rub out their own |
 | Undo and redo | their own changes | their own changes to table notes, tokens and drawings |
 
@@ -697,7 +717,21 @@ scripts/            run both servers, seed a demo, back up, end-to-end check
   drawing, each kept as two points. Everything a drawing can do, they can: who may move
   one, undo, the limit per map. The outlines themselves are worked out from the two
   points in `shared/drawing.ts`. The code calls them templates, to tell them from
-  the handles that reshape a token.
+  the handles that reshape a token. Which tokens one catches is worked out in the
+  browser, from the tokens it has: `templateHolds` asks whether a token's middle is
+  inside. Nothing about it is sent or stored.
+- **A kept number never leaves the app for a player.** A token has `countHidden`, the
+  GM's to set. Every token on its way to a player goes through `tokenForEyes` in
+  `shared/rules.ts`, which takes the number off and says nothing is kept. An event
+  that changes only what a player isn't sent is not sent to them at all:
+  `visibility.ts`. A player's `count` on such a token is refused whatever it is, so a
+  right guess can't be told from a wrong one.
+- **A saved group is rows of its own.** `token_groups` keeps, for each group, what each
+  token starts out as and where it stands from the middle of the group, in cells:
+  `server/groups.ts`. Like the gallery it is no part of the event log. Putting one down
+  is: the browser sends a batch of `token.create`, hidden, which is checked and undone
+  like any other. A picture taken out of the gallery is kept for as long as a group
+  has a token that wears it. Groups go into a campaign's file and come back out of it.
 - **A mark is an id in a list.** A token keeps the ids of the marks it wears. How each
   looks, a colour or an icon, is one table: `TOKEN_MARKS` in `shared/types.ts`. A
   new mark is one more line there, and nothing in the database changes.
@@ -788,7 +822,8 @@ shapes, the scale of a world map, the finder, a picture held
 up for the table, and what a token picture starts its tokens out as.
 And for what is kept from some and not from others: closed regions, secrets shared with
 some players and what each of them is sent, the fog of a world map and how the party
-lifts it. And the number on a token, initiative rolls, ending a turn, lining up a grid,
+lifts it. And the number on a token, one the GM keeps, shapes that pick their targets,
+groups of tokens saved and put down again, initiative rolls, ending a turn, lining up a grid,
 and a campaign going out to a file and coming back.
 And for what a real session leans on: a seat asked for and given, new or back, whose token is
 whose and whose turn that makes it, a picture on a marker and who may load it, how long
@@ -854,8 +889,13 @@ Type-checks everything.
 - On a world map the fog keeps markers and regions from the players, not the picture of
   the map, which their browser still loads and draws the fog over. A region is under
   the fog or not by its middle.
-- The number on a token is for everyone at the table to see: there is none that only
-  the GM sees.
+- A token carries one number. It is the whole table's or the GM's alone: there are not
+  two, one of each. A player who tries to set a number on a token whose number is kept
+  is told the GM keeps it, which says that there is one.
+- A saved group can't be renamed or changed: throw it away and save it again. Throwing
+  one away has no undo. Put down with a click, it lands in the middle of the view, on
+  top of whatever stands there. It always goes down hidden, with nobody owning its
+  tokens and none of them in the turn order.
 - A campaign's file leaves out who plays in it, their secrets and the history that undo
   works from. Importing always makes a new campaign: it can't be merged into one that
   is there.
@@ -884,7 +924,8 @@ Type-checks everything.
 - A mark is a colour or an icon from a fixed set. It has no name of its own, no number
   on it, and no timer that takes it off again. Icons are small: on a token that is
   small on screen they are told apart by their colours until the map is zoomed in.
-- A shape marks an area out. It doesn't say which tokens are in it, and it can't be
+- A shape catches a token by its middle, however big the token is. Only the person
+  with the shape selected sees which tokens it catches. It can't be
   resized or turned once drawn: draw another. There is no straight line among the
   shapes: a thin box does for one along the grid.
 - A world map is measured in miles. It knows nothing of roads: the ruler follows one

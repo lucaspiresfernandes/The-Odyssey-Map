@@ -18,7 +18,7 @@
 import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { Db } from './db';
 import { newId } from './ids';
-import { campaigns, gallery, maps, markers, members, tokens } from './schema';
+import { campaigns, gallery, maps, markers, members, tokenGroups, tokens } from './schema';
 import { ActionError, asOutline, asText, asTokenSize, isConcealed, type Actor } from './world';
 import { canEditWorld, canSeeMarker, canSeeToken, roleOf, type Who } from '../shared/rules';
 import { LIMITS, type GalleryItem, type GalleryKind, type Shown } from '../shared/types';
@@ -248,14 +248,21 @@ export function showToTable(
 }
 
 /**
- * True while a map shows this picture, a token wears it, or the card of a
- * marker shows it: one of those that was deleted may come back.
+ * True while a map shows this picture, a token wears it, the card of a
+ * marker shows it, or a saved group has a token that wears it: one of those
+ * that was deleted may come back.
  */
 function inUse(db: Db, file: string): boolean {
 	const map = db.select({ id: maps.id }).from(maps).where(eq(maps.imageFile, file)).get();
 	const token = db.select({ id: tokens.id }).from(tokens).where(eq(tokens.image, file)).get();
 	const marker = db.select({ id: markers.id }).from(markers).where(eq(markers.image, file)).get();
-	return Boolean(map || token || marker);
+	// A saved group keeps the pictures of its tokens, for when it is put down again.
+	const group = db
+		.select({ id: tokenGroups.id })
+		.from(tokenGroups)
+		.where(sql`instr(${tokenGroups.tokens}, ${JSON.stringify(file)}) > 0`)
+		.get();
+	return Boolean(map || token || marker || group);
 }
 
 /**

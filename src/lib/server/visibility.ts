@@ -21,6 +21,7 @@ import {
 	canSeeToken,
 	forEyes,
 	roleOf,
+	tokenForEyes,
 	type Who
 } from '../shared/rules';
 import {
@@ -36,6 +37,15 @@ import {
 	type StoredEvent,
 	type Token
 } from '../shared/types';
+
+/** Two copies of a token that differ in nothing but when they were last changed. */
+function sameToSee(a: Token, b: Token): boolean {
+	const shown = (token: Token) =>
+		JSON.stringify(
+			Object.entries({ ...token, countHidden: token.countHidden ?? false, updatedAt: 0 }).sort()
+		);
+	return shown(a) === shown(b);
+}
 
 /**
  * Turns an event into the change this person's browser should apply, or
@@ -64,7 +74,19 @@ export function projectEvent(event: StoredEvent, who: Who, fog: Fog = NO_FOG): P
 		const before = event.before as Token | null;
 		const after = event.after as Token | null;
 		if (after && canSeeToken(who, after, fog)) {
-			return { t: 'token.upsert', token: forEyes(who, after) };
+			const token = tokenForEyes(who, after);
+			// A number the GM keeps changing is no news to a player: the token
+			// they would be sent is the one they have.
+			if (
+				roleOf(who) !== 'gm' &&
+				event.action === 'update' &&
+				before &&
+				canSeeToken(who, before, fog) &&
+				sameToSee(tokenForEyes(who, before), token)
+			) {
+				return null;
+			}
+			return { t: 'token.upsert', token };
 		}
 		if (before && canSeeToken(who, before, fog)) {
 			return { t: 'token.remove', id: event.entityId, mapId: event.mapId };

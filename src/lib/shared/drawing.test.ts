@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { boxOf, capped, linePath, thinOut, touchesBox } from './drawing';
+import { boxOf, capped, linePath, templateHolds, thinOut, touchesBox } from './drawing';
 import type { Point } from './types';
 
 describe('a line drawn freehand', () => {
@@ -106,5 +106,47 @@ describe('a line drawn freehand', () => {
 				[0.5, 0.1]
 			])
 		).toEqual({ x0: 0.2, x1: 0.5, y0: 0.1, y1: 0.9 });
+	});
+});
+
+describe('a shape that picks its targets', () => {
+	test('a circle holds what is no further from its middle than its rim', () => {
+		const a: Point = [100, 100];
+		const b: Point = [130, 140];
+		expect(templateHolds('circle', a, b, [100, 100])).toBe(true);
+		expect(templateHolds('circle', a, b, [100, 150])).toBe(true);
+		expect(templateHolds('circle', a, b, [100, 151])).toBe(false);
+		expect(templateHolds('circle', a, b, [140, 140])).toBe(false);
+		// A hair of slack takes in what sits right on the line.
+		expect(templateHolds('circle', a, b, [100, 151], 1)).toBe(true);
+	});
+
+	test('a box holds what lies between its corners, whichever two were given', () => {
+		const a: Point = [200, 50];
+		const b: Point = [100, 150];
+		expect(templateHolds('rect', a, b, [150, 100])).toBe(true);
+		expect(templateHolds('rect', a, b, [100, 50])).toBe(true);
+		expect(templateHolds('rect', a, b, [99, 100])).toBe(false);
+		expect(templateHolds('rect', a, b, [150, 151])).toBe(false);
+		expect(templateHolds('rect', a, b, [150, 151], 2)).toBe(true);
+	});
+
+	test('a cone holds what lies between its tip and its far end, whichever way it points', () => {
+		// To the right: its far end runs from (100, -50) to (100, 50).
+		const tip: Point = [0, 0];
+		const end: Point = [100, 0];
+		expect(templateHolds('cone', tip, end, [50, 0])).toBe(true);
+		expect(templateHolds('cone', tip, end, [50, 24])).toBe(true);
+		expect(templateHolds('cone', tip, end, [50, 26])).toBe(false);
+		expect(templateHolds('cone', tip, end, [101, 0])).toBe(false);
+		expect(templateHolds('cone', tip, end, [-1, 0])).toBe(false);
+		expect(templateHolds('cone', tip, end, [100, 50])).toBe(true);
+		// Upwards, the same cone turned.
+		expect(templateHolds('cone', tip, [0, -100], [20, -50])).toBe(true);
+		expect(templateHolds('cone', tip, [0, -100], [30, -50])).toBe(false);
+		expect(templateHolds('cone', tip, [0, -100], [0, 10])).toBe(false);
+		// One with no length is a single spot.
+		expect(templateHolds('cone', tip, tip, [0, 0])).toBe(true);
+		expect(templateHolds('cone', tip, tip, [1, 0])).toBe(false);
 	});
 });

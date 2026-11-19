@@ -23,6 +23,7 @@
 		capped,
 		linePath,
 		templateBox,
+		templateHolds,
 		templatePath,
 		templateSpan,
 		thinOut,
@@ -204,6 +205,8 @@
 		onalign: (box: Rect) => void;
 		/** The rest of what a token is, is to be changed: its picture, its colour, its outline. */
 		onedittoken: (token: Token) => void;
+		/** The GM saves these tokens as a group, under this name. True once it is kept. */
+		onsavegroup?: (name: string, tokens: Token[]) => Promise<boolean>;
 		/** What this browser has in hand on the map, or null when it holds nothing. */
 		onhand: (at: Holding | null) => void;
 		/** This person is pointing a spot of the map out to the table. */
@@ -253,6 +256,7 @@
 		onshowmarker,
 		fresh = [],
 		onseen,
+		onsavegroup = async () => false,
 		onalign,
 		onedittoken,
 		onhand,
@@ -615,6 +619,46 @@
 		casting && templatePoints(map, shape, casting.from, casting.to, casting.free)
 	);
 
+	/**
+	 * The tokens a template catches: the ones whose middle is inside it,
+	 * wherever each is drawn right now. `a` and `b` are in the map's pixels.
+	 * A hair of slack takes in a middle that sits right on the line.
+	 */
+	function tokensIn(kind: TemplateKind, a: Point, b: Point): Token[] {
+		return tokens.filter((token) => {
+			const [x, y] = spotOf(token);
+			return templateHolds(kind, a, b, [x * W, y * H], cell * 0.02);
+		});
+	}
+
+	/** The tokens inside the templates that are selected, wherever those are being carried. */
+	const insideSelected = $derived.by(() => {
+		if (!selecting) return [];
+		const found = new Map<string, Token>();
+		for (const { drawing, kind, a, b } of templates) {
+			if (!selectedIds.includes(drawing.id)) continue;
+			const [sx, sy] = shiftOf(drawing);
+			const carried = ([x, y]: Point): Point => [x + sx * W, y + sy * H];
+			for (const token of tokensIn(kind, carried(a), carried(b))) found.set(token.id, token);
+		}
+		return [...found.values()];
+	});
+
+	/**
+	 * The tokens that light up as caught: inside the template being dragged
+	 * out, or inside the ones selected while no token is. Only on this
+	 * person's own screen.
+	 */
+	const caughtIds = $derived.by(() => {
+		const ids = new Set<string>();
+		if (selectedTokens.length === 0) for (const token of insideSelected) ids.add(token.id);
+		if (casted) {
+			const [a, b] = inPixels(casted);
+			for (const token of tokensIn(shape, a, b)) ids.add(token.id);
+		}
+		return ids;
+	});
+
 	/** How big a template is, in words: "20 ft radius", "30 ft cone", "10 × 20 ft". */
 	function templateSize(kind: TemplateKind, a: Point, b: Point): string {
 		const feet = templateSpan(kind, a, b).map((pixels) => pixelsToFeet(map, pixels));
@@ -918,8 +962,16 @@
 		// It stays on the map as dragged until the server sends it back for good.
 		const pending = { kind, points, color: ink };
 		cast = [...cast, pending];
-		send([{ t: 'drawing.create', mapId: map.id, kind, points, color: ink }]).then(() => {
+		const had = new Set(drawings.map((drawing) => drawing.id));
+		send([{ t: 'drawing.create', mapId: map.id, kind, points, color: ink }]).then((made) => {
 			cast = cast.filter((each) => each !== pending);
+			// Laid, it is what is selected: to pick the tokens inside it, slide
+			// it over, or rub it out once the spell is done. Unless this person
+			// has gone on to select something else in the meantime.
+			const mine = drawings.filter(
+				(drawing) => !had.has(drawing.id) && drawing.kind === kind && drawing.authorId === userId
+			);
+			if (made && mine.length === 1 && selectedIds.length === 0) selectedIds = [mine[0].id];
 		});
 		ondone();
 	}
@@ -2919,6 +2971,19 @@
 						]}
 						style:translate="{x * W}px {y * H}px"
 					>
+						{#if caughtIds.has(token.id)}
+							<!-- Inside a shape that is being laid, or is selected: a pale ring
+							     around what it would catch. -->
+							<span
+								class="pointer-events-none absolute -translate-1/2 rounded-full border-[#fff8e4] shadow-[0_0_0.45em_0.1em_#fff8e4]"
+								data-caught={token.id}
+								style:width="{across * 1.16}px"
+								style:height="{across * 1.16}px"
+								style:border-width="{across * 0.05}px"
+								style:font-size="{across * 0.4}px"
+								aria-hidden="true"
+							></span>
+						{/if}
 						{#if turnId === token.id}
 							<!-- Whose turn it is: a ring of gold around the token, breathing. -->
 							<span
@@ -2954,8 +3019,8 @@
 									: ` · ${token.ownerName}’s`
 								: ''}{token.locked ? ' · locked' : ''}"
 							aria-label="Token: {token.name}{token.count != null
-								? `, ${token.count}`
-								: ''}{token.hidden ? (canShape ? ' (hidden from players)' : ' (a secret)') : ''}{down
+								? `, ${token.count}${token.countHidden ? ' (only you see the number)' : ''}`
+								: ''}{caughtIds.has(token.id) ? ' (inside the shape)' : ''}{token.hidden ? (canShape ? ' (hidden from players)' : ' (a secret)') : ''}{down
 								? ' (down)'
 								: ''}{turnId === token.id ? ' (their turn)' : ''}{mine
 								? '. Arrow keys move it.'
@@ -3017,9 +3082,17 @@
 						{/each}
 						{#if token.count != null}
 							<!-- The number it carries, on its rim at the upper left, where
-							     the pips leave room: hit points, charges, rounds left. -->
+							     the pips leave room: hit points, charges, rounds left. One
+							     the GM keeps to themself is gold in a broken ring: nobody
+							     else is sent it. -->
 							<span
-								class="pointer-events-none absolute grid -translate-1/2 place-items-center rounded-full border-[#fff8e4]/85 bg-[#12151c] px-[0.3em] leading-none font-bold whitespace-nowrap text-[#fff8e4] tabular-nums"
+								class={[
+									'pointer-events-none absolute grid -translate-1/2 place-items-center rounded-full bg-[#12151c] px-[0.3em] leading-none font-bold whitespace-nowrap tabular-nums',
+									token.countHidden
+										? 'border-dashed border-accent text-accent'
+										: 'border-[#fff8e4]/85 text-[#fff8e4]'
+								]}
+								data-count={token.countHidden ? 'kept' : 'shown'}
 								style:left="{-0.354 * across}px"
 								style:top="{-0.354 * across}px"
 								style:min-width="{across * 0.36}px"
@@ -3452,6 +3525,7 @@
 					bind:this={bar}
 					tokens={selectedTokens}
 					drawings={selectedDrawings}
+					inside={insideSelected}
 					turns={map.turns}
 					{role}
 					{userId}
@@ -3465,6 +3539,8 @@
 						write(drawing);
 					}}
 					onclear={() => (selectedIds = [])}
+					onpick={(picked) => (selectedIds = picked.map((token) => token.id))}
+					onsave={onsavegroup}
 				/>
 			</div>
 		{/if}

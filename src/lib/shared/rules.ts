@@ -43,6 +43,25 @@ export function forEyes<T extends { seenBy?: string[] }>(who: Who, thing: T): T 
 	return { ...thing, seenBy: roleOf(who) === 'gm' ? (thing.seenBy ?? []) : [] };
 }
 
+/**
+ * A token as this person is sent it. On top of what `forEyes` keeps back,
+ * a number the GM keeps to themself is not there for a player, and neither
+ * is the word that one is kept.
+ */
+export function tokenForEyes(who: Who, token: Token): Token {
+	const seen = forEyes(who, token);
+	if (roleOf(who) === 'gm' || !token.countHidden) return seen;
+	return { ...seen, count: null, countHidden: false };
+}
+
+/**
+ * Setting the number a token carries, or taking it off. Anyone's, unless
+ * the GM keeps that token's number to themself.
+ */
+export function canCountToken(role: Role, token: { countHidden?: boolean }): boolean {
+	return role === 'gm' || !token.countHidden;
+}
+
 /** The GM owns world markers. Anyone at the table can add notes and edit them. */
 export function canEditMarkerKind(role: Role, kind: MarkerKind): boolean {
 	return kind === 'player' || role === 'gm';

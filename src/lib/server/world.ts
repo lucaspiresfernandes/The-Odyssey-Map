@@ -30,6 +30,7 @@ import {
 	canEditWorld,
 	canEndTurn,
 	canEnterRegion,
+	canCountToken,
 	canHideToken,
 	canMoveParty,
 	canRemoveMarker,
@@ -183,6 +184,7 @@ export const tokenColumns = {
 	locked: tokens.locked,
 	marks: tokens.marks,
 	count: tokens.count,
+	countHidden: tokens.countHidden,
 	ownerId: tokens.ownerId,
 	ownerName: tokens.ownerName,
 	hidden: tokens.hidden,
@@ -580,7 +582,7 @@ export function asOutline(value: unknown): string | null {
 }
 
 /** What a token is marked with: each mark once, in the order they are listed in. */
-function asMarks(value: unknown): TokenMark[] {
+export function asMarks(value: unknown): TokenMark[] {
 	if (!Array.isArray(value) || value.some((mark) => !TOKEN_MARK_IDS.includes(mark))) {
 		fail('invalid', 'Unknown mark.');
 	}
@@ -588,7 +590,7 @@ function asMarks(value: unknown): TokenMark[] {
 }
 
 /** The number a token carries, or null for none. */
-function asCount(value: unknown): number | null {
+export function asCount(value: unknown): number | null {
 	if (value === null) return null;
 	if (
 		typeof value !== 'number' ||
@@ -628,6 +630,7 @@ function asTokenChanges(db: Db, actor: Actor, value: unknown): Partial<TokenInpu
 	}
 	if (raw.locked !== undefined) out.locked = asBool(raw.locked);
 	if (raw.count !== undefined) out.count = asCount(raw.count);
+	if (raw.countHidden !== undefined) out.countHidden = asBool(raw.countHidden);
 	if (raw.ownerId !== undefined) out.ownerId = raw.ownerId === null ? null : asId(raw.ownerId);
 	if (raw.hidden !== undefined) out.hidden = asBool(raw.hidden);
 	if (raw.seenBy !== undefined) out.seenBy = asSeenBy(db, actor, raw.seenBy);
@@ -857,6 +860,8 @@ function createToken(db: Db, actor: Actor, raw: Record<string, unknown>): Stored
 			locked: input.locked === true,
 			marks: input.marks ?? [],
 			count: input.count ?? null,
+			// Only the GM has a number to keep.
+			countHidden: actor.role === 'gm' && input.countHidden === true,
 			ownerId: owner?.id ?? null,
 			ownerName: owner?.name ?? null,
 			hidden,
@@ -913,6 +918,9 @@ function duplicateToken(db: Db, actor: Actor, id: string): StoredEvent[] {
 			locked: false,
 			marks: token.marks,
 			count: token.count,
+			// A copy keeps a number that is kept, and keeps it kept: a player who
+			// copies the token is sent the copy without it, like the token itself.
+			countHidden: token.countHidden ?? false,
 			// A copy of someone's token is theirs too: the wolf beside the ranger.
 			ownerId: token.ownerId ?? null,
 			ownerName: token.ownerName ?? null,
@@ -937,6 +945,7 @@ const TOKEN_FIELDS = [
 	'locked',
 	'marks',
 	'count',
+	'countHidden',
 	'ownerId',
 	'hidden',
 	'seenBy'
@@ -953,6 +962,8 @@ const TOKEN_PLACING = ['x', 'y', 'size', 'rotation'] as const;
 function tokenDiffers(before: Token, after: Token, field: (typeof TOKEN_FIELDS)[number]): boolean {
 	if (field === 'marks' || field === 'seenBy') return !sameList(before[field], after[field]);
 	if (field === 'count') return (before.count ?? null) !== (after.count ?? null);
+	// One from before a number could be kept keeps none.
+	if (field === 'countHidden') return (before.countHidden ?? false) !== (after.countHidden ?? false);
 	// One from before tokens could be someone's is nobody's.
 	if (field === 'ownerId') return (before.ownerId ?? null) !== (after.ownerId ?? null);
 	return before[field] !== after[field];
@@ -978,6 +989,18 @@ function updateToken(
 	// So is saying whose token it is.
 	const handed = changes.ownerId !== undefined && changes.ownerId !== (before.ownerId ?? null);
 	if (handed && actor.role !== 'gm') fail('forbidden', 'Only the GM says whose token it is.');
+	// And keeping its number from the table. A number that is kept is the
+	// GM's alone to change: a player is not sent it, and would be writing
+	// over what they can't see.
+	const kept = changes.countHidden !== undefined && changes.countHidden !== (before.countHidden ?? false);
+	if (kept && actor.role !== 'gm') {
+		fail('forbidden', 'Only the GM keeps a token’s number from the table.');
+	}
+	// Whatever number they send: one that happened to be right would
+	// otherwise be told apart from one that was wrong.
+	if (changes.count !== undefined && !canCountToken(actor.role, before)) {
+		fail('forbidden', `The GM keeps the number of “${before.name}”.`);
+	}
 
 	const after: Token = { ...before, ...changes };
 	if (handed) {
@@ -1015,6 +1038,7 @@ function updateToken(
 			locked: after.locked,
 			marks: after.marks,
 			count: after.count,
+			countHidden: after.countHidden ?? false,
 			ownerId: after.ownerId ?? null,
 			ownerName: after.ownerName ?? null,
 			hidden: after.hidden,
@@ -1861,6 +1885,7 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 			if (!tokenDiffers(before, after, field)) continue;
 			if (field === 'marks' || field === 'seenBy') changes[field] = before[field] ?? [];
 			else if (field === 'count') changes.count = before.count ?? null;
+			else if (field === 'countHidden') changes.countHidden = before.countHidden ?? false;
 			else if (field === 'ownerId') changes.ownerId = before.ownerId ?? null;
 			else changes[field] = before[field];
 		}

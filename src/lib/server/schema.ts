@@ -25,6 +25,7 @@ import {
 	type Fog,
 	type GalleryKind,
 	type Grid,
+	type GroupToken,
 	type MarkerType,
 	type Point,
 	type TokenMark,
@@ -168,6 +169,24 @@ export const seatClaims = sqliteTable(
 	(t) => [index('seat_claims_campaign').on(t.campaignId)]
 );
 
+// Tokens the GM saved together, to put down again in one go on any battle
+// map of the campaign. Each is kept as what a token starts out as and where
+// it stands from the middle of the group, in cells. Like the gallery, it is
+// no part of the world's history.
+export const tokenGroups = sqliteTable(
+	'token_groups',
+	{
+		id: text('id').primaryKey(),
+		campaignId: text('campaign_id')
+			.notNull()
+			.references(() => campaigns.id, { onDelete: 'cascade' }),
+		name: text('name').notNull(),
+		tokens: text('tokens', { mode: 'json' }).$type<GroupToken[]>().notNull(),
+		createdAt: integer('created_at').notNull()
+	},
+	(t) => [index('token_groups_campaign').on(t.campaignId)]
+);
+
 // Where each campaign's party is: one row at most, on one of its world
 // maps. It goes with that map when the region leading there is deleted.
 export const parties = sqliteTable('parties', {
@@ -249,6 +268,8 @@ export const tokens = sqliteTable(
 		ownerName: text('owner_name'),
 		/** A number the table counts on it: hit points, charges, rounds left. Null for none. */
 		count: integer('count'),
+		/** The GM keeps the number to themself: players are sent the token without it. */
+		countHidden: integer('count_hidden', { mode: 'boolean' }).notNull().default(false),
 		hidden: integer('hidden', { mode: 'boolean' }).notNull().default(false),
 		/** The players a hidden token is shown to all the same, by user id. */
 		seenBy: text('seen_by', { mode: 'json' }).$type<string[]>().notNull().default([]),
