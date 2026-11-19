@@ -160,10 +160,24 @@ export const TOKEN_COLORS = [
 	'#6b7488'
 ] as const;
 
+/** How one of the marks a token can wear looks. */
+export interface MarkLook {
+	id: string;
+	label: string;
+	/** The colour of a plain pip, or of the icon on a dark one. */
+	color: string;
+	/**
+	 * For a mark that is an icon: its outline as an SVG path on a 24 by 24
+	 * grid. It is filled, unless `line` says it is drawn in strokes.
+	 */
+	icon?: string;
+	line?: boolean;
+}
+
 /**
- * What a token can be marked with: a small pip in one of these colours on
- * its rim, for whatever the table says each one means, or `down`, which
- * crosses the token out.
+ * What a token can be marked with, for whatever the table says each one
+ * means. `down` crosses the token out. The rest are small pips on its rim:
+ * six in a plain colour, then a dark one for each of the icons.
  */
 export const TOKEN_MARKS = [
 	{ id: 'down', label: 'Down', color: '#12151c' },
@@ -172,12 +186,86 @@ export const TOKEN_MARKS = [
 	{ id: 'green', label: 'Green', color: '#3fae7c' },
 	{ id: 'blue', label: 'Blue', color: '#5b8def' },
 	{ id: 'purple', label: 'Purple', color: '#b072e0' },
-	{ id: 'white', label: 'White', color: '#fff8e4' }
-] as const;
+	{ id: 'white', label: 'White', color: '#fff8e4' },
+	{
+		id: 'skull',
+		label: 'Skull',
+		color: '#fff8e4',
+		icon: 'M12 2.5a8 8 0 0 0-8 8c0 2.9 1.5 5.2 3.5 6.5V20a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1v-3c2-1.3 3.5-3.6 3.5-6.5a8 8 0 0 0-8-8Z M9 9.3a1.9 1.9 0 1 0 0 3.8a1.9 1.9 0 1 0 0-3.8Z M15 9.3a1.9 1.9 0 1 0 0 3.8a1.9 1.9 0 1 0 0-3.8Z'
+	},
+	{
+		id: 'flame',
+		label: 'Flame',
+		color: '#ff8a3d',
+		icon: 'M12.5 2c.5 3.5 4.5 5.5 4.5 10.5a5 5 0 0 1-10 0c0-2 .8-3.3 2-4.5.2 1.8 1 2.8 2 3 .3-3.5-1-6 1.5-9Z'
+	},
+	{ id: 'bolt', label: 'Bolt', color: '#ffe66b', icon: 'M13.5 2 5 13.5h5.5L9.5 22 19 10.5h-5.5Z' },
+	{
+		id: 'drop',
+		label: 'Drop',
+		color: '#6ddc8b',
+		icon: 'M12 2.5c3.5 4.5 6 7.7 6 11a6 6 0 0 1-12 0c0-3.3 2.5-6.5 6-11Z'
+	},
+	{
+		id: 'snowflake',
+		label: 'Snowflake',
+		color: '#9ad8ff',
+		icon: 'M12 2.5v19M3.8 7.25l16.4 9.5M20.2 7.25 3.8 16.75',
+		line: true
+	},
+	{
+		id: 'shield',
+		label: 'Shield',
+		color: '#7aa6ff',
+		icon: 'M12 2 4 5v6c0 5 3.4 9 8 11 4.6-2 8-6 8-11V5Z'
+	},
+	{
+		id: 'heart',
+		label: 'Heart',
+		color: '#ff7aa8',
+		icon: 'M12 21C5 15.5 2.5 12 2.5 8.5A4.75 4.75 0 0 1 12 6.2a4.75 4.75 0 0 1 9.5 2.3C21.5 12 19 15.5 12 21Z'
+	},
+	{
+		id: 'star',
+		label: 'Star',
+		color: '#f2c14e',
+		icon: 'M12 2l3 6.5 7 .8-5.2 4.8 1.5 7L12 17.6l-6.3 3.5 1.5-7L2 9.3l7-.8Z'
+	},
+	{
+		id: 'eye',
+		label: 'Eye',
+		color: '#fff8e4',
+		icon: 'M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z M12 8.5a3.5 3.5 0 1 0 0 7a3.5 3.5 0 1 0 0-7Z'
+	},
+	{
+		id: 'moon',
+		label: 'Moon',
+		color: '#c79bff',
+		icon: 'M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z'
+	},
+	{ id: 'lowered', label: 'Arrow down', color: '#ffb86b', icon: 'M9 3h6v9h4.5L12 21 4.5 12H9Z' },
+	{ id: 'raised', label: 'Arrow up', color: '#9ad8ff', icon: 'M9 21h6v-9h4.5L12 3 4.5 12H9Z' },
+	{
+		id: 'target',
+		label: 'Target',
+		color: '#ff6b61',
+		icon: 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18Z M12 6.5a5.5 5.5 0 1 0 0 11a5.5 5.5 0 1 0 0-11Z M12 9.5a2.5 2.5 0 1 0 0 5a2.5 2.5 0 1 0 0-5Z'
+	},
+	{
+		id: 'net',
+		label: 'Net',
+		color: '#c9d1e0',
+		icon: 'M8.5 3v18M15.5 3v18M3 8.5h18M3 15.5h18',
+		line: true
+	}
+] as const satisfies readonly MarkLook[];
 
 export type TokenMark = (typeof TOKEN_MARKS)[number]['id'];
 
 export const TOKEN_MARK_IDS: readonly string[] = TOKEN_MARKS.map((mark) => mark.id);
+
+/** The same marks, each as how it looks: with an icon, or without. */
+export const MARK_LOOKS: readonly (MarkLook & { id: TokenMark })[] = TOKEN_MARKS;
 
 /**
  * A piece on a battle map: a character, a monster, anything that moves.

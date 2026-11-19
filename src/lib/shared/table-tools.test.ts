@@ -5,8 +5,8 @@ import { describe, expect, test } from 'bun:test';
 import { templateBox, templatePath, templateSpan } from './drawing';
 import { milesBetween, milesCount, pixelsToFeet, snapToHalfCell, templatePoints } from './grid';
 import { JOURNEY_STOPS, walked } from './journey';
-import { joinedTurns, movedTurn, nextTurn } from './turns';
-import { turnsAmong, type Point, type Turns } from './types';
+import { joinedTurns, nextTurn, reorderedTurns } from './turns';
+import { MARK_LOOKS, TOKEN_MARK_IDS, turnsAmong, type Point, type Turns } from './types';
 
 /** A map of twenty cells by ten, fifty pixels to the cell. */
 const SHEET = { width: 1000, height: 500, grid: { size: 50, x: 0, y: 0, shown: true } };
@@ -31,13 +31,14 @@ describe('taking turns', () => {
 		expect(nextTurn({ order: [], current: null, round: 1 }, ['a'])).toBeNull();
 	});
 
-	test('a token moves a place at a time, past the ones that are off the map', () => {
-		expect(movedTurn(['a', 'b', 'c'], 'c', -1, ['a', 'b', 'c'])).toEqual(['a', 'c', 'b']);
-		expect(movedTurn(['a', 'b', 'c'], 'a', 1, ['a', 'b', 'c'])).toEqual(['b', 'a', 'c']);
-		expect(movedTurn(['a', 'b', 'c'], 'c', -1, ['a', 'c'])).toEqual(['c', 'a', 'b']);
-		// At the end of the line there is nowhere further to go.
-		expect(movedTurn(['a', 'b', 'c'], 'a', -1, ['a', 'b', 'c'])).toEqual(['a', 'b', 'c']);
-		expect(movedTurn(['a', 'b', 'c'], 'b', 1, ['a', 'b'])).toEqual(['a', 'b', 'c']);
+	test('the tokens that show are sorted by hand, and the rest keep their places', () => {
+		expect(reorderedTurns(['a', 'b', 'c'], ['c', 'a', 'b'])).toEqual(['c', 'a', 'b']);
+		expect(reorderedTurns(['a', 'b', 'c'], ['a', 'b', 'c'])).toEqual(['a', 'b', 'c']);
+		// `b` is off the map: it is not there to be sorted, and stays second.
+		expect(reorderedTurns(['a', 'b', 'c'], ['c', 'a'])).toEqual(['c', 'b', 'a']);
+		expect(reorderedTurns(['a', 'b', 'c', 'd'], ['d', 'a'])).toEqual(['d', 'b', 'c', 'a']);
+		// A token that isn't in the order is no part of it, however it was sorted.
+		expect(reorderedTurns(['a', 'b'], ['x', 'b', 'a'])).toEqual(['b', 'a']);
 	});
 
 	test('tokens join at the end, once each', () => {
@@ -50,7 +51,23 @@ describe('taking turns', () => {
 	});
 });
 
-describe('spell templates', () => {
+describe('marks', () => {
+	test('there is one to cross a token out, six plain colours, and the rest are icons', () => {
+		expect(TOKEN_MARK_IDS[0]).toBe('down');
+		expect(new Set(TOKEN_MARK_IDS).size).toBe(TOKEN_MARK_IDS.length);
+		const plain = MARK_LOOKS.filter((look) => !look.icon && look.id !== 'down');
+		const icons = MARK_LOOKS.filter((look) => look.icon);
+		expect(plain).toHaveLength(6);
+		expect(icons.length).toBeGreaterThanOrEqual(12);
+		// Every icon is a path that starts somewhere, in a colour of its own to draw it in.
+		for (const look of icons) {
+			expect(look.icon).toMatch(/^M[\d.]/);
+			expect(look.color).toMatch(/^#[0-9a-f]{6}$/);
+		}
+	});
+});
+
+describe('shapes', () => {
 	test('one starts on the grid and is a whole number of cells long', () => {
 		// The corner of a cell, its middle, or the middle of one of its sides.
 		expect(snapToHalfCell(SHEET, [0.262, 0.31])).toEqual([0.25, 0.3]);

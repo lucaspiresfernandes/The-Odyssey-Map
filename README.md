@@ -3,8 +3,8 @@
 A living map you can zoom into forever. A shared, real-time campaign map where every region
 is a doorway to a map of its own, every marker explains itself on hover, and anyone can
 point a spot out to the table with a ping. At the end of the way down, a region can open
-onto a battle map: a grid, tokens the players move themselves, a turn order, spell
-templates and a ruler.
+onto a battle map: a grid, tokens the players move themselves, a turn order, shapes
+for the area of a spell and a ruler.
 
 Built with SvelteKit, Bun and TypeScript. No map library, no paid platform, one SQLite file.
 
@@ -238,8 +238,8 @@ them. It has two palettes of its own, and each folds away with the arrow at its 
   the view. Drag one and it goes down where you let go. The GM's **+** adds pictures to
   the gallery straight from here.
 - **The tools**, in the upper right corner: select and move, select several, measure,
-  draw, write text, lay down a spell template. Each has a key: `Q`, `W`, `E`, `R`, `T`
-  and `Y`, in that order. The GM's also has the map image, the name, the grid, the fog
+  draw, write text. Each has a key: `Q`, `W`, `E`, `R` and `T`, in that order. The
+  pen draws lines and shapes both: what it draws is picked beside it. The GM's also has the map image, the name, the grid, the fog
   of war and **Bring everyone here**. A tool stays in hand until you click it again,
   take another or press `Esc`.
 - **The turn order**, down the left side, once a token has been put in it: see below.
@@ -268,32 +268,43 @@ What is on a battle map:
   it, locks it, marks it, duplicates it, opens its picture, colour and outline, and deletes it: a
   locked token can't be moved, resized or turned until someone unlocks it. Only the GM
   hides it and reveals it, and puts it in the turn order.
-- **Marks.** The marks button brings out seven: six colours, each a pip on the token's
-  rim, and **down**, which greys the token and crosses it out. What a colour means is
-  the table's to say: red for bloodied, green for poisoned, blue for whoever is
-  concentrating. Click one to put it on, again to take it off. With several tokens
-  selected a mark goes on all of them.
+- **Marks.** The marks button brings them out. **Down** greys the token and crosses it
+  out. The rest are pips on the token's rim: six plain colours, and fourteen small
+  icons, each in a colour of its own on a dark pip: a skull, a flame, a bolt, a drop, a
+  snowflake, a shield, a heart, a star, an eye, a moon, an arrow down, an arrow up, a
+  target and a net. What each means is the table's to say: red for bloodied, the drop
+  for poisoned, the eye for whoever is concentrating, the arrow down for prone. Click
+  one to put it on, again to take it off. A token wears as many as it is given, and
+  with several tokens selected a mark goes on all of them.
 - **The turn order.** With tokens selected, the GM's hourglass button puts them in the
   turn order, and a strip appears down the left side of the map for everyone: each
   token in the order it acts, the one whose turn it is ringed in gold, there and on the
   map. **Next turn**, or `N`, moves on, and coming round to the top again starts the
-  next round. Click a token in the strip to select it on the map: the arrows that
-  appear under the strip move it earlier or later. **End the fight** empties the order,
+  next round. The GM sorts the order by dragging a token up or down the strip, and the
+  others make room as it goes. With the focus on one, `Alt` and the up or down arrow
+  key does the same. A click on a token in the strip selects it on the map. **End the
+  fight** empties the order,
   and `Ctrl+Z` takes back any of it. A token taken off the map is passed over and keeps
   its place, in case it comes back. Players see only the tokens they can see: a hidden
   one is not in their strip, and its turn is nobody's.
-- **Spell templates.** With **Lay down a spell template** in hand, pick a circle, a cone
-  or a box beside the tools, and a colour, and drag: out from the middle of a circle,
-  from the tip of a cone the way it points, from one corner of a box to the other. A
-  cone is as wide at its far end as it is long. Its size is written on it in feet while
-  you drag: a template starts on the grid and is a whole number of cells long, and
-  `Alt` leaves it exactly as dragged. It lies on the map under the tokens, tinted so
-  they show through. Catch it by its edge to select it, which shows its size again, and
-  to drag it elsewhere. It is moved and rubbed out like any drawing: by whoever laid
-  it, and the GM.
-- **Drawings.** With **Draw** in hand, drag across the map to draw a line in the colour
-  you pick beside the tools. Lines sit on the map under the tokens, and grow and shrink
-  with it.
+- **Shapes.** For the area of a spell, a breath, a wall. They come out of the same pen
+  as the lines: with **Draw lines and shapes** in hand, pick a circle, a cone or a box
+  in place of the line, and a colour, and drag: out from the middle of a circle, from
+  the tip of a cone the way it points, from one corner of a box to the other. A cone is
+  as wide at its far end as it is long. Its size is written on it in feet while you
+  drag: a shape starts on the grid and is a whole number of cells long. Once it is
+  drawn the hand is back, to move it or get on with the fight, and the pen remembers
+  the shape for the next time. It lies on the map under the tokens, tinted so they show
+  through. Catch
+  it by its edge to select it, which shows its size again, and to drag it elsewhere: it
+  keeps to the grid as it moves, a box from corner to corner of the cells, a circle and
+  a cone from a corner, the middle of a cell or the middle of one of its sides. `Alt`
+  leaves the grid, while drawing and while moving. A shape is moved and rubbed out like
+  any drawing: by whoever drew it, and the GM.
+- **Drawings.** With **Draw lines and shapes** in hand, and the line picked beside the
+  tools, drag across the map to draw a line freehand in the colour you pick there. The
+  pen stays in hand for the next line. Lines sit on the map under the tokens, and grow
+  and shrink with it.
 - **Text.** With **Write text** in hand, click the map and type, then press `Enter`.
   Double-click a text of yours to reword it.
 - **Selecting several.** With **Select several** in hand, drag a box: every token,
@@ -339,7 +350,7 @@ always a world map.
 | Drag a handle of a selected token | Turn it, 15 degrees at a time, or resize it, half a cell at a time |
 | `Alt`-click, or a finger held on a spot | Ping: point the spot out to everyone looking at that map |
 | `Ctrl+K` | Find a map or a marker by name, and go there |
-| `Q` `W` `E` `R` `T` `Y` | On a battle map: select and move, select several, measure, draw, write text, lay a template |
+| `Q` `W` `E` `R` `T` | On a battle map: select and move, select several, measure, draw lines and shapes, write text |
 | `N`, as the GM | On a battle map: on to the next turn |
 | Click a token, a drawing or a text | Select it: its buttons float under it. `Shift`-click selects several |
 | Double-click a text | Reword it, if it's yours |
@@ -369,12 +380,12 @@ tokens, and the tools are in the corner.
 | The scale of a world map | say how many miles across it is | measure, once a map on the way has one |
 | A ping, and the finder | point a spot out, go to anything | point a spot out, go to anything not hidden |
 | A picture for the table | hold any picture up, put it away | look, and close it on their own screen |
-| The turn order, on battle maps | add tokens, reorder, next turn, end the fight | see whose turn it is, among the tokens they can see |
+| The turn order, on battle maps | add tokens, sort by dragging, next turn, end the fight | see whose turn it is, among the tokens they can see |
 | Fog of war, on battle maps | cover, clear, lift, see through | see what has been cleared |
 | Bring everyone here | call everyone to a map and a view of it | follow |
 | Tokens | create anywhere, give any picture, hide, reveal | create where there is no fog, give a revealed picture |
 | Any token they can see | move, resize, turn, recolour, outline, label, mark, lock, unlock, duplicate, delete | move, resize, turn, recolour, outline, label, mark, lock, unlock, duplicate, delete |
-| Drawings, text and templates, on battle maps | create, move, change, rub out, anyone's | create, and move, change, rub out their own |
+| Drawings, text and shapes, on battle maps | create, move, change, rub out, anyone's | create, and move, change, rub out their own |
 | Undo and redo | their own changes | their own changes to table notes, tokens and drawings |
 
 A table note can be deleted by whoever added it and by the GM, never by another player.
@@ -472,10 +483,14 @@ scripts/            run both servers, seed a demo, back up, end-to-end check
   `visibility.ts` like everything else: a player's copy holds only the tokens they
   can see, and when one of those comes into sight or leaves it, the order they are
   shown comes along with that news.
-- **A template is a drawing.** A circle, a cone and a box are three more kinds of
+- **A shape is a drawing.** A circle, a cone and a box are three more kinds of
   drawing, each kept as two points. Everything a drawing can do, they can: who may move
-  one, undo, the limit per map. The shapes themselves are worked out from the two
-  points in `shared/drawing.ts`.
+  one, undo, the limit per map. The outlines themselves are worked out from the two
+  points in `shared/drawing.ts`. The code calls them templates, to tell them from
+  the handles that reshape a token.
+- **A mark is an id in a list.** A token keeps the ids of the marks it wears. How each
+  looks, a colour or an icon, is one table: `TOKEN_MARKS` in `shared/types.ts`. A
+  new mark is one more line there, and nothing in the database changes.
 - **The party's road is read, not kept.** Every move of the party is already an event.
   The road on a map is those events in order, folded into stretches by
   `shared/journey.ts`: the server does it when the map is loaded, and the browser
@@ -562,7 +577,7 @@ Unit tests for the rules: permissions, hidden markers and regions, battle maps, 
 and drawings, the party, the fog of war and what it keeps from players, maps that
 borrow their picture, the grid's arithmetic, undo and restore, campaign isolation, and the storage, on disk and off.
 And for what a session is run with: marks, the turn order and what a player sees of it,
-spell templates, the scale of a world map, the party's road, the finder, a picture held
+shapes, the scale of a world map, the party's road, the finder, a picture held
 up for the table, and what a token picture starts its tokens out as.
 
 ```bash
@@ -614,11 +629,12 @@ Type-checks everything.
   their network traffic can see that the GM pinged or measured on a map they can't
   open, though nothing of what is there.
 - The turn order is the GM's to run: a player can't end their own turn. It keeps no
-  initiative rolls, so the order is set by hand, a place at a time. It tracks no hit
-  points.
-- A mark is a colour. It has no name, and no timer that takes it off again.
-- A template marks an area out. It doesn't say which tokens are in it, and it can't be
-  resized or turned once laid: lay another. There is no straight line among the
+  initiative rolls, so the order is sorted by hand. It tracks no hit points.
+- A mark is a colour or an icon from a fixed set. It has no name of its own, no number
+  on it, and no timer that takes it off again. Icons are small: on a token that is
+  small on screen they are told apart by their colours until the map is zoomed in.
+- A shape marks an area out. It doesn't say which tokens are in it, and it can't be
+  resized or turned once drawn: draw another. There is no straight line among the
   shapes: a thin box does for one along the grid.
 - A world map is measured in miles, as the crow flies. It knows nothing of roads, or of
   how long a day's travel is.
@@ -640,7 +656,7 @@ Type-checks everything.
   tokens and pins are the size they are for everyone.
 - The pen draws freehand lines in one thickness, and text is one size: no eraser that
   rubs out part of a line. A drawing can't be hidden from the players, and neither can
-  a template.
+  a shape.
 - A token's label is its name: it can be changed by anyone, but not left empty.
 - A token is half a cell to six cells across, and turns in steps of 15 degrees.
 - A player sees a newly revealed token picture in the dock the next time they reach for

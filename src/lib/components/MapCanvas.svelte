@@ -37,6 +37,7 @@
 		pixelsToFeet,
 		sitsOnCorner,
 		snapToGrid,
+		snapToHalfCell,
 		templatePoints
 	} from '#lib/shared/grid.ts';
 	import {
@@ -50,7 +51,7 @@
 		DRAWING_SIZE,
 		LIMITS,
 		ROTATION_STEP,
-		TOKEN_MARKS,
+		MARK_LOOKS,
 		TOKEN_SIZE_STEP,
 		imageUrl,
 		isTemplate,
@@ -61,6 +62,7 @@
 		type Hand,
 		type HandSpot,
 		type MapInfo,
+		type MarkLook,
 		type Marker,
 		type Party,
 		type Ping,
@@ -73,6 +75,7 @@
 		type TokenInput
 	} from '#lib/shared/types.ts';
 	import MarkerCard from './MarkerCard.svelte';
+	import MarkIcon from './MarkIcon.svelte';
 	import MarkerGlyph from './MarkerGlyph.svelte';
 	import SelectionBar from './SelectionBar.svelte';
 	import ToolButton from './ToolButton.svelte';
@@ -129,7 +132,11 @@
 			| 'template'
 			| 'reveal'
 			| 'cover';
-		/** The colour `sketch` draws in, `text` writes in and a template is laid down in. */
+		/**
+		 * The colour `sketch` draws in, `text` writes in and a template is laid
+		 * down in. To the table `sketch` and `template` are one tool, the pen:
+		 * the page says which of the two it is being used as.
+		 */
 		ink: string;
 		/** Which template the `template` tool lays down. */
 		shape: TemplateKind;
@@ -527,10 +534,25 @@
 
 	/** The token whose turn it is, if it is one this person can see. */
 	const turnId = $derived(battle ? map.turns.current : null);
-	/** The colour of each mark, by its id. */
-	const MARK_COLOR: Record<string, string> = Object.fromEntries(
-		TOKEN_MARKS.map((mark) => [mark.id, mark.color])
-	);
+	/**
+	 * The pips a token wears on its rim, one for each of its marks but
+	 * `down`: where round the rim each sits, in degrees clockwise from the
+	 * top, and how big it is in fractions of the token. A pip with an icon is
+	 * a little bigger than a plain one, to be made out. They sit side by side
+	 * from the top right, and close up once there are more than fit round.
+	 */
+	function pipsOf(token: Token): { look: MarkLook; angle: number; size: number }[] {
+		const looks = MARK_LOOKS.filter((look) => look.id !== 'down' && token.marks.includes(look.id));
+		const wide = (look: MarkLook) => (look.icon ? 36 : 28);
+		const all = looks.reduce((sum, look) => sum + wide(look), 0);
+		const squeeze = Math.min(1, 350 / all);
+		let at = 6;
+		return looks.map((look) => {
+			const takes = wide(look) * squeeze;
+			at += takes;
+			return { look, angle: at - takes / 2, size: look.icon ? 0.31 : 0.24 };
+		});
+	}
 
 	/** Map space to the map's own pixels, where a line is drawn. */
 	const inPixels = (points: Point[]): Point[] => points.map(([x, y]) => [x * W, y * H]);
@@ -1661,7 +1683,7 @@
 					within(dx, g.room.x0, g.room.x1),
 					within(dy, g.room.y0, g.room.y1)
 				];
-				const by = fit([(e.clientX - g.sx) / (view.k * W), (e.clientY - g.sy) / (view.k * H)]);
+				let by = fit([(e.clientX - g.sx) / (view.k * W), (e.clientY - g.sy) / (view.k * H)]);
 				let rest = by;
 				// A token comes down on the grid, and takes the others the same
 				// way. With Alt held it stays exactly where it is put.
@@ -1669,6 +1691,15 @@
 					const { x, y, size } = g.lead;
 					const [rx, ry] = snapToGrid(map, [x + by[0], y + by[1]], size);
 					rest = fit([rx - x, ry - y]);
+				} else if (!isToken(g.lead) && isTemplate(g.lead.kind) && !e.altKey) {
+					// A shape keeps to the grid it was drawn on, and all the way
+					// there, so the cells it covers can be read while it moves. A
+					// box goes from corner to corner of the cells. A circle and a
+					// cone start from a corner, the middle of a cell or of a side.
+					const [x, y] = g.lead.points[0];
+					const to: Point = [x + by[0], y + by[1]];
+					const [rx, ry] = g.lead.kind === 'rect' ? snapToGrid(map, to, 2) : snapToHalfCell(map, to);
+					rest = by = fit([rx - x, ry - y]);
 				}
 				carry = {
 					lead: g.lead.id,
@@ -2608,7 +2639,7 @@
 					{@const across = sizeOf(token) * cell}
 					{@const turn = turnOf(token)}
 					{@const down = token.marks.includes('down')}
-					{@const pips = token.marks.filter((mark) => mark !== 'down')}
+					{@const pips = pipsOf(token)}
 					<!-- Only the position glides, from one report of a drag to the next and
 					     onto the grid when it is let go. Never in the hand that holds it. -->
 					<div
@@ -2690,19 +2721,26 @@
 								/>
 							</svg>
 						{/if}
-						{#each pips as mark, i (mark)}
-							<!-- Round its rim from the top, clockwise, each in its own colour (--c). -->
-							{@const angle = ((20 + i * 28) * Math.PI) / 180}
+						{#each pips as { look, angle, size } (look.id)}
+							<!-- Round its rim from the top, clockwise. A plain one is a disc of
+							     its colour (--c). One with an icon is a dark disc, ringed in
+							     the icon's colour, with the icon on it. -->
+							{@const round = (angle * Math.PI) / 180}
 							<span
-								class="pointer-events-none absolute -translate-1/2 rounded-full border-[#12151c] bg-(--c)"
-								style:left="{Math.sin(angle) * (across / 2)}px"
-								style:top="{-Math.cos(angle) * (across / 2)}px"
-								style:width="{across * 0.24}px"
-								style:height="{across * 0.24}px"
-								style:border-width="{across * 0.03}px"
-								style:--c={MARK_COLOR[mark]}
+								class={[
+									'pointer-events-none absolute grid -translate-1/2 place-items-center rounded-full',
+									look.icon ? 'border-(--c) bg-[#12151c]' : 'border-[#12151c] bg-(--c)'
+								]}
+								style:left="{Math.sin(round) * (across / 2)}px"
+								style:top="{-Math.cos(round) * (across / 2)}px"
+								style:width="{across * size}px"
+								style:height="{across * size}px"
+								style:border-width="{across * (look.icon ? 0.02 : 0.03)}px"
+								style:--c={look.color}
 								aria-hidden="true"
-							></span>
+							>
+								<MarkIcon {look} />
+							</span>
 						{/each}
 						{#if across * view.k >= 26 || selected}
 							<span
@@ -3118,7 +3156,7 @@
 				{:else}
 					Drag from one corner of the box to the other.
 				{/if}
-				<span class={keys}>Alt leaves the grid · Esc cancels</span>
+				<span class={keys}>Alt leaves the grid · Esc puts the pen away</span>
 			</p>
 		{:else if tool === 'select'}
 			<p class={hint}>

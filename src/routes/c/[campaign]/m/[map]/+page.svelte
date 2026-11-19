@@ -99,17 +99,13 @@
 	/**
 	 * What is in hand on a battle map. `pan` is the hand itself: it selects
 	 * and moves things. The others are picked from the palette in the corner.
-	 * `reveal` and `cover` are the GM's two ways with the fog of war.
+	 * `sketch` is the pen, which draws a line freehand or one of the shapes:
+	 * see `pen`. `reveal` and `cover` are the GM's two ways with the fog
+	 * of war.
 	 */
-	type BattleTool =
-		| 'pan'
-		| 'select'
-		| 'measure'
-		| 'sketch'
-		| 'text'
-		| 'template'
-		| 'reveal'
-		| 'cover';
+	type BattleTool = 'pan' | 'select' | 'measure' | 'sketch' | 'text' | 'reveal' | 'cover';
+	/** What the pen draws: a line freehand, or a shape dragged out. */
+	type Pen = 'line' | TemplateKind;
 	type Prompt =
 		| { kind: 'region'; points: Point[] }
 		| { kind: 'rename'; mapId: string; initial: string };
@@ -132,7 +128,7 @@
 	/** The colour the pen draws in, text is written in and templates are laid down in. */
 	let ink = $state<string>(INK_COLORS[0]);
 	/** Which template the template tool lays down. */
-	let shape = $state<TemplateKind>('circle');
+	let pen = $state<Pen>('line');
 	let form = $state<Form | null>(null);
 	/** The token whose picture, colour and outline are being changed. */
 	let tokenForm = $state<Token | null>(null);
@@ -187,7 +183,18 @@
 	 */
 	const battle = $derived(world.map.kind === 'battle');
 	const tool = $derived(
-		battle ? battleTool : placing ? 'place' : drawing ? 'draw' : measuring ? 'measure' : 'pan'
+		battle
+			? // To the map, the pen is two tools: one that follows the pointer, one that drags a shape out.
+				battleTool === 'sketch' && pen !== 'line'
+				? 'template'
+				: battleTool
+			: placing
+				? 'place'
+				: drawing
+					? 'draw'
+					: measuring
+						? 'measure'
+						: 'pan'
 	);
 	/** The GM has one of the two fog tools in hand. */
 	const fogging = $derived(battleTool === 'reveal' || battleTool === 'cover');
@@ -520,7 +527,7 @@
 
 	/** The GM changed who takes turns, in what order, or whose turn it is. */
 	function setTurns(turns: Partial<Turns>) {
-		run({ t: 'map.update', id: world.map.id, turns });
+		return run({ t: 'map.update', id: world.map.id, turns });
 	}
 
 	/** Takes a tool of the battle map in hand. */
@@ -630,16 +637,19 @@
 		{ tool: 'pan', icon: 'pointer', label: 'Select and move', key: 'q' },
 		{ tool: 'select', icon: 'marquee', label: 'Select several', key: 'w' },
 		{ tool: 'measure', icon: 'ruler', label: 'Measure a distance', key: 'e' },
-		{ tool: 'sketch', icon: 'draw', label: 'Draw', key: 'r' },
-		{ tool: 'text', icon: 'text', label: 'Write text', key: 't' },
-		{ tool: 'template', icon: 'template', label: 'Lay down a spell template', key: 'y' }
+		{ tool: 'sketch', icon: 'draw', label: 'Draw lines and shapes', key: 'r' },
+		{ tool: 'text', icon: 'text', label: 'Write text', key: 't' }
 	];
 
-	/** The templates the template tool lays down. */
-	const SHAPES: { shape: TemplateKind; icon: ToolIcon; label: string }[] = [
-		{ shape: 'circle', icon: 'circle', label: 'Circle: a burst around a spot' },
-		{ shape: 'cone', icon: 'cone', label: 'Cone: as wide at its end as it is long' },
-		{ shape: 'rect', icon: 'box', label: 'Box: a square or a wall' }
+	/**
+	 * What the pen draws: a line, or one of the shapes, for the area of a
+	 * spell, a breath, a wall.
+	 */
+	const PENS: { pen: Pen; icon: ToolIcon; label: string }[] = [
+		{ pen: 'line', icon: 'draw', label: 'Line: drawn freehand' },
+		{ pen: 'circle', icon: 'circle', label: 'Circle: a burst around a spot' },
+		{ pen: 'cone', icon: 'cone', label: 'Cone: as wide at its end as it is long' },
+		{ pen: 'rect', icon: 'box', label: 'Box: a square or a wall' }
 	];
 
 	// ------------------------------------------------------ maps & regions
@@ -942,7 +952,7 @@
 				passive={display}
 				{tool}
 				{ink}
-				{shape}
+				shape={pen === 'line' ? 'circle' : pen}
 				depth={world.trail.length}
 				bind:selectedMarkerId
 				bind:selectedRegionId
@@ -950,8 +960,10 @@
 				bind:selectedParty
 				{send}
 				ondone={() => {
-					// A template that was laid down, a text that was written: back to
-					// the hand. The ruler of a world map stays out for the next stretch.
+					// A shape that was drawn, a text that was written: back to the
+					// hand, to move it or get on with the fight. The pen stays in
+					// hand after a line, which is seldom the only one, and it
+					// remembers what it last drew for the next time it is taken up.
 					battleTool = 'pan';
 				}}
 				onplace={placed}
@@ -1060,34 +1072,26 @@
 							/>
 						</div>
 					{/if}
-					{#if !toolsFolded && battleTool === 'template'}
-						<!-- The shapes a template comes in, out while one is to be laid down. -->
-						<div
-							class="grid gap-1.5 p-1.5 {floating}"
-							role="toolbar"
-							aria-label="Shape of the template"
-						>
-							{#each SHAPES as each (each.shape)}
+					{#if !toolsFolded && battleTool === 'sketch'}
+						<!-- What the pen draws, out while it is in hand: a line, or a shape. -->
+						<div class="grid gap-1.5 p-1.5 {floating}" role="toolbar" aria-label="What to draw">
+							{#each PENS as each (each.pen)}
 								<ToolButton
 									tip="left"
 									icon={each.icon}
 									label={each.label}
-									active={shape === each.shape}
-									onclick={() => (shape = each.shape)}
+									active={pen === each.pen}
+									onclick={() => (pen = each.pen)}
 								/>
 							{/each}
 						</div>
 					{/if}
-					{#if !toolsFolded && (battleTool === 'sketch' || battleTool === 'text' || battleTool === 'template')}
-						<!-- The inks, out while there is something to draw, write or lay down with. -->
+					{#if !toolsFolded && (battleTool === 'sketch' || battleTool === 'text')}
+						<!-- The inks, out while there is something to draw or write with. -->
 						<div
 							class="grid gap-1.5 p-1.5 {floating}"
 							role="radiogroup"
-							aria-label={battleTool === 'text'
-								? 'Colour of the text'
-								: battleTool === 'template'
-									? 'Colour of the template'
-									: 'Colour of the pen'}
+							aria-label={battleTool === 'text' ? 'Colour of the text' : 'Colour of the pen'}
 						>
 							{#each INK_COLORS as option (option)}
 								<!-- Each ink is a disc of itself, which arrives as --c. -->

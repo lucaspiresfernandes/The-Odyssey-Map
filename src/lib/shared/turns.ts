@@ -26,20 +26,15 @@ export function nextTurn(turns: Turns, onMap: Iterable<string>): Pick<Turns, 'cu
 }
 
 /**
- * The order with one token moved a place earlier (`by` of -1) or later (1),
- * past the next token that is still on the map: the ones that are not don't
- * show, so stepping over just one of them would look like nothing happened.
+ * The order with the tokens that show put in this sequence: what the GM
+ * sorted them into by hand. The ones that are off the map don't show to be
+ * sorted, and keep the places they had, for when they come back.
  */
-export function movedTurn(order: string[], id: string, by: -1 | 1, onMap: Iterable<string>): string[] {
-	const here = new Set(onMap);
-	const from = order.indexOf(id);
-	if (from === -1) return order;
-	let to = from + by;
-	while (to >= 0 && to < order.length && !here.has(order[to])) to += by;
-	if (to < 0 || to >= order.length) return order;
-	const moved = order.filter((each) => each !== id);
-	moved.splice(to, 0, id);
-	return moved;
+export function reorderedTurns(order: string[], shown: string[]): string[] {
+	const sorted = shown.filter((id) => order.includes(id));
+	const moving = new Set(sorted);
+	let next = 0;
+	return order.map((id) => (moving.has(id) ? sorted[next++] : id));
 }
 
 /** The order with these tokens added at the end, the ones already in it left where they are. */

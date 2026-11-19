@@ -43,9 +43,7 @@
 		// Four ways in to one spot: everyone is brought here.
 		gather:
 			'M12 2v5 M12 17v5 M2 12h5 M17 12h5 M9.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0 M10 5l2 2 2-2 M10 19l2-2 2 2 M5 10l2 2-2 2 M19 10l-2 2 2 2',
-		// A burst: the area of a spell. Then the three shapes it can take.
-		template:
-			'M12 2v4 M12 18v4 M2 12h4 M18 12h4 M4.9 4.9l2.9 2.9 M16.2 16.2l2.9 2.9 M4.9 19.1l2.9-2.9 M16.2 7.8l2.9-2.9 M9.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0',
+		// The shapes the pen draws besides a line.
 		circle: 'M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0 M11.5 12a.5.5 0 1 0 1 0a.5.5 0 1 0-1 0',
 		cone: 'M3 12 20 4.5v15Z',
 		box: 'M4 4h16v16H4Z',

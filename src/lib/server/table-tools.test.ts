@@ -102,6 +102,15 @@ describe('marks on tokens', () => {
 		expect((marked.after as Token).marks).toEqual(['down', 'red', 'blue']);
 		expect(sees(bridge).tokens[0].marks).toEqual(['down', 'red', 'blue']);
 
+		// An icon is a mark like a colour is, and comes after the colours.
+		const [burning] = perform(db, player, {
+			t: 'token.update',
+			id: goblin.id,
+			changes: { marks: ['flame', 'skull', 'red', 'down', 'blue'] }
+		});
+		expect((burning.after as Token).marks).toEqual(['down', 'red', 'blue', 'skull', 'flame']);
+		perform(db, player, { t: 'token.update', id: goblin.id, changes: { marks: ['down', 'red', 'blue'] } });
+
 		// The same marks again are no change at all.
 		expect(
 			perform(db, player, { t: 'token.update', id: goblin.id, changes: { marks: ['red', 'down', 'blue'] } })

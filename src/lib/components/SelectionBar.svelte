@@ -13,7 +13,7 @@
 	import { joinedTurns } from '#lib/shared/turns.ts';
 	import {
 		LIMITS,
-		TOKEN_MARKS,
+		MARK_LOOKS,
 		isTemplate,
 		type Command,
 		type Drawing,
@@ -23,6 +23,7 @@
 		type TokenMark,
 		type Turns
 	} from '#lib/shared/types.ts';
+	import MarkIcon from './MarkIcon.svelte';
 	import ToolButton from './ToolButton.svelte';
 
 	interface Props {
@@ -172,7 +173,7 @@
 			note =
 				tokens.length
 					? `Deleted “${tokens[0].name}”.`
-					: `Rubbed out the ${erasable[0].kind === 'text' ? 'text' : isTemplate(erasable[0].kind) ? 'template' : 'drawing'}.`;
+					: `Rubbed out the ${erasable[0].kind === 'text' ? 'text' : isTemplate(erasable[0].kind) ? 'shape' : 'drawing'}.`;
 		}
 		onclear();
 		send(commands, note);
@@ -204,21 +205,22 @@
 				<button class="btn btn-sm btn-primary">Save</button>
 			</form>
 		{:else if marking && tokens.length}
-			<!-- The marks, each a disc of its own colour (--c): lit while every
-			     token selected wears it. The first crosses a token out. -->
-			<div class="flex items-center gap-1.5 px-1" role="group" aria-label="Marks">
-				{#each TOKEN_MARKS as option (option.id)}
+			<!-- The marks, seven to a row: lit while every token selected wears it.
+			     The first crosses a token out. Then the plain ones, each a disc of
+			     its own colour (--c), and under them the ones with an icon. -->
+			<div class="grid grid-cols-7 gap-1.5 p-1" role="group" aria-label="Marks">
+				{#each MARK_LOOKS as option (option.id)}
 					{@const on = marked(option.id)}
 					<button
 						class={[
 							'grid size-6 cursor-pointer place-items-center rounded-full border-2 bg-(--c) touch:size-8',
 							on ? 'border-white token-selected' : 'border-[#55607a]'
 						]}
-						style:--c={option.color}
+						style:--c={option.icon ? '#12151c' : option.color}
 						style:font-size="24px"
 						aria-pressed={on}
 						aria-label={option.id === 'down' ? 'Down' : `${option.label} mark`}
-						title={option.id === 'down' ? 'Down: crosses the token out' : `${option.label} mark`}
+						title={option.id === 'down' ? 'Down: crosses the token out' : option.label}
 						onclick={() => mark(option.id)}
 						onkeydown={(e) => {
 							if (e.key !== 'Escape') return;
@@ -237,10 +239,14 @@
 									stroke-linecap="round"
 								/>
 							</svg>
+						{:else}
+							<MarkIcon look={option} />
 						{/if}
 					</button>
 				{/each}
-				<button class="btn btn-sm" onclick={() => (marking = false)}>Done</button>
+				<button class="btn btn-sm col-span-7 justify-self-end" onclick={() => (marking = false)}>
+					Done
+				</button>
 			</div>
 		{:else}
 			{#if tokens.length}
@@ -269,7 +275,7 @@
 					{tip}
 					icon="mark"
 					label="Marks"
-					hint="Pips on its rim, or crossed out"
+					hint="Colours and icons on its rim, or crossed out"
 					active={tokens.some((t) => t.marks.length > 0)}
 					onclick={() => (marking = true)}
 				/>
