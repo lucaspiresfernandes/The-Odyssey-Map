@@ -14,7 +14,8 @@
 //     what they are looking at: the app says who may follow. The last call
 //     is kept for as long as this server runs, for whoever connects later.
 //     So is the picture the GM is holding up, and who for, which the app
-//     also tells of whenever a browser connects.
+//     also tells of whenever a browser connects. And who is asking for a
+//     seat they sat in before, which only the GM is ever told.
 //   - What a browser has in hand goes straight from one browser to the
 //     others: the token it is dragging, the distance it is measuring, the
 //     spot it is pointing at while its button is held down. So does a ping,
@@ -25,20 +26,22 @@
 //     never sent at all.
 
 import type { ServerWebSocket } from 'bun';
-import type {
-	Broadcast,
-	ClientMessage,
-	CommandResponse,
-	Gather,
-	Hand,
-	HandSpot,
-	LiveIdentity,
-	Ping,
-	PingSpot,
-	Presence,
-	Role,
-	ServerMessage,
-	Shown
+import {
+	LIMITS,
+	type Broadcast,
+	type ClientMessage,
+	type CommandResponse,
+	type Gather,
+	type Hand,
+	type HandSpot,
+	type Knock,
+	type LiveIdentity,
+	type Ping,
+	type PingSpot,
+	type Presence,
+	type Role,
+	type ServerMessage,
+	type Shown
 } from '#lib/shared/types.ts';
 
 const PORT = Number(process.env.WS_PORT || 3001);
@@ -93,6 +96,8 @@ interface Connection {
 	queue: Promise<void>;
 	/** The picture the app said was held up for the table when this browser was identified, and when that was. */
 	shown: Shown | null;
+	/** Who the app said was asking for a seat then. Empty for anyone but the GM. */
+	knocks: Knock[];
 	identifiedAt: number;
 	/** What this browser last said it had in hand, for people who connect later. */
 	hand: Hand | null;
@@ -123,6 +128,9 @@ const GATHER_KEPT = 6 * 60 * 60 * 1000;
 
 /** The picture held up per campaign, the players it is for, and when the app last said so through here. */
 const heldUp = new Map<string, { shown: Shown | null; to: string[]; at: number }>();
+
+/** Who is asking for a seat per campaign, and when the app last said so through here. */
+const knocking = new Map<string, { knocks: Knock[]; at: number }>();
 
 /**
  * Who a socket is among the players, by user id, or null for the GM and for
@@ -341,10 +349,11 @@ function hold(ws: Socket, at: unknown) {
 		if (!nearMap(drag.x) || !nearMap(drag.y)) return;
 	}
 	if (ruler !== undefined) {
-		const ends = Array.isArray(ruler) && ruler.length === 2 ? ruler : [];
-		const sound = (end: unknown) =>
-			Array.isArray(end) && end.length === 2 && nearMap(end[0]) && nearMap(end[1]);
-		if (!sound(ends[0]) || !sound(ends[1])) return;
+		// Two ends, and the spots it bends at between them.
+		if (!Array.isArray(ruler) || ruler.length < 2 || ruler.length > LIMITS.rulerPoints) return;
+		const sound = (spot: unknown) =>
+			Array.isArray(spot) && spot.length === 2 && nearMap(spot[0]) && nearMap(spot[1]);
+		if (!ruler.every(sound)) return;
 	}
 
 	// A browser sends about twenty of these a second. Much faster is dropped.
@@ -356,7 +365,7 @@ function hold(ws: Socket, at: unknown) {
 	const { id, user, role } = ws.data;
 	const hand: Hand = { id, userId: user.id, name: user.name, role, mapId: spot.mapId };
 	if (drag) hand.drag = { id: drag.id, x: drag.x, y: drag.y };
-	if (ruler) hand.ruler = [[ruler[0][0], ruler[0][1]], [ruler[1][0], ruler[1][1]]];
+	if (ruler) hand.ruler = ruler.map(([x, y]) => [x, y]);
 	if (point) hand.point = [point[0], point[1]];
 	ws.data.hand = hand;
 	relay(ws, { t: 'hand', hand });
@@ -367,7 +376,7 @@ async function publish(request: Request): Promise<Response> {
 	if (request.method !== 'POST' || request.headers.get('authorization') !== `Bearer ${SECRET}`) {
 		return new Response('Forbidden', { status: 403 });
 	}
-	const { campaignId, events, gather, show } = (await request.json()) as Broadcast;
+	const { campaignId, events, gather, show, knocks } = (await request.json()) as Broadcast;
 	const room = rooms.get(campaignId) ?? [];
 	// The GM bringing everyone along: the app has said which roles may follow.
 	// Each role keeps the last call it was let follow: one the players were
@@ -392,6 +401,13 @@ async function publish(request: Request): Promise<Response> {
 				if (id !== null && let_in.has(id)) send(ws, { t: 'gather', gather: call });
 			}
 		}
+	}
+	// Who is asking for a seat they sat in before: the GM's to know, on
+	// every screen of theirs but a table display, which listens as a player.
+	if (knocks) {
+		knocking.set(campaignId, { knocks, at: Date.now() });
+		const message: ServerMessage = { t: 'knocks', knocks };
+		server.publish(topic(campaignId, 'gm'), JSON.stringify(message));
 	}
 	// A picture held up, or put away. Everyone is told: the ones it is not
 	// for, that nothing is up.
@@ -455,6 +471,7 @@ const server = Bun.serve({
 			recent: [],
 			queue: Promise.resolve(),
 			shown: identity.shown ?? null,
+			knocks: identity.role === 'gm' ? (identity.knocks ?? []) : [],
 			identifiedAt: asked,
 			hand: null,
 			handAt: 0,
@@ -477,6 +494,7 @@ const server = Bun.serve({
 			room.add(ws);
 
 			const held = heldUp.get(campaignId);
+			const asking = knocking.get(campaignId);
 			send(ws, {
 				t: 'hello',
 				user,
@@ -492,7 +510,14 @@ const server = Bun.serve({
 				shown:
 					held && held.at >= ws.data.identifiedAt
 						? shownFor(ws, held.shown, held.to)
-						: ws.data.shown
+						: ws.data.shown,
+				// The same goes for who is asking for a seat, which is the GM's to hear.
+				knocks:
+					role !== 'gm'
+						? []
+						: asking && asking.at >= ws.data.identifiedAt
+							? asking.knocks
+							: ws.data.knocks
 			});
 			// Where the GM last brought everyone, for someone arriving late:
 			// the table, or this player among the few who were let follow,

@@ -107,6 +107,8 @@ export const maps = sqliteTable(
 		turns: text('turns', { mode: 'json' }).$type<Turns>().notNull().default(NO_TURNS),
 		/** How many miles a world map is across, when the GM has said so. */
 		miles: real('miles'),
+		/** How many miles a day's travel covers on a world map, when the GM has said so. */
+		dayMiles: real('day_miles'),
 		imageFile: text('image_file'),
 		width: integer('width').notNull(),
 		height: integer('height').notNull(),
@@ -136,6 +138,34 @@ export const regions = sqliteTable(
 		createdAt: integer('created_at').notNull()
 	},
 	(t) => [index('regions_map').on(t.mapId)]
+);
+
+// Someone asking for a seat at a campaign's table: a new one, or the one
+// they sat in before, when their browser has forgotten them or they have
+// come on another device. The row is there while the GM has yet to answer,
+// and a little longer once they have, for the browser that asked to hear of
+// it. Only a hash of what that browser holds is kept, as with a login.
+export const seatClaims = sqliteTable(
+	'seat_claims',
+	{
+		id: text('id').primaryKey(),
+		campaignId: text('campaign_id')
+			.notNull()
+			.references(() => campaigns.id, { onDelete: 'cascade' }),
+		/**
+		 * The player whose seat is asked for, or whoever is logged in and asks
+		 * to join. Nobody yet for someone new with only a name: see `name`.
+		 */
+		userId: text('user_id').references(() => users.id, { onDelete: 'cascade' }),
+		/** What someone new wants to be called. They become a player on a yes. */
+		name: text('name'),
+		tokenHash: text('token_hash').notNull().unique(),
+		status: text('status', { enum: ['waiting', 'granted', 'refused'] })
+			.notNull()
+			.default('waiting'),
+		createdAt: integer('created_at').notNull()
+	},
+	(t) => [index('seat_claims_campaign').on(t.campaignId)]
 );
 
 // Where each campaign's party is: one row at most, on one of its world
@@ -168,6 +198,8 @@ export const markers = sqliteTable(
 		hidden: integer('hidden', { mode: 'boolean' }).notNull().default(false),
 		/** The players a hidden marker is shown to all the same, by user id. */
 		seenBy: text('seen_by', { mode: 'json' }).$type<string[]>().notNull().default([]),
+		/** File name of the picture its card shows, out of the gallery. Null for none. */
+		image: text('image'),
 		authorId: text('author_id').notNull(),
 		authorName: text('author_name').notNull(),
 		createdAt: integer('created_at').notNull(),
@@ -209,8 +241,10 @@ export const tokens = sqliteTable(
 		locked: integer('locked', { mode: 'boolean' }).notNull().default(false),
 		/** What it is marked with: pips on its rim, or crossed out. */
 		marks: text('marks', { mode: 'json' }).$type<TokenMark[]>().notNull().default([]),
-		// From when a token belonged to one player. Nothing reads or writes
-		// these now: anyone moves any token that isn't locked.
+		// The player whose token it is, and what they are called. Anyone still
+		// moves any token that isn't locked: this says whose turn it is when
+		// the token's turn comes. Not a foreign key, so that a campaign's
+		// tokens never hang on who is still a member.
 		ownerId: text('owner_id'),
 		ownerName: text('owner_name'),
 		/** A number the table counts on it: hit points, charges, rounds left. Null for none. */

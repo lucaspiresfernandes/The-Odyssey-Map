@@ -59,6 +59,8 @@
 		// Two heads: the players something is a secret with.
 		people:
 			'M5 7a4 4 0 1 0 8 0a4 4 0 1 0-8 0 M2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1 M16 3.13a4 4 0 0 1 0 7.75 M22 21v-1a6 6 0 0 0-4-5.66',
+		// One head: the player a token belongs to.
+		person: 'M8 7a4 4 0 1 0 8 0a4 4 0 1 0-8 0 M5 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1',
 		// A die: what each token rolled for its place in the turn order.
 		dice: 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z M8.5 8.5h.01 M15.5 8.5h.01 M12 12h.01 M8.5 15.5h.01 M15.5 15.5h.01',
 		search: 'M4 11a7 7 0 1 0 14 0a7 7 0 1 0-14 0 M21 21l-4.3-4.3',
@@ -100,7 +102,7 @@
 		/** A smaller button, for the ones that float over the map beside what they act on. */
 		small?: boolean;
 		/** Which side the tooltip comes out on. Above, unless the button is docked where that has no room. */
-		tip?: 'top' | 'bottom' | 'left';
+		tip?: 'top' | 'bottom' | 'bottom-end' | 'left';
 		onclick: () => void;
 	}
 
@@ -122,6 +124,9 @@
 	const TIP = {
 		top: 'bottom-[calc(100%+10px)] left-1/2 -translate-x-1/2',
 		bottom: 'top-[calc(100%+10px)] left-1/2 -translate-x-1/2',
+		// Under the button and no further right than it: for one at the right
+		// edge of the page, where a tooltip in the middle would hang over it.
+		'bottom-end': 'top-[calc(100%+10px)] right-0',
 		left: 'top-1/2 right-[calc(100%+10px)] -translate-y-1/2'
 	};
 </script>

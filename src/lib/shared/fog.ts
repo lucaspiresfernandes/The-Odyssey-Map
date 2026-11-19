@@ -86,10 +86,19 @@ export function cleared(fog: Fog, rect: Rect): Fog {
 
 /**
  * The fog with `rect` covered again. On a map with no fog yet, that is
- * where it starts: the rest of the map stays in the clear.
+ * where it starts: the rest of the map stays in the clear. A round patch
+ * the party cleared on a world map goes with the box its middle is in:
+ * the fog comes down on where it stood as well.
  */
 export function covered(fog: Fog, rect: Rect): Fog {
-	return { ...fog, on: true, clear: without(fog.on ? fog.clear : [[0, 0, 1, 1]], rect) };
+	const [x0, y0, x1, y1] = rect;
+	const clear = without(fog.on ? fog.clear : [[0, 0, 1, 1]], rect);
+	const spots = (fog.on ? (fog.spots ?? []) : []).filter(
+		([x, y]) => x < x0 || x > x1 || y < y0 || y > y1
+	);
+	// Fog that had patches says what is left of them, even when that is none:
+	// left unsaid, the server would keep the ones it has.
+	return fog.spots ? { on: true, clear, spots } : { on: true, clear };
 }
 
 /** Six decimal places put an edge within a thirtieth of a pixel on the biggest map there is. */

@@ -19,11 +19,13 @@ import type {
 	GatherResponse,
 	Hand,
 	HandSpot,
+	Knock,
 	LiveEvent,
 	Ping,
 	PingSpot,
 	Presence,
 	Role,
+	SeatResponse,
 	ServerMessage,
 	ShowResponse,
 	Shown,
@@ -66,6 +68,8 @@ export class Live {
 	pings = $state.raw<LivePing[]>([]);
 	/** The picture the GM is holding up for the table, if any. */
 	shown = $state.raw<Shown | null>(null);
+	/** For the GM: who is asking for a seat they sat in before, the first to ask first. */
+	knocks = $state.raw<Knock[]>([]);
 
 	/**
 	 * The last few events received. A page that finishes loading while
@@ -136,6 +140,7 @@ export class Live {
 				this.online = message.online;
 				this.hands = message.hands;
 				this.shown = message.shown;
+				this.knocks = message.knocks ?? [];
 				this.#me = { ...message.user, role: message.role };
 				// A new connection is a new hand to everyone else.
 				this.#toldSpot = null;
@@ -161,6 +166,9 @@ export class Live {
 				break;
 			case 'show':
 				this.shown = message.shown;
+				break;
+			case 'knocks':
+				this.knocks = message.knocks;
 				break;
 			case 'event':
 				this.#dispatch(message.event);
@@ -293,16 +301,39 @@ export class Live {
 	/**
 	 * Holds a picture of the gallery up, by its id, or with null puts away
 	 * the one that is up: the GM's to do. `to` names the players it is for,
-	 * by id: with none, it is for the whole table. Rejects with the server's
-	 * reason if it refuses.
+	 * by id: with none, it is for the whole table. `file` names the picture
+	 * by its file instead, for one that is known from where it is used: the
+	 * card of a marker. Rejects with the server's reason if it refuses.
 	 */
-	async show(id: string | null, to: string[] = []): Promise<void> {
+	async show(id: string | null, to: string[] = [], file?: string): Promise<void> {
 		let body: ShowResponse;
 		try {
 			const response = await fetch(`/c/${this.#options.campaignId}/show`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ id, to })
+				body: JSON.stringify(file ? { file, to } : { id, to })
+			});
+			body = await response.json();
+		} catch {
+			throw new Error("Can't reach the server.");
+		}
+		if (!body.ok) throw new Error(body.error ?? 'Something went wrong.');
+	}
+
+	/**
+	 * Answers someone asking for a seat, a new one or the one they sat in
+	 * before: lets them in, or doesn't. The GM's to do.
+	 * Rejects with the server's reason if it refuses.
+	 */
+	async answer(knock: Knock, grant: boolean): Promise<void> {
+		// Off this screen at once: the server's word on who is left follows.
+		this.knocks = this.knocks.filter((each) => each.id !== knock.id);
+		let body: SeatResponse;
+		try {
+			const response = await fetch(`/c/${this.#options.campaignId}/seats`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ id: knock.id, grant })
 			});
 			body = await response.json();
 		} catch {

@@ -19,7 +19,8 @@ import {
 	members,
 	parties,
 	regions,
-	tokens
+	tokens,
+	users
 } from './schema';
 import { isFogged, middleOf, sighted, stopsBetween } from '../shared/fog';
 import { wrapOffset } from '../shared/grid';
@@ -27,6 +28,7 @@ import {
 	canChangeDrawing,
 	canEditMarkerKind,
 	canEditWorld,
+	canEndTurn,
 	canEnterRegion,
 	canHideToken,
 	canMoveParty,
@@ -128,6 +130,7 @@ export const markerColumns = {
 	y: markers.y,
 	hidden: markers.hidden,
 	seenBy: markers.seenBy,
+	image: markers.image,
 	authorId: markers.authorId,
 	authorName: markers.authorName,
 	updatedAt: markers.updatedAt
@@ -160,6 +163,7 @@ export const mapColumns = {
 	fog: maps.fog,
 	turns: maps.turns,
 	miles: maps.miles,
+	dayMiles: maps.dayMiles,
 	imageFile: maps.imageFile,
 	width: maps.width,
 	height: maps.height
@@ -179,6 +183,8 @@ export const tokenColumns = {
 	locked: tokens.locked,
 	marks: tokens.marks,
 	count: tokens.count,
+	ownerId: tokens.ownerId,
+	ownerName: tokens.ownerName,
 	hidden: tokens.hidden,
 	seenBy: tokens.seenBy,
 	updatedAt: tokens.updatedAt
@@ -344,12 +350,16 @@ export const IMAGE_FILE_PATTERN = /^[A-Za-z0-9]+-[A-Za-z0-9]+\.(png|jpg|gif|webp
  * A player picks only from what the GM has revealed in the gallery: to
  * them any other picture is the same as one that isn't there. `restoring`
  * is for undo, which puts back what was there before, whatever it was.
+ *
+ * `kind` is the shelf it has to be on: a map image to lay under a map, a
+ * token picture to put on a token. Null takes one off either, which is what
+ * the card of a marker shows.
  */
 function findPicture(
 	db: Db,
 	actor: Actor,
 	file: string,
-	kind: GalleryKind,
+	kind: GalleryKind | null,
 	restoring = false
 ) {
 	const anyOfThem = actor.role === 'gm' || restoring;
@@ -360,7 +370,7 @@ function findPicture(
 			and(
 				eq(gallery.file, file),
 				eq(gallery.campaignId, actor.campaignId),
-				eq(gallery.kind, kind),
+				kind ? eq(gallery.kind, kind) : undefined,
 				anyOfThem ? undefined : and(eq(gallery.hidden, false), isNull(gallery.deletedAt))
 			)
 		)
@@ -618,6 +628,7 @@ function asTokenChanges(db: Db, actor: Actor, value: unknown): Partial<TokenInpu
 	}
 	if (raw.locked !== undefined) out.locked = asBool(raw.locked);
 	if (raw.count !== undefined) out.count = asCount(raw.count);
+	if (raw.ownerId !== undefined) out.ownerId = raw.ownerId === null ? null : asId(raw.ownerId);
 	if (raw.hidden !== undefined) out.hidden = asBool(raw.hidden);
 	if (raw.seenBy !== undefined) out.seenBy = asSeenBy(db, actor, raw.seenBy);
 	return out;
@@ -636,6 +647,7 @@ function asMarkerChanges(db: Db, actor: Actor, value: unknown): Partial<MarkerIn
 	if (raw.y !== undefined) out.y = asCoord(raw.y);
 	if (raw.hidden !== undefined) out.hidden = asBool(raw.hidden);
 	if (raw.seenBy !== undefined) out.seenBy = asSeenBy(db, actor, raw.seenBy);
+	if (raw.image !== undefined) out.image = raw.image === null ? null : asImageFile(raw.image);
 	return out;
 }
 
@@ -671,6 +683,12 @@ function createMarker(db: Db, actor: Actor, raw: Record<string, unknown>): Store
 	if (input.x === undefined || input.y === undefined) fail('invalid', 'The marker needs a position.');
 	// Hiding is a GM tool for world markers. Table notes are always shared.
 	const hidden = kind === 'world' && input.hidden === true;
+	// So is the picture on its card, off either shelf of the gallery.
+	const image = input.image ?? null;
+	if (image) {
+		if (kind !== 'world') fail('invalid', 'Only world markers carry a picture.');
+		findPicture(db, actor, image, null);
+	}
 
 	const id = newId();
 	const now = Date.now();
@@ -687,6 +705,7 @@ function createMarker(db: Db, actor: Actor, raw: Record<string, unknown>): Store
 			hidden,
 			// A secret is something hidden: what everyone sees is shared with nobody in particular.
 			seenBy: hidden ? (input.seenBy ?? []) : [],
+			image,
 			authorId: actor.userId,
 			authorName: actor.name,
 			createdAt: now,
@@ -705,11 +724,18 @@ function updateMarker(db: Db, actor: Actor, id: string, rawChanges: unknown): St
 	if ((changes.hidden !== undefined || changes.seenBy !== undefined) && before.kind !== 'world') {
 		fail('invalid', 'Only world markers can be hidden.');
 	}
+	if (changes.image && before.kind !== 'world') {
+		fail('invalid', 'Only world markers carry a picture.');
+	}
 
 	const after: Marker = { ...before, ...changes };
 	// Revealed to everyone, it is a secret with nobody.
 	if (!after.hidden) after.seenBy = [];
 	if (!MARKER_FIELDS.some((field) => markerDiffers(before, after, field))) return [];
+	// A card only ever shows a picture the campaign still has. Undo is held
+	// to that as well: one taken out of the gallery and gone from disk since
+	// can't be put back.
+	if (after.image && after.image !== before.image) findPicture(db, actor, after.image, null);
 
 	after.updatedAt = Date.now();
 	db.update(markers)
@@ -721,6 +747,7 @@ function updateMarker(db: Db, actor: Actor, id: string, rawChanges: unknown): St
 			y: after.y,
 			hidden: after.hidden,
 			seenBy: after.seenBy,
+			image: after.image ?? null,
 			updatedAt: after.updatedAt
 		})
 		.where(eq(markers.id, id))
@@ -754,6 +781,26 @@ function restoreMarker(db: Db, actor: Actor, id: string): StoredEvent[] {
 
 // ------------------------------------------------------------------ tokens
 
+/**
+ * A player of this campaign, by user id, with what they are called: who a
+ * token can be handed to.
+ */
+function findPlayer(db: Db, actor: Actor, id: string): { id: string; name: string } {
+	const player = db
+		.select({ id: users.id, name: users.name })
+		.from(members)
+		.innerJoin(users, eq(users.id, members.userId))
+		.where(
+			and(
+				eq(members.campaignId, actor.campaignId),
+				eq(members.userId, id),
+				eq(members.role, 'player')
+			)
+		)
+		.get();
+	return player ?? fail('not_found', 'That player is not in this campaign.');
+}
+
 function readToken(db: Db, id: string): Token {
 	return db.select(tokenColumns).from(tokens).where(eq(tokens.id, id)).get()!;
 }
@@ -785,6 +832,14 @@ function createToken(db: Db, actor: Actor, raw: Record<string, unknown>): Stored
 	// the GM has revealed.
 	const image = input.image ?? null;
 	if (image) findPicture(db, actor, image, 'token');
+	// A token a player puts down is their own. The GM's is nobody's, unless
+	// they say whose.
+	const owner =
+		actor.role === 'gm'
+			? input.ownerId
+				? findPlayer(db, actor, input.ownerId)
+				: null
+			: { id: actor.userId, name: actor.name };
 	const id = newId();
 	const now = Date.now();
 	db.insert(tokens)
@@ -802,6 +857,8 @@ function createToken(db: Db, actor: Actor, raw: Record<string, unknown>): Stored
 			locked: input.locked === true,
 			marks: input.marks ?? [],
 			count: input.count ?? null,
+			ownerId: owner?.id ?? null,
+			ownerName: owner?.name ?? null,
 			hidden,
 			seenBy: hidden ? (input.seenBy ?? []) : [],
 			createdAt: now,
@@ -856,6 +913,9 @@ function duplicateToken(db: Db, actor: Actor, id: string): StoredEvent[] {
 			locked: false,
 			marks: token.marks,
 			count: token.count,
+			// A copy of someone's token is theirs too: the wolf beside the ranger.
+			ownerId: token.ownerId ?? null,
+			ownerName: token.ownerName ?? null,
 			hidden: token.hidden,
 			seenBy: token.seenBy,
 			createdAt: now,
@@ -877,6 +937,7 @@ const TOKEN_FIELDS = [
 	'locked',
 	'marks',
 	'count',
+	'ownerId',
 	'hidden',
 	'seenBy'
 ] as const;
@@ -892,6 +953,8 @@ const TOKEN_PLACING = ['x', 'y', 'size', 'rotation'] as const;
 function tokenDiffers(before: Token, after: Token, field: (typeof TOKEN_FIELDS)[number]): boolean {
 	if (field === 'marks' || field === 'seenBy') return !sameList(before[field], after[field]);
 	if (field === 'count') return (before.count ?? null) !== (after.count ?? null);
+	// One from before tokens could be someone's is nobody's.
+	if (field === 'ownerId') return (before.ownerId ?? null) !== (after.ownerId ?? null);
 	return before[field] !== after[field];
 }
 
@@ -912,8 +975,16 @@ function updateToken(
 	if (!canHideToken(actor.role) && (changes.hidden !== undefined || changes.seenBy !== undefined)) {
 		fail('forbidden', 'Only the GM can hide a token.');
 	}
+	// So is saying whose token it is.
+	const handed = changes.ownerId !== undefined && changes.ownerId !== (before.ownerId ?? null);
+	if (handed && actor.role !== 'gm') fail('forbidden', 'Only the GM says whose token it is.');
 
 	const after: Token = { ...before, ...changes };
+	if (handed) {
+		const owner = changes.ownerId ? findPlayer(db, actor, changes.ownerId) : null;
+		after.ownerId = owner?.id ?? null;
+		after.ownerName = owner?.name ?? null;
+	}
 	// Revealed to everyone, it is a secret with nobody.
 	if (!after.hidden) after.seenBy = [];
 	if (!TOKEN_FIELDS.some((field) => tokenDiffers(before, after, field))) return [];
@@ -944,6 +1015,8 @@ function updateToken(
 			locked: after.locked,
 			marks: after.marks,
 			count: after.count,
+			ownerId: after.ownerId ?? null,
+			ownerName: after.ownerName ?? null,
 			hidden: after.hidden,
 			seenBy: after.seenBy,
 			updatedAt: after.updatedAt
@@ -1388,6 +1461,10 @@ function passTurn(db: Db, actor: Actor, raw: Record<string, unknown>): StoredEve
 		if (!whose || !canSeeToken(viewerOf(actor), whose, map.fog)) {
 			fail('forbidden', 'Only the GM can move on from this turn.');
 		}
+		// A token that is someone's has its turn ended by them.
+		if (!canEndTurn(actor.role, actor.userId, whose)) {
+			fail('forbidden', `This turn is ${whose.ownerName ?? 'someone else'}'s to end.`);
+		}
 	}
 	const next = nextTurn(map.turns, here.map((token) => token.id));
 	if (!next) return [];
@@ -1404,6 +1481,23 @@ function asMiles(value: unknown): number | null {
 		value > LIMITS.milesMax
 	) {
 		fail('invalid', `A map is between ${LIMITS.milesMin} and ${LIMITS.milesMax} miles across.`);
+	}
+	return value;
+}
+
+/** How many miles a day's travel covers, or null for no pace of its own. */
+function asDayMiles(value: unknown): number | null {
+	if (value === null) return null;
+	if (
+		typeof value !== 'number' ||
+		!Number.isFinite(value) ||
+		value < LIMITS.dayMilesMin ||
+		value > LIMITS.dayMilesMax
+	) {
+		fail(
+			'invalid',
+			`A day's travel is between ${LIMITS.dayMilesMin} and ${LIMITS.dayMilesMax} miles.`
+		);
 	}
 	return value;
 }
@@ -1485,6 +1579,7 @@ function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): Stored
 		sameFog(before.fog, after.fog) &&
 		sameTurns(before.turns, after.turns) &&
 		before.miles === after.miles &&
+		(before.dayMiles ?? null) === (after.dayMiles ?? null) &&
 		before.imageFile === after.imageFile &&
 		before.width === after.width &&
 		before.height === after.height
@@ -1505,6 +1600,7 @@ function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): Stored
 			fog: after.fog,
 			turns: after.turns,
 			miles: after.miles,
+			dayMiles: after.dayMiles ?? null,
 			imageFile: after.imageFile,
 			width: after.width,
 			height: after.height
@@ -1534,15 +1630,18 @@ function updateMap(
 		fog?: unknown;
 		turns?: unknown;
 		miles?: unknown;
+		dayMiles?: unknown;
 	}
 ): StoredEvent[] {
 	requireWorldEdit(actor);
 	const before = findMap(db, actor, id);
-	const { name, kind, grid, cellFeet, image, fog, turns, miles } = changes;
+	const { name, kind, grid, cellFeet, image, fog, turns, miles, dayMiles } = changes;
 	if (kind !== undefined) {
 		fail('invalid', 'A map stays the kind it was made as. Draw a region for the other kind.');
 	}
-	if ([name, grid, cellFeet, image, fog, turns, miles].every((change) => change === undefined)) {
+	if (
+		[name, grid, cellFeet, image, fog, turns, miles, dayMiles].every((change) => change === undefined)
+	) {
 		fail('invalid', 'Malformed request.');
 	}
 
@@ -1565,6 +1664,10 @@ function updateMap(
 	if (miles !== undefined) {
 		if (before.kind !== 'world') fail('invalid', 'A battle map is measured in feet.');
 		after.miles = asMiles(miles);
+	}
+	if (dayMiles !== undefined) {
+		if (before.kind !== 'world') fail('invalid', 'A battle map has no days of travel.');
+		after.dayMiles = asDayMiles(dayMiles);
 	}
 	if (image !== undefined) {
 		// The map takes the size of its picture. Everything on it is placed
@@ -1667,11 +1770,13 @@ function removeParty(db: Db, actor: Actor): StoredEvent[] {
 
 // ------------------------------------------------------------------ revert
 
-const MARKER_FIELDS = ['type', 'title', 'description', 'x', 'y', 'hidden', 'seenBy'] as const;
+const MARKER_FIELDS = ['type', 'title', 'description', 'x', 'y', 'hidden', 'seenBy', 'image'] as const;
 
 /** Whether a field of a marker is not what it was. The players it is a secret with are a list. */
 function markerDiffers(before: Marker, after: Marker, field: (typeof MARKER_FIELDS)[number]): boolean {
 	if (field === 'seenBy') return !sameList(before.seenBy, after.seenBy);
+	// One from before markers carried pictures has none.
+	if (field === 'image') return (before.image ?? null) !== (after.image ?? null);
 	return before[field] !== after[field];
 }
 
@@ -1722,7 +1827,9 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 		const changes: Record<string, unknown> = {};
 		for (const field of MARKER_FIELDS) {
 			if (!markerDiffers(before, after, field)) continue;
-			changes[field] = field === 'seenBy' ? (before.seenBy ?? []) : before[field];
+			if (field === 'seenBy') changes.seenBy = before.seenBy ?? [];
+			else if (field === 'image') changes.image = before.image ?? null;
+			else changes[field] = before[field];
 		}
 		return updateMarker(db, actor, id, changes);
 	}
@@ -1754,6 +1861,7 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 			if (!tokenDiffers(before, after, field)) continue;
 			if (field === 'marks' || field === 'seenBy') changes[field] = before[field] ?? [];
 			else if (field === 'count') changes.count = before.count ?? null;
+			else if (field === 'ownerId') changes.ownerId = before.ownerId ?? null;
 			else changes[field] = before[field];
 		}
 		return updateToken(db, actor, id, changes, true);
@@ -1807,10 +1915,12 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 	// The same goes for whose turn it is, and for the scale of a world map.
 	const turned = old.turns && made.turns && !sameTurns(old.turns, made.turns);
 	const scaled = old.miles !== undefined && old.miles !== made.miles;
+	const paced = (old.dayMiles ?? null) !== (made.dayMiles ?? null);
 	return writeMap(db, actor, current, {
 		...current,
 		turns: turned ? old.turns : current.turns,
 		miles: scaled ? old.miles : current.miles,
+		dayMiles: paced ? (old.dayMiles ?? null) : current.dayMiles,
 		name: old.name,
 		// Changes from before there were battle maps have no grid, and ones
 		// from before distances were told in feet have no scale. The kind of

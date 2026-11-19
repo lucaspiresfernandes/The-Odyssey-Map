@@ -18,9 +18,9 @@
 import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { Db } from './db';
 import { newId } from './ids';
-import { campaigns, gallery, maps, members, tokens } from './schema';
+import { campaigns, gallery, maps, markers, members, tokens } from './schema';
 import { ActionError, asOutline, asText, asTokenSize, isConcealed, type Actor } from './world';
-import { canEditWorld, canSeeToken, roleOf, type Who } from '../shared/rules';
+import { canEditWorld, canSeeMarker, canSeeToken, roleOf, type Who } from '../shared/rules';
 import { LIMITS, type GalleryItem, type GalleryKind, type Shown } from '../shared/types';
 
 const itemColumns = {
@@ -121,6 +121,18 @@ function findItem(db: Db, actor: Actor, id: string): GalleryItem {
 		.get();
 	if (!item) throw new ActionError('not_found', 'That picture is not in the gallery.');
 	return item;
+}
+
+/** The id of the picture in the gallery that is kept in this file, or null when none is. */
+export function galleryIdOf(db: Db, campaignId: string, file: string): string | null {
+	const item = db
+		.select({ id: gallery.id })
+		.from(gallery)
+		.where(
+			and(eq(gallery.file, file), eq(gallery.campaignId, campaignId), isNull(gallery.deletedAt))
+		)
+		.get();
+	return item?.id ?? null;
 }
 
 export function renameInGallery(db: Db, actor: Actor, id: string, name: unknown): void {
@@ -235,11 +247,15 @@ export function showToTable(
 	);
 }
 
-/** True while a map shows this picture, or a token wears it: one that was deleted may come back. */
+/**
+ * True while a map shows this picture, a token wears it, or the card of a
+ * marker shows it: one of those that was deleted may come back.
+ */
 function inUse(db: Db, file: string): boolean {
 	const map = db.select({ id: maps.id }).from(maps).where(eq(maps.imageFile, file)).get();
 	const token = db.select({ id: tokens.id }).from(tokens).where(eq(tokens.image, file)).get();
-	return Boolean(map || token);
+	const marker = db.select({ id: markers.id }).from(markers).where(eq(markers.image, file)).get();
+	return Boolean(map || token || marker);
 }
 
 /**
@@ -284,8 +300,8 @@ export function removeFromGallery(db: Db, actor: Actor, id: string): string[] {
  * Whether someone may load a picture of this campaign's. The GM may load
  * any of them. A player may load the ones the GM has revealed in the
  * gallery, and whatever is in front of them: the picture the GM is holding
- * up for them, the image of a map they can open, and the picture on a
- * token they can see.
+ * up for them, the image of a map they can open, the picture on a token
+ * they can see, and the one on the card of a marker they can see.
  */
 export function canLoadImage(db: Db, campaignId: string, who: Who, file: string): boolean {
 	const kept = db
@@ -313,9 +329,25 @@ export function canLoadImage(db: Db, campaignId: string, who: Who, file: string)
 		.where(and(eq(maps.campaignId, campaignId), eq(tokens.image, file), isNull(tokens.deletedAt)))
 		.all()
 		.filter((token) => canSeeToken(who, { ...token, x: 0, y: 0 }));
-	// A map someone is kept out of keeps its picture, and its tokens', from them.
+	// A marker under the fog is not on the map for them yet, and neither is its picture.
+	const carried = db
+		.select({
+			id: markers.mapId,
+			kind: markers.kind,
+			hidden: markers.hidden,
+			seenBy: markers.seenBy,
+			x: markers.x,
+			y: markers.y,
+			fog: maps.fog
+		})
+		.from(markers)
+		.innerJoin(maps, eq(maps.id, markers.mapId))
+		.where(and(eq(maps.campaignId, campaignId), eq(markers.image, file), isNull(markers.deletedAt)))
+		.all()
+		.filter((marker) => canSeeMarker(who, marker, marker.fog));
+	// A map someone is kept out of keeps its picture from them, and those of what is on it.
 	const open = new Map<string, boolean>();
-	return [...shown, ...worn].some((map) => {
+	return [...shown, ...worn, ...carried].some((map) => {
 		if (!open.has(map.id)) open.set(map.id, !isConcealed(db, map.id, who));
 		return open.get(map.id);
 	});

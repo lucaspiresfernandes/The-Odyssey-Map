@@ -5,6 +5,8 @@
 //   bun scripts/run.ts start         the production build (run `bun run build` first)
 //   bun scripts/run.ts start --lan
 
+import { autoBackup } from './backup.ts';
+
 const [mode = 'dev', ...flags] = process.argv.slice(2);
 const host = flags.includes('--lan') ? '0.0.0.0' : '127.0.0.1';
 const bun = process.execPath;
@@ -33,6 +35,17 @@ const commands =
 				[bun, 'run', '--bun', 'vite', 'dev', '--host', host, '--port', appPort, '--strictPort'],
 				[bun, '--watch', 'ws/server.ts']
 			];
+
+// A copy of the database as it is before the app opens it, and so before
+// any migration runs: the last few starts are kept. `AUTO_BACKUP=off` skips
+// it. It is never a reason not to start.
+if (!/^(off|0|false|no)$/i.test(process.env.AUTO_BACKUP ?? '')) {
+	try {
+		await autoBackup();
+	} catch (err) {
+		console.warn(`The automatic backup failed, and the servers are starting without one: ${err}`);
+	}
+}
 
 const children = commands.map((cmd) =>
 	Bun.spawn(cmd, { env, stdio: ['inherit', 'inherit', 'inherit'] })

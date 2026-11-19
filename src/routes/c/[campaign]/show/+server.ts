@@ -8,18 +8,30 @@
 import { type RequestHandler } from '@sveltejs/kit';
 import { holdUp } from '#lib/server/bridge.ts';
 import { getDb } from '#lib/server/db.ts';
-import { showToTable } from '#lib/server/gallery.ts';
+import { galleryIdOf, showToTable } from '#lib/server/gallery.ts';
 import { requireMemberApi } from '#lib/server/session.ts';
-import { ActionError, ERROR_STATUS } from '#lib/server/world.ts';
+import { ActionError, ERROR_STATUS, IMAGE_FILE_PATTERN } from '#lib/server/world.ts';
 import type { ShowResponse } from '#lib/shared/types.ts';
 
 export const POST: RequestHandler = async (event) => {
 	const { actor } = requireMemberApi(event, event.params.campaign!);
 	const body = (await event.request.json().catch(() => null)) as {
 		id?: unknown;
+		file?: unknown;
 		to?: unknown;
 	} | null;
-	const id = body?.id;
+	// A picture is named by its id in the gallery, or by its file, which is
+	// how the card of a marker knows it.
+	let id = body?.id;
+	if (typeof body?.file === 'string' && IMAGE_FILE_PATTERN.test(body.file)) {
+		id = galleryIdOf(getDb(), actor.campaignId, body.file);
+		if (id === null) {
+			return Response.json(
+				{ ok: false, error: 'That picture is no longer in the gallery.' } satisfies ShowResponse,
+				{ status: 404 }
+			);
+		}
+	}
 	if (id !== null && (typeof id !== 'string' || id.length === 0 || id.length > 64)) {
 		return Response.json({ ok: false, error: 'Malformed request.' } satisfies ShowResponse, { status: 400 });
 	}

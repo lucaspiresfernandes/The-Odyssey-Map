@@ -703,8 +703,10 @@ describe('battle maps', () => {
 		// Whatever a player asks for, the token they add is in plain sight.
 		const mine = token(player, id, { name: 'Mira', hidden: true });
 		expect(mine).toMatchObject({ name: 'Mira', hidden: false });
-		// A token belongs to nobody: there is nothing to say whose it is.
-		expect(mine).not.toHaveProperty('ownerId');
+		// The token a player puts down is their own, and the GM's is nobody's.
+		// That says whose turn it is, not who may move it.
+		expect(mine).toMatchObject({ ownerId: player.userId, ownerName: 'Mira' });
+		expect(goblin.ownerId).toBeNull();
 
 		const [move] = perform(db, player, { t: 'token.update', id: mine.id, changes: { x: 0.1, y: 0.2 } });
 		expect(move.after).toMatchObject({ x: 0.1, y: 0.2 });
@@ -722,9 +724,10 @@ describe('battle maps', () => {
 		const { id } = battlefield();
 		const mine = token(player, id);
 		expect(refusal(() => perform(db, player, { t: 'token.update', id: mine.id, changes: { hidden: true } }))).toBe('forbidden');
+		// Saying whose token it is, is the GM's as well.
+		expect(refusal(() => perform(db, player, { t: 'token.update', id: mine.id, changes: { ownerId: other.userId } }))).toBe('forbidden');
+		expect(perform(db, gm, { t: 'token.update', id: mine.id, changes: { ownerId: other.userId } })[0].after).toMatchObject({ ownerId: other.userId, ownerName: 'Tovin' });
 		expect(perform(db, gm, { t: 'token.update', id: mine.id, changes: { hidden: true } })[0].after).toMatchObject({ hidden: true });
-		// Handing a token to someone is a thing of the past: asking for it changes nothing.
-		expect(perform(db, gm, { t: 'token.update', id: mine.id, changes: { ownerId: other.userId } })).toHaveLength(0);
 	});
 
 	test('a hidden token reaches the GM only', () => {

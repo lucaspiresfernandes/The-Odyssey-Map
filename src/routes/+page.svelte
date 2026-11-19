@@ -172,7 +172,7 @@
 			</form>
 
 			<p class="text-[13px] text-muted">
-				Players don't need an account. They join with the invite link their GM shares.
+				Players don't need an account. They ask to join with the invite link their GM shares.
 			</p>
 		</section>
 	{/if}

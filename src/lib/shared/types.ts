@@ -63,6 +63,12 @@ export interface Marker {
 	 * between them and the GM. A player is only ever sent it empty.
 	 */
 	seenBy: string[];
+	/**
+	 * File name of a picture out of the gallery that its card shows: the face
+	 * of whoever stands there, the thing to be found. Null for none. Only a
+	 * world marker carries one.
+	 */
+	image: string | null;
 	/** Who added it. Among players, only this person can delete a table note. */
 	authorId: string;
 	authorName: string;
@@ -137,6 +143,9 @@ export interface Fog {
 	clear: Rect[];
 	spots?: Oval[];
 }
+
+/** How many miles a day's travel covers until the GM says otherwise: a day on foot, on a road. */
+export const DEFAULT_DAY_MILES = 24;
 
 /** How far the party sees through the fog of a world map: a part of the map's longer side. */
 export const PARTY_SIGHT = 0.08;
@@ -346,6 +355,14 @@ export interface Token {
 	 * points, charges, rounds left. Null for none. Anyone's to set.
 	 */
 	count: number | null;
+	/**
+	 * The player whose token this is, by user id, and what they are called:
+	 * null for one that is nobody's, like most of the GM's. It doesn't say
+	 * who may move it, which is anyone. It says whose turn it is when its turn
+	 * comes, and who ends that turn.
+	 */
+	ownerId: string | null;
+	ownerName: string | null;
 	/** Sent as true to the GM, and to the players it is a secret with: see `seenBy`. */
 	hidden: boolean;
 	/** The players a hidden token is shown to all the same, by id. A player is only ever sent it empty. */
@@ -436,6 +453,12 @@ export interface MapInfo {
 	 * `MapSnapshot.miles`.
 	 */
 	miles: number | null;
+	/**
+	 * How many miles a day's travel covers on a world map, when the GM has
+	 * said so. Null leaves it to the maps further out: see
+	 * `MapSnapshot.dayMiles`.
+	 */
+	dayMiles: number | null;
 	/** File name of the map image, out of the gallery, or null for a blank map. */
 	imageFile: string | null;
 	width: number;
@@ -573,6 +596,12 @@ export interface MapSnapshot {
 	 * that map the way here covers. Null when no map on the way has one.
 	 */
 	miles: number | null;
+	/**
+	 * How many miles a day's travel covers here: what the GM said of this
+	 * map, or of the nearest map further out that has a pace of its own, or
+	 * `DEFAULT_DAY_MILES` when none has.
+	 */
+	dayMiles: number;
 	/** Sequence number of the newest event already reflected in this snapshot. */
 	lastSeq: number;
 }
@@ -588,6 +617,8 @@ export interface MarkerInput {
 	hidden: boolean;
 	/** The GM's to set: the players a hidden marker is a secret with. */
 	seenBy: string[];
+	/** The file name of a picture in the gallery, or null for none. A world marker's only. */
+	image: string | null;
 }
 
 export interface TokenInput {
@@ -607,6 +638,8 @@ export interface TokenInput {
 	marks: TokenMark[];
 	/** Anyone's to set. Null takes the number off. */
 	count: number | null;
+	/** The GM's to set: the player whose token it is, by user id, or null for nobody's. */
+	ownerId: string | null;
 	/** The GM's to set. */
 	hidden: boolean;
 	/** The GM's to set: the players a hidden token is a secret with. */
@@ -673,10 +706,10 @@ export type Command =
 	/**
 	 * Renames a map, sets up its grid, says how many feet a cell stands for,
 	 * lays an image under it, covers it with fog or clears some, says whose
-	 * turn it is, or how many miles across it is (null for no scale of its
-	 * own): whichever are given. `image` is the file name of a map image in
-	 * the gallery. A map's kind is not here: it is chosen when its region is
-	 * drawn, and stays.
+	 * turn it is, how many miles across it is, or how many miles a day's
+	 * travel covers on it (null for none of its own): whichever are given.
+	 * `image` is the file name of a map image in the gallery. A map's kind is
+	 * not here: it is chosen when its region is drawn, and stays.
 	 */
 	| {
 			t: 'map.update';
@@ -688,6 +721,7 @@ export type Command =
 			fog?: Partial<Fog>;
 			turns?: Partial<Turns>;
 			miles?: number | null;
+			dayMiles?: number | null;
 	  }
 	/**
 	 * Puts the party at a spot of a world map, wherever it was before. With
@@ -794,8 +828,11 @@ export interface HandSpot {
 	 * only moves for good once they let go: that is a `token.update`.
 	 */
 	drag?: { id: string; x: number; y: number };
-	/** A distance they are measuring, from one spot to another. */
-	ruler?: [Point, Point];
+	/**
+	 * A distance they are measuring: from one spot to another, by way of
+	 * every spot the ruler bends at in between.
+	 */
+	ruler?: Point[];
 }
 
 /**
@@ -858,6 +895,39 @@ export interface Gather {
 	at: number;
 }
 
+/**
+ * Someone at the door asking for a seat: a new one, or the one they sat in
+ * before, when their browser has forgotten them or they have come on
+ * another device. The GM is told, and lets them in or doesn't. Nobody sits
+ * down on the invite link alone.
+ */
+export interface Knock {
+	id: string;
+	/** The player whose seat is asked for. Null for someone new with only a name. */
+	userId: string | null;
+	name: string;
+	/** They have no seat at this table yet, and ask for one. */
+	newcomer: boolean;
+	at: number;
+}
+
+/** What the endpoint that answers a knock says back. */
+export interface SeatResponse {
+	ok: boolean;
+	error?: string;
+}
+
+/**
+ * How it stands with a seat this browser asked for: still `waiting` on the
+ * GM, `granted`, which seats this browser as that player, `refused`, or
+ * `gone` when the asking has lapsed or was never made.
+ */
+export interface SeatStatus {
+	status: 'waiting' | 'granted' | 'refused' | 'gone';
+	/** Where to go once it is granted. */
+	to?: string;
+}
+
 /** What the gather endpoint answers with. */
 export interface GatherResponse {
 	ok: boolean;
@@ -885,8 +955,12 @@ export type ServerMessage =
 			hands: Hand[];
 			/** The picture the GM is holding up for the table, if any. */
 			shown: Shown | null;
+			/** For the GM: who is asking for a seat they sat in before. */
+			knocks: Knock[];
 	  }
 	| { t: 'presence'; online: Presence[] }
+	/** For the GM: everyone asking for a seat right now, in place of who was before. */
+	| { t: 'knocks'; knocks: Knock[] }
 	| { t: 'event'; event: LiveEvent }
 	| { t: 'hand'; hand: Hand }
 	| { t: 'hand.left'; id: string }
@@ -922,6 +996,8 @@ export interface LiveIdentity {
 	seq: number;
 	/** The picture the GM is holding up for the table, if any. */
 	shown: Shown | null;
+	/** Who is asking for a seat they sat in before. Only ever told to the GM. */
+	knocks: Knock[];
 }
 
 /**
@@ -948,6 +1024,8 @@ export interface Broadcast {
 	 * it is held up for, by user id: empty for the whole table.
 	 */
 	show?: { shown: Shown | null; to: string[] };
+	/** Everyone asking for a seat right now. It goes to the GM and nobody else. */
+	knocks?: Knock[];
 }
 
 export const LIMITS = {
@@ -976,6 +1054,13 @@ export const LIMITS = {
 	/** The fewest and the most miles a world map can be across. */
 	milesMin: 0.01,
 	milesMax: 1000000,
+	/** The fewest and the most miles a day's travel can cover. */
+	dayMilesMin: 0.1,
+	dayMilesMax: 10000,
+	/** The most spots a ruler runs through: its two ends and the bends between. */
+	rulerPoints: 32,
+	/** The most people who can be asking for a seat in one campaign at once. */
+	knocks: 8,
 	/** The most tokens that take turns on one map. */
 	turns: 100,
 	/** The most boxes the fog on one map is cleared by. */

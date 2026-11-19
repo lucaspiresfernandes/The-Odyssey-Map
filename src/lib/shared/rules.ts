@@ -119,6 +119,20 @@ export function canMoveToken(token: Pick<Token, 'locked'>): boolean {
 	return !token.locked;
 }
 
+/**
+ * Ending the turn of a token. The GM always can. A token that is some
+ * player's has its turn ended by that player. One that is nobody's is the
+ * table's, as every token was before any could be someone's: any player
+ * who sees it moves the fight on.
+ */
+export function canEndTurn(
+	role: Role,
+	userId: string,
+	token: { ownerId?: string | null }
+): boolean {
+	return role === 'gm' || !token.ownerId || token.ownerId === userId;
+}
+
 /** Hiding a token from the players, and revealing it to them, are the GM's. */
 export function canHideToken(role: Role): boolean {
 	return role === 'gm';

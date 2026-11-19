@@ -1,11 +1,15 @@
 <script lang="ts">
 	import { goto, preloadData, refreshAll } from '$app/navigation';
+	import { page } from '$app/state';
+	import { inviteAddress, rememberedHost } from '#lib/client/invite.ts';
 	import { tick, untrack } from 'svelte';
+	import { DISPLAY_GLINT, Discoveries } from '#lib/client/discoveries.svelte.ts';
 	import { getLive } from '#lib/client/live.svelte.ts';
 	import { MapState } from '#lib/client/mapstate.svelte.ts';
 	import { UndoStack, type Step } from '#lib/client/undo.ts';
 	import Finder from '#lib/components/Finder.svelte';
 	import Gallery from '#lib/components/Gallery.svelte';
+	import InviteDialog from '#lib/components/InviteDialog.svelte';
 	import MapCanvas from '#lib/components/MapCanvas.svelte';
 	import MapSetup from '#lib/components/MapSetup.svelte';
 	import MarkerForm from '#lib/components/MarkerForm.svelte';
@@ -13,6 +17,7 @@
 	import Modal from '#lib/components/Modal.svelte';
 	import NamePrompt from '#lib/components/NamePrompt.svelte';
 	import PlayerPicker from '#lib/components/PlayerPicker.svelte';
+	import QrCode from '#lib/components/QrCode.svelte';
 	import ScalePrompt from '#lib/components/ScalePrompt.svelte';
 	import TokenDock from '#lib/components/TokenDock.svelte';
 	import TokenForm from '#lib/components/TokenForm.svelte';
@@ -31,6 +36,7 @@
 		type FindEntry,
 		type GalleryItem,
 		type Gather,
+		type Knock,
 		type MapKind,
 		type Marker,
 		type MarkerInput,
@@ -62,6 +68,7 @@
 	$effect(() =>
 		live.subscribe((event) => {
 			const scale = world.map.miles;
+			const pace = world.map.dayMiles;
 			// Read before the event is applied: it may be what takes the way here off the map.
 			const way = world.trail.map((crumb) => crumb.id);
 			world.apply(event);
@@ -69,7 +76,8 @@
 			refreshIfBorrowed(event.patch);
 			// With a scale of its own given or taken away, how far across this
 			// map is has to be worked out again, which only the server does.
-			if (world.map.miles !== scale) refreshAll();
+			// The same goes for how far a day's travel goes on it.
+			if (world.map.miles !== scale || world.map.dayMiles !== pace) refreshAll();
 		})
 	);
 
@@ -104,6 +112,96 @@
 	 * worked out from a map further out. Null when nothing says.
 	 */
 	const miles = $derived(world.map.miles ?? world.miles);
+	/** How many miles a day's travel covers here: this map's own pace, or the one it goes by. */
+	const dayMiles = $derived(world.map.dayMiles ?? world.dayMiles);
+
+	// ------------------------------------------------------------ discoveries
+
+	/**
+	 * What on this map could be new to a player: the world markers the GM has
+	 * let them see, and the regions. Their own table's notes are no news to
+	 * the table, and nothing is news to the GM.
+	 */
+	const discoverable = $derived(
+		isGm
+			? []
+			: [
+					...world.markers.filter((marker) => marker.kind === 'world').map((marker) => marker.id),
+					...world.regions.map((region) => region.id)
+				]
+	);
+	/** Which of those this person has yet to look at: they glint on the map until they have. */
+	let discoveries = $state.raw<Discoveries | null>(null);
+	// What was seen of a map is this browser's to remember, so it is read
+	// once the page is in it, and again for every map stepped into.
+	$effect(() => {
+		const mapId = world.map.id;
+		untrack(() => {
+			discoveries = isGm
+				? null
+				: new Discoveries(campaignId, display ? 'display' : data.me.id, mapId, discoverable);
+		});
+	});
+	$effect(() => {
+		const ids = discoverable;
+		const mapId = world.map.id;
+		untrack(() => discoveries?.update(mapId, ids));
+	});
+	// A table display has nobody in front of it to look: what is new there
+	// glints for a while, and then has been seen.
+	$effect(() => {
+		const found = discoveries;
+		if (!display || !found || found.fresh.length === 0) return;
+		const ids = found.fresh;
+		const timer = setTimeout(() => ids.forEach((id) => found.seen(id)), DISPLAY_GLINT);
+		return () => clearTimeout(timer);
+	});
+
+	// ---------------------------------------------------------- whose token
+
+	/** The tokens on this map that are this person's own. */
+	const myTokens = $derived(
+		display ? [] : world.tokens.filter((token) => token.ownerId === data.me.id)
+	);
+	/** The one of them whose turn it is, if it is the turn of one. */
+	const myTurn = $derived(
+		myTokens.find((token) => token.id === world.map.turns.current) ?? null
+	);
+	/** The turn this person was last told is theirs, so that each is told once. */
+	let toldTurn: string | null = null;
+	// Their own token's turn has come: their screen says so, and a phone
+	// in a pocket or face down on the table shakes.
+	$effect(() => {
+		const token = myTurn;
+		const turn = token ? `${token.mapId}:${token.id}:${world.map.turns.round}` : null;
+		untrack(() => {
+			if (token && turn !== toldTurn) {
+				say(`It is your turn: ${token.name}.`, 'warning');
+				try {
+					navigator.vibrate?.([120, 80, 120]);
+				} catch {
+					// Not every browser lets a page shake the phone.
+				}
+			}
+			toldTurn = turn;
+		});
+	});
+
+	/** Which of this person's tokens the map went to last, when they have several. */
+	let lastMine = -1;
+	/**
+	 * Brings this person's own token to the middle of the screen, selected:
+	 * the one whose turn it is, or with several and none of them acting, each
+	 * in turn.
+	 */
+	function goToMine() {
+		if (myTokens.length === 0) return;
+		lastMine = (lastMine + 1) % myTokens.length;
+		const token = myTurn ?? myTokens[lastMine];
+		battleTool = 'pan';
+		selectedIds = [token.id];
+		canvas?.centreOn([token.x, token.y]);
+	}
 
 	/** The address of a map of this campaign. A display stays a display from map to map. */
 	const mapUrl = (mapId: string) => `/c/${campaignId}/m/${mapId}${display ? '?display' : ''}`;
@@ -152,6 +250,11 @@
 	let measuring = $state(false);
 	/** The pointing tool is in hand on a world map: held down, the pointer shows to the table. */
 	let pointing = $state(false);
+	/**
+	 * The GM is at the fog of a world map by hand: dragging boxes that clear
+	 * it, or that cover the map again.
+	 */
+	let fogTool = $state<'reveal' | 'cover' | null>(null);
 	let battleTool = $state<BattleTool>('pan');
 	/** The colour the pen draws in, text is written in and templates are laid down in. */
 	let ink = $state<string>(INK_COLORS[0]);
@@ -179,6 +282,8 @@
 	let scaling = $state(false);
 	/** The finder is open. */
 	let finding = $state(false);
+	/** The GM has the invite out: a code to scan, and the link to copy. */
+	let inviting = $state(false);
 	/** A marker the finder is taking this person to, on a map they are on their way to. */
 	let wanted: string | null = null;
 	/** The picture held up for the table that this person has closed, by its file. */
@@ -234,7 +339,7 @@
 						? 'measure'
 						: pointing
 							? 'point'
-							: 'pan'
+							: (fogTool ?? 'pan')
 	);
 	/** The GM has one of the two fog tools in hand. */
 	const fogging = $derived(battleTool === 'reveal' || battleTool === 'cover');
@@ -287,8 +392,14 @@
 	const selectedRegion = $derived(world.regions.find((r) => r.id === selectedRegionId) ?? null);
 	/** Why the region buttons are off, for their tooltips. */
 	const regionHint = $derived(selectedRegion ? undefined : 'Click a region first');
-	const inviteUrl = $derived(
-		data.invitePath && typeof location !== 'undefined' ? location.origin + data.invitePath : ''
+	/**
+	 * A table display asked to show the invite, with `invite` in its address:
+	 * the link as a phone can open it, for the code in its corner.
+	 */
+	const displayInvite = $derived(
+		display && data.invite && page.url.searchParams.has('invite') && typeof location !== 'undefined'
+			? inviteAddress(data.invite, location, rememberedHost())
+			: null
 	);
 	const empty = $derived(
 		!world.map.imageFile &&
@@ -308,6 +419,7 @@
 			drawing = false;
 			measuring = false;
 			pointing = false;
+			fogTool = null;
 			battleTool = 'pan';
 			form = null;
 			tokenForm = null;
@@ -317,6 +429,7 @@
 			sharingRegion = false;
 			scaling = false;
 			finding = false;
+			inviting = false;
 			gallery = null;
 			prompt = null;
 			deleting = null;
@@ -420,7 +533,9 @@
 		if (ok) say('Took the party off the map.', 'success', step);
 	}
 
-	async function saveMarker(values: Pick<MarkerInput, 'type' | 'title' | 'description' | 'hidden'>) {
+	async function saveMarker(
+		values: Pick<MarkerInput, 'type' | 'title' | 'description' | 'hidden' | 'image'>
+	) {
 		if (!form) return false;
 		let command: Command;
 		if (form.mode === 'create') {
@@ -433,8 +548,8 @@
 				...values
 			};
 		} else {
-			// Table notes have no hidden state to send.
-			const { hidden, ...shared } = values;
+			// Table notes have no hidden state to send, and no picture.
+			const { hidden, image, ...shared } = values;
 			const changes = form.marker.kind === 'world' ? values : shared;
 			command = { t: 'marker.update', id: form.marker.id, changes };
 		}
@@ -532,6 +647,36 @@
 					: `The table is looking at “${item.name}”.`,
 				'success'
 			);
+		} catch (err) {
+			say((err as Error).message, 'failure');
+		}
+	}
+
+	/** Holds the picture on a marker's card up for the whole table, full screen. */
+	async function showMarkerPicture(marker: Marker) {
+		if (!marker.image) return;
+		try {
+			await live.show(null, [], marker.image);
+			say(`The table is looking at the picture of “${marker.title}”.`, 'success');
+		} catch (err) {
+			say((err as Error).message, 'failure');
+		}
+	}
+
+	// ----------------------------------------------------------------- seats
+
+	/** The GM answers someone asking for a seat: a new one, or the one they sat in before. */
+	async function answerKnock(knock: Knock, grant: boolean) {
+		try {
+			await live.answer(knock, grant);
+			const said = knock.newcomer
+				? grant
+					? `${knock.name} has a seat at the table.`
+					: `Turned ${knock.name} away.`
+				: grant
+					? `${knock.name} is back in their seat.`
+					: `Turned away whoever asked for ${knock.name}’s seat.`;
+			say(said, grant ? 'success' : 'info');
 		} catch (err) {
 			say((err as Error).message, 'failure');
 		}
@@ -662,6 +807,22 @@
 	}
 
 	/**
+	 * Takes up the fog of a world map: whichever of its two tools has
+	 * something to do, clearing where there is fog, covering where there is
+	 * none yet. The bar under the map shows them while one is in hand.
+	 */
+	function pickWorldFog() {
+		placing = null;
+		drawing = false;
+		measuring = false;
+		pointing = false;
+		selectedMarkerId = null;
+		selectedRegionId = null;
+		selectedParty = false;
+		fogTool = world.map.fog.on ? 'reveal' : 'cover';
+	}
+
+	/**
 	 * Covers a world map with fog that lifts wherever the party goes, or
 	 * takes that fog off again. Each map has its own.
 	 */
@@ -673,9 +834,11 @@
 			fog: { on, clear: [], spots: [] }
 		});
 		if (!ok) return;
+		// What is left to do by hand: clear some of the new fog, or with none, cover some.
+		if (fogTool) fogTool = on ? 'reveal' : 'cover';
 		say(
 			on
-				? 'This map is under fog. It lifts wherever the party goes.'
+				? 'This map is under fog. It lifts wherever the party goes, and where you clear it.'
 				: 'Lifted the fog from this map.',
 			'success',
 			step
@@ -791,6 +954,8 @@
 			say(`“${region.name}” is not open to you yet.`, 'info');
 			return;
 		}
+		// Stepping into a region is looking at it.
+		discoveries?.seen(region.id);
 		await canvas?.flyTo(region);
 		try {
 			await goto(mapUrl(region.targetMapId));
@@ -869,16 +1034,6 @@
 
 	// ---------------------------------------------------------------- misc
 
-	async function copyInvite() {
-		try {
-			await navigator.clipboard.writeText(inviteUrl);
-			say('Invite link copied to the clipboard.', 'success');
-		} catch {
-			// The popup stays open, so the link can be copied by hand.
-			say('Copy the link from the box.', 'warning');
-		}
-	}
-
 	function onkeydown(e: KeyboardEvent) {
 		// A display has nothing to undo and no tools to take up. It has one
 		// key: Backspace steps back out of the map it is on, to the one the
@@ -891,7 +1046,9 @@
 			}
 			return;
 		}
-		if (form || tokenForm || setup || scaling || finding || gallery || prompt || deleting) return;
+		if (form || tokenForm || setup || scaling || finding || inviting || gallery || prompt || deleting) {
+			return;
+		}
 		// In a text field, a letter is a letter and Ctrl+Z belongs to the text.
 		const typing =
 			e.target instanceof Element && !!e.target.closest('input, textarea, select, [contenteditable]');
@@ -921,6 +1078,12 @@
 				if (!e.repeat) take(hit.tool);
 				return;
 			}
+			// G goes to this person's own token, if one of the tokens here is theirs.
+			if (e.key.toLowerCase() === 'g' && myTokens.length) {
+				e.preventDefault();
+				if (!e.repeat) goToMine();
+				return;
+			}
 			// And N moves the fight on to the next turn, for whoever may end this one.
 			if (e.key.toLowerCase() === 'n' && world.map.turns.order.length) {
 				e.preventDefault();
@@ -930,7 +1093,7 @@
 		}
 
 		if (e.key !== 'Escape') return;
-		if (placing || drawing || measuring || pointing || battleTool !== 'pan') {
+		if (placing || drawing || measuring || pointing || fogTool || battleTool !== 'pan') {
 			putAway();
 		} else if (filterOpen || sharingRegion) {
 			filterOpen = false;
@@ -949,6 +1112,7 @@
 		drawing = false;
 		measuring = false;
 		pointing = false;
+		fogTool = null;
 		battleTool = 'pan';
 		alignBox = null;
 	}
@@ -1056,7 +1220,7 @@
 			<!-- Nothing of the finder is on screen but this, until it is asked for. -->
 			<ToolButton
 				small
-				tip="bottom"
+				tip="bottom-end"
 				icon="search"
 				label="Find a place or a marker"
 				hint="Ctrl+K"
@@ -1100,8 +1264,9 @@
 				>
 				<button
 					class="btn btn-sm"
+					title="A code for players to scan, and the link to send them"
 					onclick={() => {
-						copyInvite();
+						inviting = true;
 					}}>Invite</button
 				>
 			{/if}
@@ -1120,6 +1285,7 @@
 				drawings={world.drawings}
 				party={world.party}
 				{miles}
+				{dayMiles}
 				{hands}
 				{pings}
 				role={data.role}
@@ -1162,6 +1328,9 @@
 				onhide={(marker, hidden) => run({ t: 'marker.update', id: marker.id, changes: { hidden } })}
 				onshare={(marker, seenBy) =>
 					run({ t: 'marker.update', id: marker.id, changes: { hidden: true, seenBy } })}
+				onshowmarker={showMarkerPicture}
+				fresh={discoveries?.fresh ?? []}
+				onseen={(id) => discoveries?.seen(id)}
 				onalign={(box) => (alignBox = box)}
 				onedittoken={(token) => (tokenForm = token)}
 				onhand={(at) => {
@@ -1196,6 +1365,21 @@
 				</nav>
 			{/if}
 
+			{#if displayInvite}
+				<!-- The way to the table, in a corner of the screen the table looks
+				     at: a code to scan, and the address under it for whoever types. -->
+				<aside
+					class="pointer-events-none absolute right-5 bottom-5 z-2 grid justify-items-center gap-2 rounded-2xl border bg-panel/94 p-4 shadow-pop"
+					aria-label="Join the table"
+				>
+					<QrCode text={displayInvite.url} size={260} label="A code to scan to join the table" />
+					<strong class="font-serif text-xl">Scan to join</strong>
+					<span class="max-w-[260px] text-center text-xs wrap-anywhere text-muted">
+						{displayInvite.url}
+					</span>
+				</aside>
+			{/if}
+
 			{#if battle}
 				<!-- Whose turn it is, down the left side of a battle map. It is there
 				     once a token has been put in the order, for everyone, and on a
@@ -1208,6 +1392,7 @@
 						tokens={world.tokens}
 						turns={world.map.turns}
 						gm={isGm}
+						userId={data.me.id}
 						passive={display}
 						bind:collapsed={turnsFolded}
 						selectedId={selectedIds.length === 1 ? selectedIds[0] : null}
@@ -1335,6 +1520,19 @@
 									onclick={() => pick(each.tool)}
 								/>
 							{/each}
+							{#if myTokens.length}
+								<!-- Only for someone with a token of their own on this map: the
+								     way back to it, lit while its turn is on. -->
+								<ToolButton
+									tip="left"
+									icon="person"
+									label={myTokens.length > 1 ? 'Go to my tokens' : 'Go to my token'}
+									hint={myTurn ? 'It is your turn' : undefined}
+									shortcut="g"
+									active={myTurn !== null}
+									onclick={goToMine}
+								/>
+							{/if}
 							{#if isGm}
 								<span class="h-px bg-line"></span>
 								<ToolButton
@@ -1391,6 +1589,37 @@
 					display && 'hidden'
 				]}
 			>
+				{#if isGm && live.knocks.length}
+					<!-- Someone at the door, asking for a seat, a new one or the one
+					     they sat in before: the GM's to answer. It stays until it is
+					     answered, or they give up. -->
+					{@const knock = live.knocks[0]}
+					{@const asks = knock.newcomer
+						? 'is asking to join the table'
+						: 'is asking for their seat back, from another browser'}
+					<div
+						class="pointer-events-auto flex max-w-[calc(100%-28px)] flex-wrap items-center justify-center gap-2 rounded-[10px] border border-accent bg-[#3a3018] py-2 pr-2 pl-3.5 text-sm shadow-pop"
+						role="alertdialog"
+						aria-label="{knock.name} {asks}"
+					>
+						<span>
+							<strong>{knock.name}</strong>
+							{asks}.
+							{#if live.knocks.length > 1}
+								<span class="text-muted">And {live.knocks.length - 1} more.</span>
+							{/if}
+						</span>
+						<span class="flex gap-1.5">
+							<button class="btn btn-sm btn-primary" onclick={() => answerKnock(knock, true)}>
+								Let them in
+							</button>
+							<button class="btn btn-sm" onclick={() => answerKnock(knock, false)}>
+								{knock.newcomer ? 'Not now' : 'Not them'}
+							</button>
+						</span>
+					</div>
+				{/if}
+
 				{#if notice}
 					<div
 						class={[
@@ -1527,13 +1756,52 @@
 				>
 					{#if tool !== 'pan'}
 						<button class="btn" onclick={putAway}>
-							{measuring ? 'Put the ruler away' : pointing ? 'Done pointing' : 'Cancel'}
+							{measuring
+								? 'Put the ruler away'
+								: pointing
+									? 'Done pointing'
+									: fogTool
+										? 'Done with the fog'
+										: 'Cancel'}
 						</button>
 						{#if measuring && isGm}
 							<!-- What the ruler goes by, and the way to change it. -->
-							<button class="btn" onclick={() => (scaling = true)}>
-								Scale: {miles === null ? 'none' : `${milesCount(miles)} across`}
+							<button
+								class="btn"
+								title="How far across this map is, and how far a day's travel goes"
+								onclick={() => (scaling = true)}
+							>
+								Scale: {miles === null
+									? 'none'
+									: `${milesCount(miles)} across · ${milesCount(dayMiles)} a day`}
 							</button>
+						{/if}
+						{#if fogTool && isGm}
+							<!-- The fog's own tools, out while the GM is at it, as on a battle
+							     map: clear some of it, cover some again, or do the whole map
+							     at once. -->
+							<span class="w-px self-stretch bg-line"></span>
+							<ToolButton
+								icon="reveal"
+								label="Clear the fog from an area"
+								hint={world.map.fog.on ? 'What is there shows to the players' : 'There is no fog on this map yet'}
+								disabled={!world.map.fog.on}
+								active={fogTool === 'reveal'}
+								onclick={() => (fogTool = 'reveal')}
+							/>
+							<ToolButton
+								icon="hide"
+								label="Cover an area with fog"
+								hint="Also where the party has been"
+								active={fogTool === 'cover'}
+								onclick={() => (fogTool = 'cover')}
+							/>
+							<ToolButton
+								icon="fog"
+								label={world.map.fog.on ? 'Lift all the fog' : 'Cover the whole map'}
+								hint={world.map.fog.on ? 'Ctrl+Z brings it back' : 'It lifts wherever the party goes'}
+								onclick={fogWorld}
+							/>
 						{/if}
 					{:else}
 						<!-- The tools for the map. This wrapper only exists on a narrow
@@ -1620,15 +1888,16 @@
 									onclick={() => startPlacing({ party: true })}
 								/>
 								<!-- Each world map has its own: under it, players see only
-								     where the party has been. -->
+								     where the party has been, and what the GM has cleared by
+								     hand. Its tools take the bar's place while they are out. -->
 								<ToolButton
 									icon="fog"
-									label={world.map.fog.on ? 'Lift the fog from this map' : 'Cover this map with fog'}
+									label="Fog"
 									hint={world.map.fog.on
-										? 'On: players see only where the party has been'
-										: 'It lifts wherever the party goes'}
+										? 'On: players see where the party has been, and what you clear'
+										: 'Off: cover this map, or a part of it'}
 									active={world.map.fog.on}
-									onclick={fogWorld}
+									onclick={pickWorldFog}
 								/>
 								<ToolButton
 									icon="gather"
@@ -1734,6 +2003,7 @@
 	<MarkerForm
 		mode={form.mode}
 		kind={form.mode === 'create' ? form.kind : form.marker.kind}
+		{campaignId}
 		initial={form.mode === 'edit' ? form.marker : {}}
 		onsubmit={saveMarker}
 		onclose={() => (form = null)}
@@ -1789,13 +2059,32 @@
 	<ScalePrompt
 		map={world.map}
 		{miles}
-		onsubmit={async (across) => {
-			const saved = await run({ t: 'map.update', id: world.map.id, miles: across });
+		{dayMiles}
+		onsubmit={async (across, pace) => {
+			const saved = await run({
+				t: 'map.update',
+				id: world.map.id,
+				miles: across,
+				...(pace === undefined ? {} : { dayMiles: pace })
+			});
 			// With no scale left to go by, the ruler goes back in the drawer.
 			if (saved && across === null) measuring = false;
 			return saved;
 		}}
 		onclose={() => (scaling = false)}
+	/>
+{/if}
+
+{#if inviting && data.invite}
+	<InviteDialog
+		invite={data.invite}
+		campaignName={data.campaign.name}
+		displayUrl="/c/{campaignId}/m/{world.map.id}?display"
+		oncopied={(ok) =>
+			ok
+				? say('Invite link copied to the clipboard.', 'success')
+				: say('Copy the link from the box.', 'warning')}
+		onclose={() => (inviting = false)}
 	/>
 {/if}
 

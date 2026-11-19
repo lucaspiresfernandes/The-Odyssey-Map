@@ -31,15 +31,16 @@
 	import { cellBox, cleared, covered, fogPath } from '#lib/shared/fog.ts';
 	import {
 		cellsToFeet,
-		feetBetween,
+		feetAlong,
 		feetCount,
-		milesBetween,
+		milesAlong,
 		milesCount,
 		pixelsToFeet,
 		sitsOnCorner,
 		snapToGrid,
 		snapToHalfCell,
-		templatePoints
+		templatePoints,
+		travelTime
 	} from '#lib/shared/grid.ts';
 	import {
 		canChangeDrawing,
@@ -101,6 +102,8 @@
 		party: Party | null;
 		/** How many miles across a world map is, or null when nothing says. */
 		miles: number | null;
+		/** How many miles a day's travel covers on a world map: what the ruler tells time by. */
+		dayMiles: number;
 		/** What the other people looking at this map have in hand. */
 		hands: Hand[];
 		/** The spots of this map being pointed out right now. `key` tells one from the next. */
@@ -187,6 +190,16 @@
 		onhide: (marker: Marker, hidden: boolean) => void;
 		/** The GM chose which players see a hidden marker. */
 		onshare: (marker: Marker, seenBy: string[]) => void;
+		/** The GM holds the picture of a marker up for the whole table. */
+		onshowmarker?: (marker: Marker) => void;
+		/**
+		 * The markers and regions that are new to whoever is looking, by id:
+		 * revealed, or out of the fog, since they last looked. Each glints until
+		 * it is looked at.
+		 */
+		fresh?: string[];
+		/** One of those has been looked at: its card read, its name lit. */
+		onseen?: (id: string) => void;
 		/** A box was dragged over the squares of the map's picture, in map space. */
 		onalign: (box: Rect) => void;
 		/** The rest of what a token is, is to be changed: its picture, its colour, its outline. */
@@ -206,6 +219,7 @@
 		drawings,
 		party,
 		miles,
+		dayMiles,
 		hands,
 		pings,
 		role,
@@ -236,6 +250,9 @@
 		ondelete,
 		onhide,
 		onshare,
+		onshowmarker,
+		fresh = [],
+		onseen,
 		onalign,
 		onedittoken,
 		onhand,
@@ -303,8 +320,36 @@
 		at?: Point;
 		held: boolean;
 	} | null>(null);
-	/** A distance being measured with the ruler tool: from, to. */
-	let measure = $state.raw<[Point, Point] | null>(null);
+	/**
+	 * A distance being measured with the ruler tool: the spots it runs
+	 * through, the last of them under the pointer. Dragged, it has two. Laid
+	 * along a road a click at a time, it bends at every click.
+	 */
+	let measure = $state.raw<Point[] | null>(null);
+	/** The ruler is being laid a click at a time: its last spot follows the pointer until it is ended. */
+	let routing = $state(false);
+	/** When and where the last spot of such a ruler was clicked: twice in one place ends it. */
+	let lastBend = { at: 0, x: 0, y: 0 };
+
+	/** Ends a ruler laid a click at a time. It stays on the map to be read, until the next is begun. */
+	function endRoute() {
+		routing = false;
+		if (!measure) return;
+		// Its last spot was only ever under the pointer.
+		const laid = measure.slice(0, -1);
+		measure = laid.length >= 2 ? laid : null;
+	}
+
+	/** Takes back the last bend of a ruler being laid, or with none left, the ruler. */
+	function unbend() {
+		if (!measure) return;
+		if (measure.length <= 2) {
+			measure = null;
+			routing = false;
+		} else {
+			measure = [...measure.slice(0, -2), measure[measure.length - 1]];
+		}
+	}
 	/** A line being drawn, in map space, and the ones let go that the server hasn't answered for yet. */
 	let stroke = $state.raw<Point[] | null>(null);
 	let inked = $state.raw<{ points: Point[]; color: string }[]>([]);
@@ -425,6 +470,19 @@
 	const cardPosition = $derived(
 		active && cardSpot([active.x, active.y], PIN_HEIGHT + 12, 12, cardW, cardH)
 	);
+
+	/** How long a card has to be open, or a region's name lit, before it counts as looked at. */
+	const LOOKED_AT = 600;
+
+	// What is new to this person glints until they look at it: a marker whose
+	// card they have open, a region the pointer rests on. Passing over one on
+	// the way somewhere else is not looking.
+	$effect(() => {
+		const id = tool === 'pan' ? (active?.id ?? hoveredRegionId) : null;
+		if (!id || !fresh.includes(id)) return;
+		const timer = setTimeout(() => onseen?.(id), LOOKED_AT);
+		return () => clearTimeout(timer);
+	});
 
 	// ------------------------------------------------------------ the party
 
@@ -605,8 +663,12 @@
 
 	/** The hand is out on a battle map: what is on it can be selected and dragged. */
 	const selecting = $derived(battle && tool === 'pan' && !passive);
-	/** The box being dragged over the fog, as it will be cleared or covered: whole cells, unless Alt is held. */
-	const veilBox = $derived(veil && cellBox(map, veil.from, veil.to, veil.free));
+	/**
+	 * The box being dragged over the fog, as it will be cleared or covered:
+	 * whole cells on a battle map, unless Alt is held. A world map has no
+	 * cells, and the box is as it was dragged.
+	 */
+	const veilBox = $derived(veil && cellBox(map, veil.from, veil.to, veil.free || !battle));
 	const selectedTokens = $derived(
 		selecting ? tokens.filter((t) => selectedIds.includes(t.id)) : []
 	);
@@ -689,18 +751,26 @@
 
 	interface Ruler {
 		key: string;
-		from: Point;
-		to: Point;
-		/** "30 ft" on a battle map, "12 mi" on a world map. Empty where the map has no scale. */
+		/** The spots it runs through: its two ends, and every bend between them. */
+		points: Point[];
+		/**
+		 * "30 ft" on a battle map. On a world map "84 mi", and how long that is
+		 * on the road: "about 3½ days". Empty where the map has no scale, and
+		 * for a ruler that has gone nowhere yet.
+		 */
 		length: string;
 		tint: string;
 	}
 
-	/** How far apart two spots are, in words: feet on a battle map, miles on a world map. */
-	function distance(from: Point, to: Point): string {
-		if (battle) return feetCount(feetBetween(map, from, to));
+	/** How long a way through these spots is, in words: feet on a battle map, miles and days on a world map. */
+	function distance(points: Point[]): string {
+		const [first] = points;
+		if (points.every(([x, y]) => x === first[0] && y === first[1])) return '';
+		if (battle) return feetCount(feetAlong(map, points));
 		if (miles === null) return '';
-		return milesCount(milesBetween({ width: W, height: H }, miles, from, to));
+		const far = milesAlong({ width: W, height: H }, miles, points);
+		const long = travelTime(far, dayMiles);
+		return long ? `${milesCount(far)} · ${long}` : milesCount(far);
 	}
 
 	/** Every distance being measured on this map right now: this person's, then everyone else's. */
@@ -710,14 +780,13 @@
 		if (carry?.held && carry.measured) {
 			const from = carry.origins[carry.lead];
 			const to: Point = [from[0] + carry.rest[0], from[1] + carry.rest[1]];
-			drawn.push({ key: 'mine', from, to, tint: '#fff' });
-		} else if (measure) drawn.push({ key: 'mine', from: measure[0], to: measure[1], tint: '#fff' });
+			drawn.push({ key: 'mine', points: [from, to], tint: '#fff' });
+		} else if (measure) drawn.push({ key: 'mine', points: measure, tint: '#fff' });
 		for (const other of hands) {
-			if (!other.ruler) continue;
-			const [from, to] = other.ruler;
-			drawn.push({ key: other.id, from: clamped(from), to: clamped(to), tint: tintOf(other) });
+			if (!other.ruler || other.ruler.length < 2) continue;
+			drawn.push({ key: other.id, points: other.ruler.map(clamped), tint: tintOf(other) });
 		}
-		return drawn.map((ruler): Ruler => ({ ...ruler, length: distance(ruler.from, ruler.to) }));
+		return drawn.map((ruler): Ruler => ({ ...ruler, length: distance(ruler.points) }));
 	});
 
 	/** The first letters of a token's name, to write on it. */
@@ -810,7 +879,10 @@
 
 	// What a tool was in the middle of is put away with the tool.
 	$effect(() => {
-		if (tool !== 'measure') measure = null;
+		if (tool !== 'measure') {
+			measure = null;
+			routing = false;
+		}
 		if (tool !== 'sketch') stroke = null;
 		if (tool !== 'select') marquee = null;
 		if (tool !== 'template') casting = null;
@@ -1094,6 +1166,14 @@
 		};
 	}
 
+	/** Brings a spot of the map to the middle of the screen, as close up as it is now. */
+	export function centreOn([x, y]: Point) {
+		if (cw === 0 || ch === 0) return;
+		fitting = false;
+		const k = view.k;
+		animateTo(bounded({ k, x: cw / 2 - x * W * k, y: ch / 2 - y * H * k }), 400);
+	}
+
 	/**
 	 * Brings the same part of the map on screen here: the same middle, and
 	 * zoomed so that all of what they saw fits, whatever shape this screen is.
@@ -1149,6 +1229,7 @@
 				carry = null;
 				shaping = null;
 				measure = null;
+				routing = false;
 				stroke = null;
 				inked = [];
 				casting = null;
@@ -1310,7 +1391,11 @@
 				/** Which way the pointer was from the token's middle when it caught the handle. */
 				bearing: number;
 		  }
-		| { type: 'measure' }
+		/**
+		 * The ruler: dragged from one spot to another, or with `route`, being
+		 * laid a click at a time, each click another bend in it.
+		 */
+		| { type: 'measure'; sx: number; sy: number; moved: boolean; route: boolean }
 		| { type: 'sketch' }
 		/** The area of a spell, dragged out from where the press began. */
 		| { type: 'template' }
@@ -1522,6 +1607,7 @@
 			if (carry?.held) carry = null;
 			if (shaping?.held) shaping = null;
 			measure = null;
+			routing = false;
 			stroke = null;
 			casting = null;
 			marquee = null;
@@ -1598,9 +1684,15 @@
 		}
 
 		if (tool === 'measure') {
-			const from = aim(e);
-			measure = [from, from];
-			gesture = { type: 'measure' };
+			const at = aim(e);
+			// A ruler being laid takes this spot for its end. Otherwise a new one
+			// starts here, in place of any that was left on the map to be read.
+			if (routing && measure) measure = [...measure.slice(0, -1), at];
+			else {
+				routing = false;
+				measure = [at, at];
+			}
+			gesture = { type: 'measure', sx: e.clientX, sy: e.clientY, moved: false, route: routing };
 			capture(e.pointerId);
 			return;
 		}
@@ -1735,6 +1827,10 @@
 
 	function onpointermove(e: PointerEvent) {
 		if (tool === 'draw' && e.pointerType === 'mouse') cursor = toMap(e.clientX, e.clientY);
+		// The end of a ruler being laid follows the mouse between clicks.
+		if (routing && measure && e.pointerType === 'mouse' && !pointers.has(e.pointerId)) {
+			measure = [...measure.slice(0, -1), aim(e)];
+		}
 		trackHover(e);
 
 		const pointer = pointers.get(e.pointerId);
@@ -1835,7 +1931,10 @@
 				shaping = { id: g.token.id, size, held: true };
 			}
 		} else if (g?.type === 'measure' && measure) {
-			measure = [measure[0], aim(e)];
+			if (Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > (e.pointerType === 'mouse' ? 4 : 10)) {
+				g.moved = true;
+			}
+			if (g.moved || g.route) measure = [...measure.slice(0, -1), aim(e)];
 		} else if (g?.type === 'sketch' && stroke) {
 			// A new point once the pointer has gone a couple of pixels on.
 			const at = clamped(toMap(e.clientX, e.clientY));
@@ -1889,7 +1988,27 @@
 		gesture = null;
 		dragging = false;
 		if (g?.type === 'pan' && !g.moved && !g.pinged && completed) tap(e, g.target);
-		if (g?.type === 'measure') measure = null;
+		if (g?.type === 'measure') {
+			const now = performance.now();
+			const twice =
+				now - lastBend.at < 400 &&
+				Math.hypot(e.clientX - lastBend.x, e.clientY - lastBend.y) < 28;
+			if (!completed || (!g.route && g.moved)) {
+				// Dragged from one spot to another: it was read on the way, and is gone.
+				measure = null;
+				routing = false;
+			} else if (!g.route) {
+				// A click that went nowhere is where a ruler laid along a road starts.
+				routing = true;
+				lastBend = { at: now, x: e.clientX, y: e.clientY };
+			} else if (twice || !measure || measure.length >= LIMITS.rulerPoints) {
+				endRoute();
+			} else {
+				// It bends here, and its end goes on with the pointer.
+				measure = [...measure, measure[measure.length - 1]];
+				lastBend = { at: now, x: e.clientX, y: e.clientY };
+			}
+		}
 		if (g?.type === 'template') {
 			const laid = casted;
 			casting = null;
@@ -2152,6 +2271,13 @@
 		if (partyPicked && (e.key === 'Delete' || e.key === 'Backspace')) {
 			e.preventDefault();
 			if (!e.repeat) onpartyremove();
+			return;
+		}
+		// A ruler being laid along a road: Enter ends it, Backspace takes a bend back.
+		if (tool === 'measure' && routing && (e.key === 'Enter' || e.key === 'Backspace')) {
+			e.preventDefault();
+			if (e.key === 'Enter') endRoute();
+			else unbend();
 			return;
 		}
 		if (tool !== 'draw') return;
@@ -2517,6 +2643,15 @@
 							outlineOf(region)
 						]}
 					/>
+					{#if fresh.includes(region.id)}
+						<!-- New to whoever is looking: its outline glints in gold until
+						     they have looked at it. -->
+						<polygon
+							class="animate-glint-line fill-accent/10 stroke-accent stroke-[3.5] stroke-steady motion-reduce:animate-none"
+							points={svgPoints(pointsOf(region))}
+							data-fresh={region.id}
+						/>
+					{/if}
 				{/each}
 
 				{#if draft.length}
@@ -2574,24 +2709,17 @@
 
 				<!-- What is being measured, each ruler in the colour (--c) of whoever holds it. -->
 				{#each rulers as ruler (ruler.key)}
-					{@const [x1, y1] = ruler.from}
-					{@const [x2, y2] = ruler.to}
+					{@const path = svgPoints(ruler.points)}
 					<g style:--c={ruler.tint}>
-						<line
-							class="stroke-[#0c0e14]/60 stroke-[5] stroke-steady [stroke-linecap:round]"
-							x1={x1 * W}
-							y1={y1 * H}
-							x2={x2 * W}
-							y2={y2 * H}
+						<polyline
+							class="fill-none stroke-[#0c0e14]/60 stroke-[5] stroke-steady [stroke-linecap:round]"
+							points={path}
 						/>
-						<line
-							class="stroke-(--c) stroke-[2.5] stroke-steady [stroke-dasharray:7_5]"
-							x1={x1 * W}
-							y1={y1 * H}
-							x2={x2 * W}
-							y2={y2 * H}
+						<polyline
+							class="fill-none stroke-(--c) stroke-[2.5] stroke-steady [stroke-dasharray:7_5]"
+							points={path}
 						/>
-						{#each [ruler.from, ruler.to] as [x, y], i (i)}
+						{#each ruler.points as [x, y], i (i)}
 							<circle
 								class="fill-(--c) stroke-[#12151c] stroke-[1.5] stroke-steady"
 								cx={x * W}
@@ -2820,7 +2948,11 @@
 							style:rotate="{turn}deg"
 							style:--c={token.color}
 							style:--o={token.outline ?? '#12151c'}
-							title="{token.name}{token.locked ? ' · locked' : ''}"
+							title="{token.name}{token.ownerName
+								? token.ownerId === userId
+									? ' · yours'
+									: ` · ${token.ownerName}’s`
+								: ''}{token.locked ? ' · locked' : ''}"
 							aria-label="Token: {token.name}{token.count != null
 								? `, ${token.count}`
 								: ''}{token.hidden ? (canShape ? ' (hidden from players)' : ' (a secret)') : ''}{down
@@ -3060,7 +3192,7 @@
 						? canShape
 							? ' (hidden from players)'
 							: ' (a secret)'
-						: ''}"
+						: ''}{fresh.includes(marker.id) ? ' (new)' : ''}"
 					aria-pressed={selectedMarkerId === marker.id}
 					tabindex={tool === 'pan' ? 0 : -1}
 					onfocus={() => (hoveredMarkerId = marker.id)}
@@ -3073,6 +3205,15 @@
 							raised && 'scale-115'
 						]}
 					>
+						{#if fresh.includes(marker.id)}
+							<!-- New to whoever is looking: a ring of gold breathing around
+							     its head, until its card has been read. -->
+							<span
+								class="pointer-events-none absolute top-[15px] left-1/2 size-13 -translate-1/2 animate-glint rounded-full border-[3px] border-accent shadow-[0_0_10px_2px_var(--color-accent),inset_0_0_6px_var(--color-accent)] motion-reduce:animate-none"
+								data-fresh={marker.id}
+								aria-hidden="true"
+							></span>
+						{/if}
 						{#if marker.kind === 'world'}
 							<svg class={shape} viewBox="0 0 32 42" width="32" height="42" aria-hidden="true">
 								<path
@@ -3216,10 +3357,11 @@
 
 			<!-- How long each ruler is, written at the end it is being pulled to. -->
 			{#each rulers as ruler (ruler.key)}
-				{#if ruler.length && (ruler.from[0] !== ruler.to[0] || ruler.from[1] !== ruler.to[1])}
+				{#if ruler.length}
+					{@const [ex, ey] = ruler.points[ruler.points.length - 1]}
 					<div
 						class="pointer-events-none absolute top-0 left-0 z-3 size-0 origin-top-left scale-(--inv)"
-						style:translate="{ruler.to[0] * W}px {ruler.to[1] * H}px"
+						style:translate="{ex * W}px {ey * H}px"
 						style:--c={ruler.tint}
 					>
 						<span
@@ -3252,6 +3394,7 @@
 			>
 				<MarkerCard
 					marker={active}
+					campaignId={map.campaignId}
 					{role}
 					{userId}
 					{pinned}
@@ -3262,6 +3405,7 @@
 					{onhide}
 					{players}
 					onshare={canShape ? onshare : undefined}
+					onshow={canShape ? onshowmarker : undefined}
 				/>
 			</div>
 		{/if}
@@ -3369,10 +3513,17 @@
 			</p>
 		{:else if tool === 'measure'}
 			<p class={hint}>
-				Drag across the map to measure.
-				<span class={keys}>
-					{#if battle}Alt measures off the grid ·{/if} Esc puts the ruler away
-				</span>
+				{#if routing}
+					<span class="touch:hidden">Click along the way. Double-click to end it.</span>
+					<span class="hidden touch:inline">Tap along the way. Double-tap to end it.</span>
+					<span class={keys}>Backspace takes a bend back · Esc puts the ruler away</span>
+				{:else}
+					<span class="touch:hidden">Drag to measure, or click along a road to follow it.</span>
+					<span class="hidden touch:inline">Drag to measure, or tap along a road to follow it.</span>
+					<span class={keys}>
+						{#if battle}Alt measures off the grid ·{/if} Esc puts the ruler away
+					</span>
+				{/if}
 			</p>
 		{:else if tool === 'template'}
 			<p class={hint}>
@@ -3399,7 +3550,7 @@
 			<p class={hint}>
 				{#if map.fog.on}
 					Drag a box over what the players may see.
-					<span class={keys}>Alt leaves the grid · Esc puts it away</span>
+					<span class={keys}>{#if battle}Alt leaves the grid ·{/if} Esc puts it away</span>
 				{:else}
 					There is no fog on this map yet. Cover some of it first.
 				{/if}
@@ -3407,7 +3558,7 @@
 		{:else if tool === 'cover'}
 			<p class={hint}>
 				Drag a box over what the fog should cover.
-				<span class={keys}>Alt leaves the grid · Esc puts it away</span>
+				<span class={keys}>{#if battle}Alt leaves the grid ·{/if} Esc puts it away</span>
 			</p>
 		{:else if tool === 'point'}
 			<p class={hint}>

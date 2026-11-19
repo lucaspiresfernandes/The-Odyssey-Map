@@ -56,15 +56,20 @@ async function waitFor(url: string) {
 /** A browser, reduced to what matters here: it keeps the session cookie and names its origin. */
 class Visitor {
 	cookie = '';
+	/** What it holds while it waits to be let back into a seat. */
+	seat = '';
 
 	async request(path: string, init: RequestInit = {}) {
 		const headers = new Headers(init.headers);
-		if (this.cookie) headers.set('cookie', this.cookie);
+		const cookies = [this.cookie, this.seat].filter(Boolean).join('; ');
+		if (cookies) headers.set('cookie', cookies);
 		if (!headers.has('origin')) headers.set('origin', app);
 		const response = await fetch(app + path, { ...init, headers, redirect: 'manual' });
 		for (const cookie of response.headers.getSetCookie()) {
 			const pair = cookie.split(';')[0];
 			if (pair.startsWith('odyssey_session=')) this.cookie = pair;
+			// Taken away, it comes back empty.
+			if (pair.startsWith('odyssey_seat=')) this.seat = pair === 'odyssey_seat=' ? '' : pair;
 		}
 		return response;
 	}
@@ -139,15 +144,52 @@ async function run() {
 	check('the GM sees the map and an invite link', gmPage.includes('End To End') && invite !== '');
 
 	check('a stranger is sent to log in', (await player.request(mapPath)).status === 303);
-	const joined = await player.form(invite, { name: 'Tester' });
-	check('a player joins with the link and a name', joined.status === 303 && player.cookie !== '');
-	const playerPage = await (await player.request(mapPath)).text();
-	check('the player is not shown the invite link', !playerPage.includes('/join/'));
 
 	// The WebSocket server asks the app who each session belongs to.
 	const gmSocket = gm.connect(campaign);
-	const playerSocket = player.connect(campaign);
 	check('the GM connects with the app session', await gmSocket.opened);
+
+	// The invite link gets someone to the door. The GM lets them in.
+	/** Who the GM was last told is waiting to be let in. */
+	const door = (): any[] =>
+		gmSocket.messages.findLast((m) => m.t === 'knocks' || m.t === 'hello')?.knocks ?? [];
+	const answerSeat = (who: Visitor, id: string | undefined, grant: boolean) =>
+		who.request(`/c/${campaign}/seats`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ id, grant })
+		});
+	const seatOf = async (who: Visitor) => (await (await who.request(`${invite}/seat`)).json()).status;
+	/** Asks for a new seat under a name, has the GM say yes, and sits down. */
+	const sitDown = async (who: Visitor, name: string) => {
+		await who.form(`${invite}?/join`, { name });
+		await pause(300);
+		await answerSeat(gm, door().find((knock) => knock.name === name)?.id, true);
+		return seatOf(who);
+	};
+
+	const joined = await player.form(`${invite}?/join`, { name: 'Tester' });
+	await pause(300);
+	check(
+		'the link and a name seat nobody: the GM is asked',
+		joined.status === 200 && player.cookie === '' && player.seat !== '' && door().length === 1 && door()[0].name === 'Tester' && door()[0].newcomer === true,
+		`status ${joined.status} ${JSON.stringify(door())}`
+	);
+	check('until the GM answers, they wait outside', (await seatOf(player)) === 'waiting' && (await player.request(mapPath)).status === 303);
+	const unwelcome = new Visitor();
+	await unwelcome.form(`${invite}?/join`, { name: 'Unwelcome' });
+	await pause(300);
+	check('nobody lets themselves in', (await answerSeat(unwelcome, door().find((knock) => knock.name === 'Unwelcome')?.id, true)).status === 401, JSON.stringify(door()));
+	await answerSeat(gm, door().find((knock) => knock.name === 'Unwelcome')?.id, false);
+	check('a no leaves them outside', (await seatOf(unwelcome)) === 'refused' && unwelcome.cookie === '' && unwelcome.seat === '');
+	check('a name with nothing in it is not asked under', (await new Visitor().form(`${invite}?/join`, { name: '   ' })).status === 400);
+	check('the GM lets the player in', (await answerSeat(gm, door()[0]?.id, true)).status === 200);
+	check('a yes seats them, logged in', (await seatOf(player)) === 'granted' && player.cookie !== '' && player.seat === '');
+	const playerPage = await (await player.request(mapPath)).text();
+	check('the player is not shown the invite link', !playerPage.includes('/join/'));
+	check('whoever was turned away took no seat', !(await (await new Visitor().request(invite)).text()).includes('Unwelcome'));
+
+	const playerSocket = player.connect(campaign);
 	check('the player connects with the app session', await playerSocket.opened);
 	check('no session, no connection', !(await new Visitor().connect(campaign).opened));
 	check('a page on another site cannot connect', !(await gm.connect(campaign, 'http://elsewhere.example').opened));
@@ -629,14 +671,14 @@ async function run() {
 	playerSocket.ws.send(
 		JSON.stringify({
 			t: 'hand',
-			at: { mapId: bridgeId, drag: { id: ogreId, x: 0.45, y: 0.4 }, ruler: [[0.3, 0.3], [0.45, 0.4]] }
+			at: { mapId: bridgeId, drag: { id: ogreId, x: 0.45, y: 0.4 }, ruler: [[0.3, 0.3], [0.4, 0.3], [0.45, 0.4]] }
 		})
 	);
 	await pause(300);
 	const inHand = handsSeen(gmSocket).at(-1)?.hand;
 	check(
 		'a token being dragged is shown to the table, with how far it has come',
-		inHand?.name === 'Tester' && inHand.mapId === bridgeId && inHand.drag?.id === ogreId && inHand.drag.x === 0.45 && inHand.ruler?.[1]?.[0] === 0.45
+		inHand?.name === 'Tester' && inHand.mapId === bridgeId && inHand.drag?.id === ogreId && inHand.drag.x === 0.45 && inHand.ruler?.length === 3 && inHand.ruler[2][0] === 0.45
 	);
 	check('the player is not sent their own hand', handsSeen(playerSocket).length === 0);
 	const latecomer = gm.connect(campaign);
@@ -648,7 +690,7 @@ async function run() {
 	);
 	latecomer.ws.close();
 	const shownSoFar = handsSeen(gmSocket).length;
-	for (const extra of [{ drag: { id: '../x', x: 0.4, y: 0.4 } }, { drag: { id: ogreId, x: 'far', y: 0.4 } }, { drag: 'ogre' }, { ruler: [[0.3, 0.3]] }, { ruler: [[0.3, 0.3], [0.4, 1e9]] }]) {
+	for (const extra of [{ drag: { id: '../x', x: 0.4, y: 0.4 } }, { drag: { id: ogreId, x: 'far', y: 0.4 } }, { drag: 'ogre' }, { ruler: [[0.3, 0.3]] }, { ruler: [[0.3, 0.3], [0.4, 1e9]] }, { ruler: Array.from({ length: 40 }, () => [0.3, 0.3]) }]) {
 		playerSocket.ws.send(JSON.stringify({ t: 'hand', at: { mapId: bridgeId, ...extra } }));
 		await pause(40);
 	}
@@ -712,6 +754,9 @@ async function run() {
 	// own login gets a player's page and a player's events.
 	const displayPage = await (await gm.request(`${mapPath}?display`)).text();
 	check('a display opened by the GM is not handed the invite link', !displayPage.includes('/join/'));
+	const invitingPage = await (await gm.request(`${mapPath}?display&invite`)).text();
+	check('until the GM asks it to show the invite', invitingPage.includes(invite));
+	check('which a player\'s display is never handed', !(await (await player.request(`${mapPath}?display&invite`)).text()).includes('/join/'));
 	const displaySocket = gm.connect(campaign, app, true);
 	check('a display connects', await displaySocket.opened);
 	await pause(300);
@@ -815,7 +860,7 @@ async function run() {
 	// What some players are let in on and the rest are not: the app says what
 	// each of them is owed, and the WebSocket server sends each socket its own.
 	const friend = new Visitor();
-	await friend.form(invite, { name: 'Friend' });
+	await sitDown(friend, 'Friend');
 	const friendSocket = friend.connect(campaign);
 	const screen = gm.connect(campaign, app, true);
 	await Promise.all([friendSocket.opened, screen.opened]);
@@ -943,6 +988,47 @@ async function run() {
 	check('with its maps and what is on them', copyPage.includes('End To End') && copyPage.includes('The Tomb'));
 	check('a guest imports nothing', (await sendIn(player, archive)).status === 403);
 	check('nor is a file that is not a campaign taken', (await sendIn(gm, new TextEncoder().encode('nothing of the kind'))).status === 400);
+
+	// A seat got back into: someone with no login asks for the player's
+	// seat, only the GM hears of it, and a yes logs that browser in as them.
+	const returning = new Visitor();
+	const seats = await (await returning.request(invite)).text();
+	const playerId: string = playerSocket.messages[0]?.user.id;
+	check('the invite link offers the seats that are taken', seats.includes('Tester') && seats.includes(playerId));
+	const asked = await returning.form(`${invite}?/claim`, { seat: playerId });
+	await pause(400);
+	const knocks: any[] = gmSocket.messages.findLast((m) => m.t === 'knocks')?.knocks ?? [];
+	const overheard = [playerSocket, displaySocket].some((socket) => socket.messages.some((m) => m.t === 'knocks'));
+	check('asking for one reaches the GM', asked.status === 200 && returning.seat !== '' && knocks.length === 1 && knocks[0].name === 'Tester' && knocks[0].newcomer === false, JSON.stringify(knocks));
+	check('and nobody else', !overheard);
+	const seatStatus = () => seatOf(returning);
+	check('until the GM answers, they wait, logged in as nobody', (await seatStatus()) === 'waiting' && returning.cookie === '');
+	const answer = (who: Visitor, grant: boolean) => answerSeat(who, knocks[0]?.id, grant);
+	check('a player cannot let them in', (await answer(player, true)).status === 403);
+	check('the GM can', (await answer(gm, true)).status === 200);
+	await pause(300);
+	check('and is told nobody is waiting any more', gmSocket.messages.findLast((m) => m.t === 'knocks')?.knocks.length === 0);
+	check('a yes logs that browser in', (await seatStatus()) === 'granted' && returning.cookie !== '' && returning.seat === '');
+	const backSocket = returning.connect(campaign);
+	await backSocket.opened;
+	await pause(300);
+	check('as the player they were', backSocket.messages[0]?.user.id === playerId && backSocket.messages[0]?.role === 'player');
+	check('the answer lets one browser in, once', (await seatStatus()) === 'gone');
+	backSocket.ws.close();
+
+	// Someone with an account of their own is asked about too, and joins as
+	// themselves: the yes logs nobody in.
+	const member = new Visitor();
+	await member.form('/?/register', { username: `pc_${secret.slice(0, 8)}`, password: secret });
+	const memberSession = member.cookie;
+	const memberAsked = await member.form(`${invite}?/join`, {});
+	await pause(300);
+	const memberKnock = door().find((knock) => knock.name === `pc_${secret.slice(0, 8)}`);
+	check('an account asks to join as itself', memberAsked.status === 200 && memberKnock?.newcomer === true && member.seat !== '', JSON.stringify(door()));
+	check('and is no member until the GM says so', (await member.request(mapPath)).status !== 200);
+	await answerSeat(gm, memberKnock?.id, true);
+	check('a yes makes them a player, on the login they had', (await seatOf(member)) === 'granted' && member.cookie === memberSession && (await member.request(mapPath)).status === 200);
+	check('with a seat already, the link leads straight to the map', (await member.request(invite)).status === 303 && (await member.form(`${invite}?/join`, {})).status === 303);
 
 	// The app checks the login on every forwarded command, so an open socket
 	// stops working the moment its session ends.

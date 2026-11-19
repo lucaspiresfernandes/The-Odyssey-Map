@@ -7,6 +7,7 @@
 import type { Broadcast, Shown, StoredEvent } from '../shared/types';
 import type { Db } from './db';
 import { playersOf } from './queries';
+import { knocksOf } from './seats';
 import { toLiveEvent } from './visibility';
 
 const BRIDGE_URL = `http://127.0.0.1:${process.env.WS_PORT || 3001}`;
@@ -80,6 +81,14 @@ export function announce(db: Db, events: StoredEvent[]): Promise<void> {
  */
 export function summon(campaignId: string, gather: NonNullable<Broadcast['gather']>): Promise<void> {
 	return send({ campaignId, events: [], gather });
+}
+
+/**
+ * Tells the GM who is asking for a seat they sat in before, in place of
+ * whoever was asking a moment ago. Nobody else is told.
+ */
+export function knocked(db: Db, campaignId: string): Promise<void> {
+	return send({ campaignId, events: [], knocks: knocksOf(db, campaignId) });
 }
 
 /**

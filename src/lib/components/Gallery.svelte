@@ -10,6 +10,9 @@
 	// Opened on its own, with no `kind`, it is the GM's storeroom: both
 	// shelves, to stock and tidy ahead of the session. Nothing is picked.
 	// From there a picture can be held up for the whole table to look at.
+	//
+	// With no `kind` and something to do with a pick, both shelves are there
+	// to pick from: the card of a marker shows a picture off either.
 
 	import {
 		LIMITS,
@@ -30,7 +33,10 @@
 		current?: string | null;
 		/** For a player: the shelf is there to pick from, and nothing on it can be changed. */
 		readonly?: boolean;
-		/** What to do with the picture that is picked, when there is a `kind` to pick from. */
+		/**
+		 * What to do with the picture that is picked. With a `kind` it is picked
+		 * from that shelf, and without one from either.
+		 */
 		onpick?: (item: GalleryItem) => void;
 		/**
 		 * For the GM's storeroom: holds a picture up to be looked at, or with
@@ -169,7 +175,11 @@
 	}
 </script>
 
-<Modal title={kind ? (maps ? 'Map images' : 'Token pictures') : 'Gallery'} wide {onclose}>
+<Modal
+	title={kind ? (maps ? 'Map images' : 'Token pictures') : onpick ? 'Pick a picture' : 'Gallery'}
+	wide
+	{onclose}
+>
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
 		class="grid gap-4"
@@ -206,6 +216,9 @@
 		<p class={['text-[13px] text-muted', kind && '-mt-2']}>
 			{#if readonly}
 				Pick a picture for your token, from the ones the GM has shared with the table.
+			{:else if !kind && onpick}
+				Pick a picture for the card of this marker, off either shelf. Players who can see the
+				marker see its picture, hidden in the gallery or not.
 			{:else if maps}
 				{kind ? 'Pick an image to lay under this map.' : 'The images to lay under your maps.'}
 				What you add here is kept for the whole campaign, to use on any of its maps.
@@ -284,7 +297,7 @@
 
 			{#each shelf as item (item.id)}
 				<li class="group relative grid content-start gap-1.5">
-					{#if kind}
+					{#if onpick}
 						<button
 							class={[
 								'block w-full cursor-pointer overflow-hidden border-2 bg-night transition-colors hover:border-accent',
@@ -293,7 +306,7 @@
 							]}
 							aria-label="Use {item.name}{item.file === current ? ' (in use here)' : ''}"
 							aria-current={item.file === current || undefined}
-							onclick={() => onpick?.(item)}
+							onclick={() => onpick(item)}
 						>
 							<img
 								class="size-full object-cover"

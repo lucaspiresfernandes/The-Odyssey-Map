@@ -15,6 +15,7 @@ import {
 	type Who
 } from '../shared/rules';
 import {
+	DEFAULT_DAY_MILES,
 	turnsAmong,
 	type Backdrop,
 	type Crumb,
@@ -134,6 +135,25 @@ export function milesOf(db: Db, map: Pick<MapInfo, 'id' | 'kind' | 'miles'>): nu
 		id = door.mapId;
 	}
 	return null;
+}
+
+/**
+ * How many miles a day's travel covers on a map: what the GM has said of
+ * it, or of the nearest map further out that has a pace of its own. With
+ * none on the way, a day on foot.
+ */
+export function dayMilesOf(db: Db, map: Pick<MapInfo, 'id' | 'dayMiles' | 'parentId'>): number {
+	let step: { dayMiles: number | null; parentId: string | null } | undefined = map;
+	for (let depth = 0; step && depth < 64; depth++) {
+		if (step.dayMiles != null) return step.dayMiles;
+		if (!step.parentId) break;
+		step = db
+			.select({ dayMiles: maps.dayMiles, parentId: maps.parentId })
+			.from(maps)
+			.where(eq(maps.id, step.parentId))
+			.get();
+	}
+	return DEFAULT_DAY_MILES;
 }
 
 /**
@@ -342,6 +362,7 @@ export function getMapSnapshot(
 			drawings: drawingList,
 			party: party && !isConcealed(tx, party.mapId, who) ? party : null,
 			miles: milesOf(tx, map),
+			dayMiles: dayMilesOf(tx, map),
 			lastSeq: latestSeq(tx, campaignId)
 		};
 	});

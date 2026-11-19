@@ -35,6 +35,8 @@ export class MapState {
 	 * as the snapshot.
 	 */
 	readonly miles: number | null;
+	/** How many miles a day's travel covers here: worked out by the server too, and as old as the snapshot. */
+	readonly dayMiles: number;
 
 	/** Events up to this sequence number are already part of the snapshot. */
 	readonly lastSeq: number;
@@ -49,6 +51,7 @@ export class MapState {
 		this.drawings = snapshot.drawings;
 		this.party = snapshot.party;
 		this.miles = snapshot.miles;
+		this.dayMiles = snapshot.dayMiles;
 		this.lastSeq = snapshot.lastSeq;
 	}
 

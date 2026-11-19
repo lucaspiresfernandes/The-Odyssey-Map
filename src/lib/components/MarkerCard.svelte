@@ -1,12 +1,14 @@
 <script lang="ts">
 	import { canEditMarkerKind, canEditWorld, canRemoveMarker } from '#lib/shared/rules.ts';
-	import { markerType, type Marker, type Player, type Role } from '#lib/shared/types.ts';
+	import { imageUrl, markerType, type Marker, type Player, type Role } from '#lib/shared/types.ts';
 	import MarkerGlyph from './MarkerGlyph.svelte';
 	import PlayerPicker from './PlayerPicker.svelte';
 	import ToolButton from './ToolButton.svelte';
 
 	interface Props {
 		marker: Marker;
+		/** The campaign the marker is in: where its picture is loaded from. */
+		campaignId: string;
 		role: Role;
 		/** Who is looking. A table note offers Delete to its author and to the GM. */
 		userId: string;
@@ -21,10 +23,13 @@
 		players?: Player[];
 		/** The GM chose who sees a hidden marker: these players, and nobody else at the table. */
 		onshare?: (marker: Marker, seenBy: string[]) => void;
+		/** The GM holds the marker's picture up for the whole table to look at. */
+		onshow?: (marker: Marker) => void;
 	}
 
 	let {
 		marker,
+		campaignId,
 		role,
 		userId,
 		pinned,
@@ -34,8 +39,13 @@
 		ondelete,
 		onhide,
 		players = [],
-		onshare
+		onshare,
+		onshow
 	}: Props = $props();
+
+	/** The picture couldn't be loaded: the card does without it. */
+	let broken = $state<string | null>(null);
+	const picture = $derived(marker.image && marker.image !== broken ? marker.image : null);
 
 	const type = $derived(markerType(marker.type));
 	const gm = $derived(canEditWorld(role));
@@ -59,10 +69,25 @@
 
 <article
 	class={[
-		'grid w-max max-w-[min(320px,calc(100vw-32px))] min-w-[200px] gap-1.5 rounded-xl border bg-[#171b24f2] px-3.5 py-3 shadow-pop backdrop-blur-[6px]',
+		'grid gap-1.5 rounded-xl border bg-[#171b24f2] px-3.5 py-3 shadow-pop backdrop-blur-[6px]',
+		// A card with a picture is as wide as the picture's place on it.
+		picture
+			? 'w-[min(300px,calc(100vw-32px))]'
+			: 'w-max max-w-[min(320px,calc(100vw-32px))] min-w-[200px]',
 		pinned && 'border-[#55607a]'
 	]}
 >
+	{#if picture}
+		<!-- Its picture, whole, in a place of one size: the card is as tall
+		     before it has loaded as after. -->
+		<img
+			class="mb-1 h-44 w-full rounded-lg bg-night object-contain"
+			src={imageUrl(campaignId, picture, 'thumb')}
+			alt=""
+			draggable="false"
+			onerror={() => (broken = picture)}
+		/>
+	{/if}
 	<header class="flex items-center gap-2 text-xs">
 		<!-- The chip takes the colour of the marker's type, which arrives as --c. -->
 		<span
@@ -131,6 +156,15 @@
 							onclick={() => (sharing = !sharing)}
 						/>
 					{/if}
+				{/if}
+				{#if picture && onshow}
+					<ToolButton
+						small
+						icon="show"
+						label="Show the picture to the table"
+						hint="Full screen, on every screen"
+						onclick={() => onshow(marker)}
+					/>
 				{/if}
 				{#if removable}
 					<ToolButton small danger icon="delete" label="Delete" onclick={() => ondelete(marker)} />

@@ -94,6 +94,14 @@
 	let miscounted = $state(false);
 	/** The GM is choosing which players see the tokens selected. */
 	let sharing = $state(false);
+	/** The GM is saying whose the tokens selected are. */
+	let owning = $state(false);
+	/** The player every token selected belongs to, by id: null when they are not all one player's. */
+	const owner = $derived(
+		tokens.length && tokens.every((t) => t.ownerId && t.ownerId === tokens[0].ownerId)
+			? tokens[0].ownerId
+			: null
+	);
 	/** The players every token selected is a secret with. */
 	const sharedWith = $derived(
 		tokens.length
@@ -119,7 +127,7 @@
 
 	// The marks are put away with the last token, and so is the rest.
 	$effect(() => {
-		if (tokens.length === 0) marking = counting = sharing = false;
+		if (tokens.length === 0) marking = counting = sharing = owning = false;
 	});
 
 	/**
@@ -128,6 +136,16 @@
 	 */
 	function share(seenBy: string[]) {
 		send(tokens.map((t) => update(t, { hidden: true, seenBy })));
+	}
+
+	/**
+	 * Hands the tokens selected to a player, or with the one who has them
+	 * picked again, to nobody. A token has one owner: picking another player
+	 * takes it from the first.
+	 */
+	function hand(picked: string[]) {
+		const to = picked.find((id) => id !== owner) ?? null;
+		send(tokens.filter((t) => (t.ownerId ?? null) !== to).map((t) => update(t, { ownerId: to })));
 	}
 
 	/**
@@ -288,6 +306,21 @@
 				/>
 				<button class="btn btn-sm justify-self-end" onclick={() => (sharing = false)}>Done</button>
 			</div>
+		{:else if owning && tokens.length}
+			<!-- Whose the tokens selected are: one player, or nobody. -->
+			<div class="grid max-w-72 gap-1.5 p-1">
+				<span class="text-xs text-muted">
+					Whose {several ? 'tokens these are' : 'token this is'}. Their screen says when its turn
+					comes, and the turn is theirs to end:
+				</span>
+				<PlayerPicker
+					{players}
+					value={owner ? [owner] : []}
+					label="The player what is selected belongs to"
+					onchange={hand}
+				/>
+				<button class="btn btn-sm justify-self-end" onclick={() => (owning = false)}>Done</button>
+			</div>
 		{:else if marking && tokens.length}
 			<!-- The marks, seven to a row: lit while every token selected wears it.
 			     The first crosses a token out. Then the plain ones, each a disc of
@@ -405,6 +438,17 @@
 					label={allTakeTurns ? 'Take out of the turn order' : 'Add to the turn order'}
 					active={allTakeTurns}
 					onclick={takeTurns}
+				/>
+				<ToolButton
+					small
+					{tip}
+					icon="person"
+					label={owner ? `${tokens[0].ownerName ?? 'A player'}’s` : 'Hand to a player'}
+					hint={owner
+						? 'Click to hand it to someone else, or to nobody'
+						: 'Their screen says when its turn comes'}
+					active={owner !== null}
+					onclick={() => (owning = true)}
 				/>
 				<ToolButton
 					small

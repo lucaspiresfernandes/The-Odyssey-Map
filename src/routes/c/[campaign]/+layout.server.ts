@@ -1,5 +1,6 @@
 import { getInviteToken } from '#lib/server/campaigns.ts';
 import { getDb } from '#lib/server/db.ts';
+import { lanHosts, publicOrigins } from '#lib/server/network.ts';
 import { playersOf } from '#lib/server/queries.ts';
 import { requireMember } from '#lib/server/session.ts';
 import type { LayoutServerLoad } from './$types';
@@ -16,8 +17,18 @@ export const load: LayoutServerLoad = (event) => {
 		role,
 		display,
 		me: { id: user.id, name: user.name },
-		// Only the GM hands out invites.
-		invitePath: role === 'gm' ? `/join/${getInviteToken(getDb(), campaign.id)}` : null,
+		// Only the GM hands out invites: from their own screen, or on a table
+		// display they opened and asked to show it, with `invite` in its
+		// address, for the players to scan. A display is handed nothing a
+		// player would not be until then.
+		invite:
+			campaign.role === 'gm' && (!display || event.url.searchParams.has('invite'))
+				? {
+						path: `/join/${getInviteToken(getDb(), campaign.id)}`,
+						origins: publicOrigins(),
+						hosts: lanHosts()
+					}
+				: null,
 		// And only the GM chooses who is let in on a secret.
 		players: role === 'gm' ? playersOf(getDb(), campaign.id) : [],
 		ws: {

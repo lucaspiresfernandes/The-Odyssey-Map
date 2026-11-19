@@ -28,6 +28,34 @@
 	--animate-ping-ring: ping-ring 1.1s cubic-bezier(0, 0, 0.2, 1) 2 both;
 	--animate-ping-fade: ping-fade 2.6s linear both;
 
+	/* Something on the map that is new to whoever is looking: animate-glint is
+	   a ring breathing around a pin, animate-glint-line the outline of a
+	   region coming and going. Both keep on until the thing is looked at. */
+	--animate-glint: glint 1.8s ease-in-out infinite;
+	--animate-glint-line: glint-line 1.8s ease-in-out infinite;
+
+	@keyframes glint {
+		0%,
+		100% {
+			scale: 0.72;
+			opacity: 0.35;
+		}
+		50% {
+			scale: 1.08;
+			opacity: 1;
+		}
+	}
+
+	@keyframes glint-line {
+		0%,
+		100% {
+			opacity: 0.2;
+		}
+		50% {
+			opacity: 1;
+		}
+	}
+
 	@keyframes ping-ring {
 		from {
 			scale: 0.12;

@@ -2,25 +2,29 @@
 	import {
 		LIMITS,
 		MARKER_TYPES,
+		imageUrl,
+		type GalleryItem,
 		type MarkerInput,
 		type MarkerKind,
 		type MarkerType
 	} from '#lib/shared/types.ts';
+	import Gallery from './Gallery.svelte';
 	import MarkerGlyph from './MarkerGlyph.svelte';
 	import Modal from './Modal.svelte';
 
-	type Values = Pick<MarkerInput, 'type' | 'title' | 'description' | 'hidden'>;
+	type Values = Pick<MarkerInput, 'type' | 'title' | 'description' | 'hidden' | 'image'>;
 
 	interface Props {
 		mode: 'create' | 'edit';
 		kind: MarkerKind;
+		campaignId: string;
 		initial?: Partial<Values>;
 		/** Resolves to true when the change went through and the form can close. */
 		onsubmit: (values: Values) => Promise<boolean>;
 		onclose: () => void;
 	}
 
-	let { mode, kind, initial = {}, onsubmit, onclose }: Props = $props();
+	let { mode, kind, campaignId, initial = {}, onsubmit, onclose }: Props = $props();
 
 	// Deliberately a one-time copy: the form owns its fields once it is open.
 	// svelte-ignore state_referenced_locally
@@ -31,6 +35,11 @@
 	let description = $state(initial.description ?? '');
 	// svelte-ignore state_referenced_locally
 	let hidden = $state(initial.hidden ?? false);
+	/** The picture its card shows, by file name. A world marker's only. */
+	// svelte-ignore state_referenced_locally
+	let image = $state(initial.image ?? null);
+	/** The gallery is open, to choose that picture from. */
+	let picking = $state(false);
 	let saving = $state(false);
 
 	const heading = $derived(
@@ -41,9 +50,14 @@
 		event.preventDefault();
 		if (saving) return;
 		saving = true;
-		const done = await onsubmit({ type, title, description, hidden });
+		const done = await onsubmit({ type, title, description, hidden, image });
 		saving = false;
 		if (done) onclose();
+	}
+
+	function show(item: GalleryItem) {
+		picking = false;
+		image = item.file;
 	}
 </script>
 
@@ -91,6 +105,29 @@
 		</label>
 
 		{#if kind === 'world'}
+			<!-- What its card shows above the words: the face of whoever stands
+			     there, the thing to be found. -->
+			<div class="grid gap-[0.3em]">
+				<span class="text-[13px] text-muted">Picture</span>
+				<div class="flex flex-wrap items-center gap-2">
+					{#if image}
+						<img
+							class="h-14 w-20 rounded-md border bg-night object-contain"
+							src={imageUrl(campaignId, image, 'thumb')}
+							alt=""
+						/>
+					{/if}
+					<button type="button" class="btn btn-sm" onclick={() => (picking = true)}>
+						{image ? 'Change…' : 'Choose from the gallery…'}
+					</button>
+					{#if image}
+						<button type="button" class="btn btn-sm btn-ghost" onclick={() => (image = null)}>
+							Remove
+						</button>
+					{/if}
+				</div>
+			</div>
+
 			<label class="flex cursor-pointer items-start gap-2.5">
 				<input class="mt-0.75 accent-accent" type="checkbox" bind:checked={hidden} />
 				<span>
@@ -110,3 +147,7 @@
 		</div>
 	</form>
 </Modal>
+
+{#if picking}
+	<Gallery {campaignId} current={image} onpick={show} onclose={() => (picking = false)} />
+{/if}

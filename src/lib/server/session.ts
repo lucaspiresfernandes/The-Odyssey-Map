@@ -42,7 +42,7 @@ function isHttps(event: RequestEvent): boolean {
 	}
 }
 
-function cookieOptions(event: RequestEvent) {
+export function cookieOptions(event: RequestEvent) {
 	return {
 		path: '/',
 		httpOnly: true,

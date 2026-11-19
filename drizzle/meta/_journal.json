@@ -92,6 +92,20 @@
       "when": 1795060204810,
       "tag": "0012_secrets_closed_regions_counts",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1795073570107,
+      "tag": "0013_seats_travel_marker_pictures",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1795076226475,
+      "tag": "0014_seats_for_newcomers",
+      "breakpoints": true
     }
   ]
 }

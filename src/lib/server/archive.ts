@@ -415,6 +415,10 @@ function build(
 							kind === 'world' && map.miles != null
 								? number(map.miles, LIMITS.milesMin, LIMITS.milesMax)
 								: null,
+						dayMiles:
+							kind === 'world' && map.dayMiles != null
+								? number(map.dayMiles, LIMITS.dayMilesMin, LIMITS.dayMilesMax)
+								: null,
 						imageFile: image?.file ?? null,
 						// A map with an image is the size of it.
 						width: image?.width ?? side(map.width),
@@ -465,6 +469,11 @@ function build(
 						x: coord(marker.x),
 						y: coord(marker.y),
 						hidden: kind === 'world' && flag(marker.hidden),
+						// The picture on its card, off either shelf of the gallery.
+						image:
+							kind === 'world' && typeof marker.image === 'string'
+								? (pictures.get(marker.image)?.file ?? null)
+								: null,
 						// Whoever imports the world is the one its notes answer to now.
 						authorId: owner.id,
 						authorName: text(marker.authorName ?? owner.name, 40, false) || owner.name,

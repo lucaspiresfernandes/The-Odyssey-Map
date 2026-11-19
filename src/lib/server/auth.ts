@@ -20,7 +20,8 @@ export class AuthError extends Error {}
 
 const USERNAME = /^[a-zA-Z0-9_.-]{3,32}$/;
 
-function cleanName(raw: unknown): string {
+/** A name someone gave for themselves, tidied. Throws when it won't do. */
+export function cleanName(raw: unknown): string {
 	const name = typeof raw === 'string' ? raw.trim().replace(/\s+/g, ' ') : '';
 	if (name.length < 1 || name.length > 40) {
 		throw new AuthError('Pick a name between 1 and 40 characters.');
@@ -83,7 +84,7 @@ export function createGuest(db: Db, rawName: unknown): User {
 
 // Only a hash of the session token is stored, so a copy of the database
 // can't be replayed as anyone's login.
-function hashToken(token: string): string {
+export function hashToken(token: string): string {
 	return new Bun.CryptoHasher('sha256').update(token).digest('hex');
 }
 

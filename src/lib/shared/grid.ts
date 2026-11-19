@@ -117,6 +117,38 @@ export function milesBetween(
 	return (Math.hypot(dx, dy) / sheet.width) * miles;
 }
 
+/** The same along a way with bends in it: every stretch of it, added up. */
+export function milesAlong(
+	sheet: { width: number; height: number },
+	miles: number,
+	points: Point[]
+): number {
+	let far = 0;
+	for (let i = 1; i < points.length; i++) far += milesBetween(sheet, miles, points[i - 1], points[i]);
+	return far;
+}
+
+/** How many hours of a day are spent on the road. */
+const TRAVEL_HOURS = 8;
+
+/**
+ * How long a way that many miles long takes, at so many miles a day, in
+ * words: "under an hour", "about 3 hours", "about a day", "about 3½ days".
+ * Short of a day it is told in hours on the road, of which a day has
+ * eight. Beyond that in days, to the half, and past ten to the whole.
+ */
+export function travelTime(miles: number, dayMiles: number): string {
+	const days = miles / dayMiles;
+	if (!(days > 0) || !Number.isFinite(days)) return '';
+	const hours = Math.round(days * TRAVEL_HOURS);
+	if (days * TRAVEL_HOURS < 0.75) return 'under an hour';
+	if (hours < TRAVEL_HOURS) return `about ${hours === 1 ? 'an hour' : `${hours} hours`}`;
+	const halves = days >= 10 ? Math.round(days) * 2 : Math.round(days * 2);
+	if (halves <= 2) return 'about a day';
+	const whole = Math.floor(halves / 2).toLocaleString('en');
+	return `about ${whole}${halves % 2 ? '½' : ''} days`;
+}
+
 /** "0.4 mi", "7.5 mi", "120 mi": as fine as a distance that size is worth telling. */
 export function milesCount(miles: number): string {
 	const shown = miles >= 100 ? Math.round(miles) : Math.round(miles * 10) / 10;
@@ -159,6 +191,13 @@ export function feetBetween(map: Sheet & Scale, a: Point, b: Point): number {
 	const dx = Math.abs(a[0] - b[0]) * map.width;
 	const dy = Math.abs(a[1] - b[1]) * map.height;
 	return Math.round((Math.max(dx, dy) / map.grid.size) * map.cellFeet * 10) / 10;
+}
+
+/** The same along a way with bends in it: every stretch of it counted in cells, and added up. */
+export function feetAlong(map: Sheet & Scale, points: Point[]): number {
+	let far = 0;
+	for (let i = 1; i < points.length; i++) far += feetBetween(map, points[i - 1], points[i]);
+	return Math.round(far * 10) / 10;
 }
 
 /** What that many cells come to in feet on this map. */

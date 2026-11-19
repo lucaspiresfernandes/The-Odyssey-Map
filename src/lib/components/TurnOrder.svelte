@@ -4,11 +4,13 @@
 	// ringed in gold. Everyone sees it. The GM runs it: starts the fight,
 	// sorts the tokens by dragging them up and down the line, or by typing
 	// in what each rolled, and ends the fight. Ending a turn is the table's:
-	// anyone can, for a token they can see.
+	// a token that is some player's has its turn ended by them, and one that
+	// is nobody's by any player who can see it.
 	//
 	// Tokens are put in the order from the map, with the buttons under a
 	// selected token. Until one is, this is not there at all.
 
+	import { canEndTurn } from '#lib/shared/rules.ts';
 	import { reorderedTurns, sortedByRolls } from '#lib/shared/turns.ts';
 	import { LIMITS, imageUrl, type Token, type Turns } from '#lib/shared/types.ts';
 	import ToolButton from './ToolButton.svelte';
@@ -19,6 +21,8 @@
 		tokens: Token[];
 		turns: Turns;
 		gm: boolean;
+		/** Who is looking: a token that is theirs has its turn ended by them. */
+		userId: string;
 		/** A table display: the order is shown, and nothing about it can be touched. */
 		passive?: boolean;
 		collapsed: boolean;
@@ -40,6 +44,7 @@
 		tokens,
 		turns,
 		gm,
+		userId,
 		passive = false,
 		collapsed = $bindable(),
 		selectedId,
@@ -65,12 +70,19 @@
 	/** The line is the GM's to sort, by dragging a token up or down it. Not while the rolls are out. */
 	const sortable = $derived(gm && !passive && !rolling);
 
+	/** The token whose turn it is, if it is one this person can see. */
+	const acting = $derived(line.find((token) => token.id === turns.current) ?? null);
+	/** It is the turn of a token that is this person's own. */
+	const mine = $derived(!passive && acting?.ownerId === userId);
 	/**
 	 * Whether this person can end the turn. The GM always can, and starts the
-	 * fight. A player can end the turn of a token they can see: one that is
-	 * nobody's to them is the GM's to move on from.
+	 * fight. A player ends the turn of their own token, and of one that is
+	 * nobody's, if they can see it: one they can't see is the GM's to move on
+	 * from, and another player's is that player's.
 	 */
-	const canPass = $derived(!passive && (gm || (turns.current !== null && here.includes(turns.current))));
+	const canPass = $derived(
+		!passive && (gm || (acting !== null && canEndTurn('player', userId, acting)))
+	);
 
 	/** Moves on to the next turn, if that is this person's to do. */
 	export function next() {
@@ -251,11 +263,13 @@
 				{/if}
 				<span
 					class={[
-						'grow px-1 text-center font-semibold whitespace-nowrap text-muted tabular-nums',
+						'grow px-1 text-center font-semibold whitespace-nowrap tabular-nums',
+						mine ? 'text-accent' : 'text-muted',
 						passive ? 'text-base' : 'text-xs'
 					]}
+					role={mine ? 'status' : undefined}
 				>
-					{started ? `Round ${turns.round}` : 'Turns'}
+					{mine ? 'Your turn' : started ? `Round ${turns.round}` : 'Turns'}
 				</span>
 			</div>
 
@@ -284,7 +298,11 @@
 								token.marks.includes('down') && 'brightness-60 saturate-0'
 							]}
 							style:--c={token.color}
-							title="{token.name}{current ? ' · their turn' : ''}{token.hidden
+							title="{token.name}{token.ownerName
+								? token.ownerId === userId
+									? ' · yours'
+									: ` · ${token.ownerName}’s`
+								: ''}{current ? ' · their turn' : ''}{token.hidden
 								? ' · hidden from players'
 								: ''}{sortable ? ' · drag to sort' : ''}"
 							aria-label="{token.name}{current ? ', their turn' : ''}{sortable
@@ -370,7 +388,13 @@
 			{:else if canPass}
 				<!-- A player ends the turn of a token they can see: their own, most of all. -->
 				<div class="flex justify-center border-t pt-1.5">
-					<ToolButton tip="bottom" icon="next" label="End this turn" shortcut="n" onclick={next} />
+					<ToolButton
+						tip="bottom"
+						icon="next"
+						label={mine ? 'End your turn' : 'End this turn'}
+						shortcut="n"
+						onclick={next}
+					/>
 				</div>
 			{/if}
 		</div>
