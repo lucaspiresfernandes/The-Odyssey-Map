@@ -53,6 +53,7 @@
 	import MarkerCard from './MarkerCard.svelte';
 	import MarkerGlyph from './MarkerGlyph.svelte';
 	import SelectionBar from './SelectionBar.svelte';
+	import ToolButton from './ToolButton.svelte';
 
 	/** Where this browser is pointing on the map in front of it, and what it has in hand. */
 	type Pointing = Omit<CursorSpot, 'mapId'>;
@@ -103,6 +104,8 @@
 		selectedRegionId: string | null;
 		/** The tokens and drawings selected on a battle map, by id. */
 		selectedIds: string[];
+		/** The GM has clicked the party's banner: the button that removes it is out. */
+		selectedParty: boolean;
 		/**
 		 * Carries out what was done to tokens and drawings. Resolves once the
 		 * server has done it, or refused. `note` is said when it has, with a
@@ -119,6 +122,8 @@
 		onreshape: (region: Region, points: Point[]) => Promise<boolean>;
 		/** The party was dragged to another spot of this map. Resolves once it stands there, or was refused. */
 		onparty: (x: number, y: number) => Promise<boolean>;
+		/** The party is to be taken off the maps. */
+		onpartyremove: () => void;
 		onedit: (marker: Marker) => void;
 		onmove: (marker: Marker) => void;
 		ondelete: (marker: Marker) => void;
@@ -146,6 +151,7 @@
 		selectedMarkerId = $bindable(),
 		selectedRegionId = $bindable(),
 		selectedIds = $bindable(),
+		selectedParty = $bindable(false),
 		send,
 		ondone,
 		onplace,
@@ -154,6 +160,7 @@
 		onenter,
 		onreshape,
 		onparty,
+		onpartyremove,
 		onedit,
 		onmove,
 		ondelete,
@@ -333,6 +340,38 @@
 			? (regions.find((region) => party.trail.includes(region.targetMapId))?.id ?? null)
 			: null
 	);
+
+	/** How tall the party's banner stands on screen, and how far right of its pole the middle of it is. */
+	const BANNER = { height: 46, middle: 12 };
+	/** The size of the button that floats over a selected banner, once it has been laid out. */
+	let partyBarW = $state(0);
+	let partyBarH = $state(0);
+	/** The banner is selected, and standing still to have a button over it. */
+	const partyPicked = $derived(selectedParty && canLead && tool === 'pan' && !leading);
+	/** Where that button goes: over the banner, or under its foot where the screen ends above. */
+	const partyBar = $derived.by(() => {
+		if (!partyPicked || !partySpot) return null;
+		const [x, y] = partySpot;
+		const middle = x + BANNER.middle / (W * view.k);
+		const spot = cardSpot([middle, y], BANNER.height + 8, 8, partyBarW, partyBarH);
+		return spot && { ...spot, under: spot.top > y * H * view.k + view.y };
+	});
+
+	// One thing is selected at a time, and only a banner that is there to click.
+	$effect(() => {
+		if (selectedMarkerId || selectedRegionId || !partySpot || !canLead || tool !== 'pan') {
+			selectedParty = false;
+		}
+	});
+
+	/** A click on the banner selects it, and another lets it go. */
+	function pickParty() {
+		const picked = !selectedParty;
+		selectedMarkerId = null;
+		selectedRegionId = null;
+		selectedIds = [];
+		selectedParty = picked;
+	}
 
 	// ---------------------------------------------------------- battle maps
 
@@ -1563,6 +1602,8 @@
 				});
 			} else {
 				leading = null;
+				// Not dragged anywhere: it was a click, which selects it.
+				if (!g.moved && completed) pickParty();
 			}
 		}
 		if (g?.type === 'grab') {
@@ -1684,8 +1725,10 @@
 			return;
 		}
 
-		// The party is not a spot of the map: clicking it starts nothing.
+		// The party is not a spot of the map: clicking it starts nothing here.
+		// The GM's click on it never gets this far: it selects the banner.
 		if (target.closest('[data-party]')) return;
+		selectedParty = false;
 
 		const markerId = target.closest<HTMLElement>('[data-marker-id]')?.dataset.markerId;
 		if (markerId) {
@@ -1758,6 +1801,11 @@
 		if (selecting && selectedIds.length && (e.key === 'Delete' || e.key === 'Backspace')) {
 			e.preventDefault();
 			if (!e.repeat) bar?.remove();
+			return;
+		}
+		if (partyPicked && (e.key === 'Delete' || e.key === 'Backspace')) {
+			e.preventDefault();
+			if (!e.repeat) onpartyremove();
 			return;
 		}
 		if (tool !== 'draw') return;
@@ -2472,12 +2520,19 @@
 							canLead && (leading?.held ? 'cursor-grabbing' : 'cursor-grab')
 						]}
 						data-party
-						role="img"
+						role={canLead ? 'button' : 'img'}
+						tabindex={canLead ? 0 : undefined}
 						aria-label="The party is here"
-						title={canLead ? 'The party · drag to move it' : 'The party'}
+						aria-pressed={canLead ? selectedParty : undefined}
+						title={canLead ? 'The party · drag to move it, click to select it' : 'The party'}
+						onkeydown={(e) => {
+							if (!canLead || (e.key !== 'Enter' && e.key !== ' ')) return;
+							e.preventDefault();
+							pickParty();
+						}}
 					>
 						<svg
-							class={['block', leading?.held ? 'pin-selected' : 'pin-shadow']}
+							class={['block', leading?.held || partyPicked ? 'pin-selected' : 'pin-shadow']}
 							viewBox="0 0 38 46"
 							width="38"
 							height="46"
@@ -2566,6 +2621,33 @@
 					{onmove}
 					{ondelete}
 					{onhide}
+				/>
+			</div>
+		{/if}
+
+		<!-- The one thing to do with a selected banner besides dragging it: over
+		     it, like the buttons of a selected token are under theirs. -->
+		{#if partyPicked}
+			<div
+				class={[
+					'absolute flex rounded-xl border border-[#55607a] bg-panel/94 p-1 shadow-pop',
+					partyBar && partyBarW > 0 ? 'pointer-events-auto' : 'invisible'
+				]}
+				style:left="{partyBar?.left ?? 0}px"
+				style:top="{partyBar?.top ?? 0}px"
+				bind:clientWidth={partyBarW}
+				bind:clientHeight={partyBarH}
+				role="toolbar"
+				aria-label="The party"
+			>
+				<ToolButton
+					small
+					danger
+					tip={partyBar?.under ? 'bottom' : 'top'}
+					icon="delete"
+					label="Remove the party marker"
+					hint="Takes it off the map for everyone"
+					onclick={onpartyremove}
 				/>
 			</div>
 		{/if}

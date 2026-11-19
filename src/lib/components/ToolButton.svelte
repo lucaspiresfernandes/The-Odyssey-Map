@@ -36,8 +36,6 @@
 		filter: 'M22 3H2l8 9.46V19l4 2v-8.54Z',
 		// A banner on a pole: where the party is.
 		party: 'M5 21V4 M5 4h14l-3.5 4.5L19 13H5',
-		// The same banner, struck through: the party is taken off the maps.
-		partyOff: 'M5 21V4 M5 4h14l-3.5 4.5L19 13H5 M2 2l20 20',
 		// A cloud: the fog of war.
 		fog: 'M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z',
 		// Four ways in to one spot: everyone is brought here.

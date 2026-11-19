@@ -120,6 +120,8 @@
 	let selectedRegionId = $state<string | null>(null);
 	/** The tokens and drawings selected on a battle map. */
 	let selectedIds = $state<string[]>([]);
+	/** The GM has clicked the party's banner, which brings out the button that removes it. */
+	let selectedParty = $state(false);
 	/**
 	 * The types of marker this person has filtered out of the world maps. It
 	 * is their own view and nobody else's, and it is kept from map to map.
@@ -208,6 +210,7 @@
 			selectedMarkerId = null;
 			selectedRegionId = null;
 			selectedIds = [];
+			selectedParty = false;
 			// Undo is for the map in front of you, not one you have left.
 			undos.clear();
 		});
@@ -278,14 +281,9 @@
 		else form = { mode: 'create', kind: target.create, x, y };
 	}
 
-	/**
-	 * The party shows on this map: it stands here, or in a region further
-	 * in, whose name then carries its banner.
-	 */
-	const partyHere = $derived(world.party?.trail.includes(world.map.id) ?? false);
-
 	/** Takes the party's banner off the maps. Undo plants it back where it stood. */
 	async function removeParty() {
+		selectedParty = false;
 		const { ok, step } = await attempt({ t: 'party.remove' });
 		if (ok) say('Took the party off the map.', step);
 	}
@@ -594,6 +592,7 @@
 			selectedMarkerId = null;
 			selectedRegionId = null;
 			selectedIds = [];
+			selectedParty = false;
 		}
 	}
 
@@ -759,6 +758,7 @@
 				bind:selectedMarkerId
 				bind:selectedRegionId
 				bind:selectedIds
+				bind:selectedParty
 				{send}
 				ondone={() => (battleTool = 'pan')}
 				onplace={placed}
@@ -772,6 +772,7 @@
 				onenter={enter}
 				onreshape={(region, points) => run({ t: 'region.update', id: region.id, points })}
 				onparty={(x, y) => run({ t: 'party.move', mapId: world.map.id, x, y })}
+				onpartyremove={removeParty}
 				onedit={(marker) => (form = { mode: 'edit', marker })}
 				onmove={(marker) => startPlacing({ move: marker })}
 				ondelete={deleteMarker}
@@ -1084,7 +1085,8 @@
 								/>
 								<span class="w-px self-stretch bg-line"></span>
 								<!-- Where the story has taken everyone: click, then click the
-								     spot. Once it stands on this map it can be dragged as well. -->
+								     spot. Once it stands on this map it can be dragged as well,
+								     and clicked, for the button that takes it off again. -->
 								<ToolButton
 									icon="party"
 									label={world.party?.mapId === world.map.id
@@ -1092,16 +1094,6 @@
 										: 'Put the party on this map'}
 									hint="Shows the table where it is"
 									onclick={() => startPlacing({ party: true })}
-								/>
-								<!-- Always here, so the bar keeps its shape, and live on the
-								     maps that show the party. -->
-								<ToolButton
-									icon="partyOff"
-									label="Remove the party marker"
-									hint={partyHere ? 'Takes it off the map for everyone' : "The party isn't on this map"}
-									danger
-									disabled={!partyHere}
-									onclick={removeParty}
 								/>
 								<ToolButton
 									icon="gather"

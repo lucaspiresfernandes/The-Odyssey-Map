@@ -80,9 +80,9 @@ GM's.
   way down to that one shows the banner beside the name of the region to go through, so
   "where are we?" has an answer from anywhere. The party stands where the players are:
   it can't be put on a map behind a hidden region, and a region can't be hidden while
-  the party is inside. On a battle map, tokens stand for it. The struck-through banner
-  beside it takes the party off the maps for everyone, from any map that shows it, and
-  `Ctrl+Z` plants it back where it stood.
+  the party is inside. On a battle map, tokens stand for it. Click the banner and a delete
+  button comes out over it, which takes the party off the maps for everyone. `Delete`
+  does the same, and `Ctrl+Z` plants it back where it stood.
 - **Bring everyone here.** The button with four arrows, in the bar under a world map and
   among the tools of a battle map. Every other browser in the campaign steps to the map
   you are on and is shown the part of it you are looking at, zoomed so all of what you
@@ -230,6 +230,7 @@ always a world map.
 | Click a region, as the GM | Open its menu: enter, hide or reveal, rename, delete |
 | Double-click a bare spot | Start a note there, on a world map |
 | Drag the party's banner, as the GM | Move the party across the map it is on |
+| Click the party's banner, as the GM | Select it, with a button over it to take it off the maps |
 | Drag a token | Move it, if it isn't locked. It snaps to the grid, unless `Alt` is held |
 | Drag a handle of a selected token | Turn it, 15 degrees at a time, or resize it, half a cell at a time |
 | `Q` `W` `E` `R` `T` | On a battle map: select and move, select several, measure, draw, write text |
