@@ -4,7 +4,6 @@
 import { describe, expect, test } from 'bun:test';
 import { templateBox, templatePath, templateSpan } from './drawing';
 import { milesBetween, milesCount, pixelsToFeet, snapToHalfCell, templatePoints } from './grid';
-import { JOURNEY_STOPS, walked } from './journey';
 import { joinedTurns, nextTurn, reorderedTurns } from './turns';
 import { MARK_LOOKS, TOKEN_MARK_IDS, turnsAmong, type Point, type Turns } from './types';
 
@@ -138,37 +137,5 @@ describe('the ruler of a world map', () => {
 		expect(milesCount(7.46)).toBe('7.5 mi');
 		expect(milesCount(120.4)).toBe('120 mi');
 		expect(milesCount(12345.6)).toBe('12,346 mi');
-	});
-});
-
-describe('the road the party has taken', () => {
-	test('a move on the map adds a stop, and the first one starts a stretch', () => {
-		let road = walked([], [0.1, 0.1], false);
-		road = walked(road, [0.2, 0.2], true);
-		expect(road).toEqual([[[0.1, 0.1], [0.2, 0.2]]]);
-		// Standing still is no stop, and a move on another map is none here.
-		expect(walked(road, [0.2, 0.2], true)).toEqual(road);
-		expect(walked(road, null, true)).toEqual(road);
-	});
-
-	test('going back to the very spot it came from takes the last stop off', () => {
-		const road: Point[][] = [[[0.1, 0.1], [0.2, 0.2], [0.9, 0.9]]];
-		expect(walked(road, [0.2, 0.2], true)).toEqual([[[0.1, 0.1], [0.2, 0.2]]]);
-		// What it was given is left as it was.
-		expect(road[0]).toHaveLength(3);
-	});
-
-	test('arriving from elsewhere starts a new stretch', () => {
-		const road: Point[][] = [[[0.1, 0.1], [0.2, 0.2]]];
-		expect(walked(road, [0.5, 0.5], false)).toEqual([[[0.1, 0.1], [0.2, 0.2]], [[0.5, 0.5]]]);
-	});
-
-	test('a long road forgets its oldest stops', () => {
-		let road: Point[][] = [[[0, 0], [0.01, 0]]];
-		road = walked(road, [0.5, 0.5], false);
-		for (let i = 1; i <= JOURNEY_STOPS + 20; i++) road = walked(road, [0.5, 0.5 + i / 1000], true);
-		expect(road).toHaveLength(1);
-		expect(road[0]).toHaveLength(JOURNEY_STOPS);
-		expect(road[0].at(-1)).toEqual([0.5, 0.5 + (JOURNEY_STOPS + 20) / 1000]);
 	});
 });

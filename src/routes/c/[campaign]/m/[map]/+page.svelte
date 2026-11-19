@@ -147,8 +147,6 @@
 	let finding = $state(false);
 	/** A marker the finder is taking this person to, on a map they are on their way to. */
 	let wanted: string | null = null;
-	/** Whether the road the party has taken is drawn on world maps. This person's own view, like the filter. */
-	let showJourney = $state(true);
 	/** The picture held up for the table that this person has closed, by its file. */
 	let closedPicture = $state<string | null>(null);
 	/**
@@ -942,8 +940,6 @@
 				tokens={world.tokens}
 				drawings={world.drawings}
 				party={world.party}
-				journey={world.journey}
-				{showJourney}
 				{miles}
 				{hands}
 				{pings}
@@ -1254,32 +1250,6 @@
 									{/if}
 								</button>
 							{/each}
-							<!-- And one for the road the party has taken, in the GM's gold. -->
-							<button
-								class={[
-									'inline-flex cursor-pointer items-center gap-1.25 rounded-full border py-1 pr-2.5 pl-2 text-[13px] touch:py-2',
-									showJourney
-										? 'border-accent bg-accent/18 text-[color-mix(in_srgb,var(--color-accent)_70%,white)]'
-										: 'text-muted line-through decoration-muted/60'
-								]}
-								aria-pressed={showJourney}
-								onclick={() => (showJourney = !showJourney)}
-							>
-								<svg
-									width="15"
-									height="15"
-									viewBox="0 0 24 24"
-									fill="none"
-									stroke="currentColor"
-									stroke-width="2"
-									stroke-linecap="round"
-									stroke-linejoin="round"
-									aria-hidden="true"
-								>
-									<path d="M5 21V4 M5 4h14l-3.5 4.5L19 13H5" />
-								</svg>
-								The party's road
-							</button>
 						</div>
 						<div class="flex items-center justify-between gap-2">
 							<span class="text-xs text-muted">Only changes what you see.</span>
@@ -1331,7 +1301,7 @@
 								hint={hiddenTypes.length
 									? `${hiddenTypes.length} of ${MARKER_TYPES.length} types hidden`
 									: undefined}
-								active={hiddenTypes.length > 0 || !showJourney}
+								active={hiddenTypes.length > 0}
 								expanded={filterOpen}
 								onclick={() => (filterOpen = !filterOpen)}
 							/>

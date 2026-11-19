@@ -95,9 +95,6 @@
 		drawings: Drawing[];
 		/** Where the party is, on this map or on another. */
 		party: Party | null;
-		/** Where the party has been on this map, and whether this person wants that drawn. */
-		journey: Point[][];
-		showJourney: boolean;
 		/** How many miles across a world map is, or null when nothing says. */
 		miles: number | null;
 		/** What the other people looking at this map have in hand. */
@@ -186,8 +183,6 @@
 		tokens,
 		drawings,
 		party,
-		journey,
-		showJourney,
 		miles,
 		hands,
 		pings,
@@ -2363,32 +2358,6 @@
 						/>
 					{/if}
 				</g>
-
-				<!-- Where the party has been on this map: a dotted road from stop to
-				     stop, like a route inked onto a chart. Under the regions and the
-				     pins, and never in the way of the pointer. -->
-				{#if showJourney}
-					{#each journey as stretch, i (i)}
-						{#if stretch.length >= 2}
-							<polyline
-								class="fill-none stroke-[#0c0e14]/55 stroke-[5] stroke-steady [stroke-linecap:round]"
-								points={svgPoints(stretch)}
-							/>
-							<polyline
-								class="fill-none stroke-accent stroke-[2.5] stroke-steady [stroke-dasharray:1_7] [stroke-linecap:round]"
-								points={svgPoints(stretch)}
-							/>
-							{#each stretch as [x, y], stop (stop)}
-								<circle
-									class="fill-accent stroke-[#12151c] stroke-[1.5] stroke-steady"
-									cx={x * W}
-									cy={y * H}
-									r={3.5 / view.k}
-								/>
-							{/each}
-						{/if}
-					{/each}
-				{/if}
 
 				{#each orderedRegions as region (region.id)}
 					<!-- A dark line under the outline, so it reads on a pale map too. -->

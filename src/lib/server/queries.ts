@@ -4,7 +4,6 @@ import { and, eq, isNull } from 'drizzle-orm';
 import type { Db } from './db';
 import { drawings, events, maps, markers, regions, tokens } from './schema';
 import { boxAround, boxWithin, partOf } from '../shared/backdrop';
-import { walked } from '../shared/journey';
 import { canSeeMarker, canSeeRegion, canSeeToken } from '../shared/rules';
 import {
 	turnsAmong,
@@ -54,28 +53,6 @@ export function mapFor(db: Db, map: MapInfo, role: Role, seen?: Token[]): MapInf
 	if (role === 'gm' || map.turns.order.length === 0) return map;
 	const tokens = seen ?? tokensOn(db, map, role);
 	return { ...map, turns: turnsAmong(map.turns, tokens.map((token) => token.id)) };
-}
-
-/**
- * Where the party has been on a map, read from the moves in the event log:
- * see src/lib/shared/journey.ts. The party only ever stands where players
- * may go, so what it left behind on a map is for everyone who can open it.
- */
-export function journeyOn(db: Db, campaignId: string, mapId: string): Point[][] {
-	const moves = db
-		.select({ before: events.before, after: events.after })
-		.from(events)
-		.where(and(eq(events.campaignId, campaignId), eq(events.entity, 'party')))
-		.orderBy(events.seq)
-		.all();
-	let journey: Point[][] = [];
-	for (const move of moves) {
-		const before = move.before as Party | null;
-		const after = move.after as Party | null;
-		const to: Point | null = after?.mapId === mapId ? [after.x, after.y] : null;
-		journey = walked(journey, to, before?.mapId === mapId);
-	}
-	return journey;
 }
 
 /**
@@ -293,7 +270,6 @@ export function getMapSnapshot(
 			tokens: tokenList,
 			drawings: drawingList,
 			party: party && (role === 'gm' || !isConcealed(tx, party.mapId)) ? party : null,
-			journey: map.kind === 'world' ? journeyOn(tx, campaignId, mapId) : [],
 			miles: milesOf(tx, map),
 			lastSeq: latestSeq(tx, campaignId)
 		};

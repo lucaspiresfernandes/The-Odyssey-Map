@@ -491,10 +491,6 @@ scripts/            run both servers, seed a demo, back up, end-to-end check
 - **A mark is an id in a list.** A token keeps the ids of the marks it wears. How each
   looks, a colour or an icon, is one table: `TOKEN_MARKS` in `shared/types.ts`. A
   new mark is one more line there, and nothing in the database changes.
-- **The party's road is read, not kept.** Every move of the party is already an event.
-  The road on a map is those events in order, folded into stretches by
-  `shared/journey.ts`: the server does it when the map is loaded, and the browser
-  keeps it going with the same function as moves come in.
 - **A map's scale is worked out like its borrowed picture.** A world map with no scale
   of its own takes it from the nearest map further out that has one, by how much of
   that map's width the regions on the way cover: `milesOf` in `queries.ts`. The

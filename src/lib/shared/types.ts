@@ -509,11 +509,6 @@ export interface MapSnapshot {
 	/** Where the party is, on this map or any other, or null while it is nowhere. */
 	party: Party | null;
 	/**
-	 * Where the party has been on this map: each stretch of road it took
-	 * without leaving, the oldest first. See src/lib/shared/journey.ts.
-	 */
-	journey: Point[][];
-	/**
 	 * How many miles this map is across: what the GM said of it, or worked
 	 * out from the nearest map further out that has a scale, by how much of
 	 * that map the way here covers. Null when no map on the way has one.

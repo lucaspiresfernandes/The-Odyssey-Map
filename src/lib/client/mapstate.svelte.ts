@@ -1,7 +1,6 @@
 // The browser's copy of one map: a snapshot from the server, kept current
 // by applying live events on top of it.
 
-import { walked } from '#lib/shared/journey.ts';
 import type {
 	Backdrop,
 	Crumb,
@@ -31,8 +30,6 @@ export class MapState {
 	drawings = $state<Drawing[]>([]);
 	/** Where the party is, on this map or any other. */
 	party = $state<Party | null>(null);
-	/** Where the party has been on this map: see src/lib/shared/journey.ts. */
-	journey = $state.raw<Point[][]>([]);
 	/**
 	 * How many miles across this map is, if anything on the way here says.
 	 * Like the backdrop, only the server can work it out, so it is as old
@@ -52,7 +49,6 @@ export class MapState {
 		this.tokens = snapshot.tokens;
 		this.drawings = snapshot.drawings;
 		this.party = snapshot.party;
-		this.journey = snapshot.journey;
 		this.miles = snapshot.miles;
 		this.lastSeq = snapshot.lastSeq;
 	}
@@ -112,13 +108,7 @@ export class MapState {
 			// The party is the campaign's, so it is news on whichever map this is.
 			// Where it went on this one is added to the road behind it.
 			case 'party.set': {
-				const to = patch.party;
-				this.journey = walked(
-					this.journey,
-					to?.mapId === here ? [to.x, to.y] : null,
-					this.party?.mapId === here
-				);
-				this.party = to;
+				this.party = patch.party;
 			}
 		}
 	}

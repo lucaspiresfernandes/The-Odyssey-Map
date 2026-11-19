@@ -328,48 +328,6 @@ describe('the scale of a world map', () => {
 	});
 });
 
-describe('the road the party has taken', () => {
-	const journey = (id = mapId) => sees(id).journey;
-	const move = (x: number, y: number, on = mapId) => perform(db, gm, { t: 'party.move', mapId: on, x, y });
-
-	test('every move on a map adds a stop to it', () => {
-		expect(journey()).toEqual([]);
-		move(0.1, 0.1);
-		move(0.2, 0.3);
-		move(0.5, 0.3);
-		expect(journey()).toEqual([[[0.1, 0.1], [0.2, 0.3], [0.5, 0.3]]]);
-	});
-
-	test('undoing a move takes the stop back off the road', () => {
-		move(0.1, 0.1);
-		move(0.2, 0.3);
-		const strayed = move(0.9, 0.9);
-		undo(gm, strayed);
-		expect(journey()).toEqual([[[0.1, 0.1], [0.2, 0.3]]]);
-	});
-
-	test('leaving the map ends a stretch, and coming back starts another', () => {
-		const inside = draw('The Kingdom').targetMapId;
-		move(0.1, 0.1);
-		move(0.2, 0.2);
-		move(0.5, 0.5, inside);
-		move(0.6, 0.6, inside);
-		expect(journey()).toEqual([[[0.1, 0.1], [0.2, 0.2]]]);
-		expect(journey(inside)).toEqual([[[0.5, 0.5], [0.6, 0.6]]]);
-
-		move(0.8, 0.8);
-		move(0.9, 0.8);
-		expect(journey()).toEqual([
-			[[0.1, 0.1], [0.2, 0.2]],
-			[[0.8, 0.8], [0.9, 0.8]]
-		]);
-		// Taken off the maps and planted again: a stretch of its own too.
-		perform(db, gm, { t: 'party.remove' });
-		move(0.3, 0.3);
-		expect(journey()).toHaveLength(3);
-	});
-});
-
 describe('the finder', () => {
 	/** By name, in the order of the alphabet: markers made in the same instant come in any order. */
 	const names = (role: 'gm' | 'player') =>
