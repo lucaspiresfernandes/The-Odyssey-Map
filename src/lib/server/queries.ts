@@ -1,23 +1,34 @@
-// Read side. Everything here takes the reader's role and filters by it.
+// Read side. Everything here takes who is reading, and filters by that:
+// their role, and for a player, which secrets they are let in on.
 
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { Db } from './db';
-import { drawings, events, maps, markers, regions, tokens } from './schema';
+import { drawings, maps, markers, members, regions, tokens, users } from './schema';
 import { boxAround, boxWithin, partOf } from '../shared/backdrop';
-import { canSeeMarker, canSeeRegion, canSeeToken } from '../shared/rules';
+import {
+	canEnterRegion,
+	canSeeMarker,
+	canSeeRegion,
+	canSeeToken,
+	forEyes,
+	roleOf,
+	type Who
+} from '../shared/rules';
 import {
 	turnsAmong,
 	type Backdrop,
 	type Crumb,
 	type FindEntry,
+	type Fog,
 	type MapInfo,
 	type MapSnapshot,
-	type Party,
-	type Point,
+	type Marker,
+	type Player,
 	type Rect,
-	type Role,
+	type Region,
 	type Token
 } from '../shared/types';
+
 import {
 	drawingColumns,
 	isConcealed,
@@ -31,28 +42,71 @@ import {
 } from './world';
 
 /**
- * The tokens on a map that `role` may see. For a player that leaves out
- * the hidden ones, and the ones standing under the map's fog.
+ * The tokens on a map that someone may see. For a player that leaves out
+ * the hidden ones they are not let in on, and the ones standing under the
+ * map's fog.
  */
-export function tokensOn(db: Db, map: Pick<MapInfo, 'id' | 'fog'>, role: Role): Token[] {
+export function tokensOn(db: Db, map: Pick<MapInfo, 'id' | 'fog'>, who: Who): Token[] {
 	return db
 		.select(tokenColumns)
 		.from(tokens)
 		.where(and(eq(tokens.mapId, map.id), isNull(tokens.deletedAt)))
 		.orderBy(tokens.createdAt)
 		.all()
-		.filter((token) => canSeeToken(role, token, map.fog));
+		.filter((token) => canSeeToken(who, token, map.fog))
+		.map((token) => forEyes(who, token));
 }
 
 /**
- * A map as `role` is sent it. Its turn order names tokens, and a player is
- * told only of the ones they can see: `seen` is those, when the caller has
- * them at hand already.
+ * The markers and notes on a map that someone may see. For a player that
+ * leaves out the hidden world markers they are not let in on, and the ones
+ * the fog of the map still covers.
  */
-export function mapFor(db: Db, map: MapInfo, role: Role, seen?: Token[]): MapInfo {
-	if (role === 'gm' || map.turns.order.length === 0) return map;
-	const tokens = seen ?? tokensOn(db, map, role);
+export function markersOn(db: Db, map: Pick<MapInfo, 'id' | 'fog'>, who: Who): Marker[] {
+	return db
+		.select(markerColumns)
+		.from(markers)
+		.where(and(eq(markers.mapId, map.id), isNull(markers.deletedAt)))
+		.orderBy(markers.createdAt)
+		.all()
+		.filter((marker) => canSeeMarker(who, marker, map.fog))
+		.map((marker) => forEyes(who, marker));
+}
+
+/** The regions drawn on a map that someone may see, likewise. */
+export function regionsOn(db: Db, map: Pick<MapInfo, 'id' | 'fog'>, who: Who): Region[] {
+	return db
+		.select(regionColumns)
+		.from(regions)
+		.innerJoin(targetMap, eq(targetMap.id, regions.targetMapId))
+		.where(eq(regions.mapId, map.id))
+		.orderBy(regions.createdAt)
+		.all()
+		.filter((region) => canSeeRegion(who, region, map.fog))
+		.map((region) => forEyes(who, region));
+}
+
+/**
+ * A map as someone is sent it. Its turn order names tokens, and a player is
+ * told only of the ones they can see: `seen` is those, when the caller has
+ * them at hand already. What each token rolled is the GM's to know.
+ */
+export function mapFor(db: Db, map: MapInfo, who: Who, seen?: Token[]): MapInfo {
+	if (roleOf(who) === 'gm' || map.turns.order.length === 0) return map;
+	const tokens = seen ?? tokensOn(db, map, who);
 	return { ...map, turns: turnsAmong(map.turns, tokens.map((token) => token.id)) };
+}
+
+/** Everyone who plays in a campaign, in the order they joined. */
+export function playersOf(db: Db, campaignId: string): Player[] {
+	return db
+		.select({ id: users.id, name: users.name })
+		.from(members)
+		.innerJoin(users, eq(users.id, members.userId))
+		.where(and(eq(members.campaignId, campaignId), eq(members.role, 'player')))
+		// Two who joined in the same instant are told apart by which row came first.
+		.orderBy(members.joinedAt, sql`${members}.rowid`)
+		.all();
 }
 
 /**
@@ -83,38 +137,60 @@ export function milesOf(db: Db, map: Pick<MapInfo, 'id' | 'kind' | 'miles'>): nu
 }
 
 /**
- * Everything in a campaign the finder can take `role` to: its maps, and the
- * markers and notes on them. A player is told of none that are hidden, nor
- * of anything behind a hidden region.
+ * Everything in a campaign the finder can take someone to: its maps, and
+ * the markers and notes on them. A player is told of none that are hidden
+ * from them, nor of anything behind a region they can't step through:
+ * hidden, closed, or still under the fog.
  */
-export function findable(db: Db, campaignId: string, role: Role): FindEntry[] {
+export function findable(db: Db, campaignId: string, who: Who): FindEntry[] {
+	const gm = roleOf(who) === 'gm';
 	const all = db
-		.select({ id: maps.id, parentId: maps.parentId, name: maps.name, kind: maps.kind })
+		.select({
+			id: maps.id,
+			parentId: maps.parentId,
+			name: maps.name,
+			kind: maps.kind,
+			fog: maps.fog
+		})
 		.from(maps)
 		.where(eq(maps.campaignId, campaignId))
 		.orderBy(maps.createdAt)
 		.all();
 	const byId = new Map(all.map((map) => [map.id, map]));
 	const doors = db
-		.select({ targetMapId: regions.targetMapId, hidden: regions.hidden })
+		.select({
+			mapId: regions.mapId,
+			targetMapId: regions.targetMapId,
+			points: regions.points,
+			hidden: regions.hidden,
+			seenBy: regions.seenBy,
+			closed: regions.closed
+		})
 		.from(regions)
 		.innerJoin(maps, eq(maps.id, regions.mapId))
 		.where(eq(maps.campaignId, campaignId))
 		.all();
-	const shut = new Set(doors.filter((door) => door.hidden).map((door) => door.targetMapId));
+	const doorTo = new Map(doors.map((door) => [door.targetMapId, door]));
+	const fogOf = (mapId: string): Fog | undefined => byId.get(mapId)?.fog;
 
-	/** The names of the maps on the way to one, and whether a hidden region is on that way. */
+	/**
+	 * The names of the maps on the way to one, whether this person is kept
+	 * out of it, and whether the table as a whole is: what the GM is told.
+	 */
 	const wayTo = (mapId: string) => {
 		const path: string[] = [];
 		let concealed = false;
+		let shut = false;
 		for (let id: string | null = mapId, depth = 0; id && depth < 64; depth++) {
 			const map = byId.get(id);
 			if (!map) break;
 			path.unshift(map.name);
-			if (shut.has(id)) concealed = true;
+			const door = doorTo.get(id);
+			if (door && !canEnterRegion('player', door, fogOf(door.mapId))) shut = true;
+			if (door && !canEnterRegion(who, door, fogOf(door.mapId))) concealed = true;
 			id = map.parentId;
 		}
-		return { path, concealed };
+		return { path, concealed, shut };
 	};
 
 	const entries: FindEntry[] = [];
@@ -122,7 +198,7 @@ export function findable(db: Db, campaignId: string, role: Role): FindEntry[] {
 	for (const map of all) {
 		const way = wayTo(map.id);
 		ways.set(map.id, way);
-		if (role !== 'gm' && way.concealed) continue;
+		if (way.concealed) continue;
 		entries.push({
 			kind: 'map',
 			id: map.id,
@@ -130,7 +206,7 @@ export function findable(db: Db, campaignId: string, role: Role): FindEntry[] {
 			name: map.name,
 			path: way.path.slice(0, -1),
 			type: map.kind,
-			hidden: way.concealed
+			hidden: gm && way.shut
 		});
 	}
 
@@ -143,7 +219,7 @@ export function findable(db: Db, campaignId: string, role: Role): FindEntry[] {
 		.all();
 	for (const { marker } of pins) {
 		const way = ways.get(marker.mapId);
-		if (!way || !canSeeMarker(role, marker) || (role !== 'gm' && way.concealed)) continue;
+		if (!way || way.concealed || !canSeeMarker(who, marker, fogOf(marker.mapId))) continue;
 		entries.push({
 			kind: 'marker',
 			id: marker.id,
@@ -151,24 +227,33 @@ export function findable(db: Db, campaignId: string, role: Role): FindEntry[] {
 			name: marker.title,
 			path: way.path,
 			type: marker.type,
-			hidden: marker.hidden || way.concealed
+			hidden: gm && (marker.hidden || way.shut)
 		});
 	}
 	return entries;
 }
 
 /**
- * Who can open a map of this campaign: everyone at the table, or only the
- * GM when a hidden region is on the way there. Null if there is no such map.
+ * Who can open a map of this campaign besides the GM: everyone at the table,
+ * or when a region on the way there keeps the table out, the players who
+ * are let in all the same, by user id. Null if there is no such map.
  */
-export function audienceOf(db: Db, campaignId: string, mapId: string): 'table' | 'gm' | null {
+export function audienceOf(
+	db: Db,
+	campaignId: string,
+	mapId: string
+): { table: boolean; only: string[] } | null {
 	const map = db
 		.select({ id: maps.id })
 		.from(maps)
 		.where(and(eq(maps.id, mapId), eq(maps.campaignId, campaignId)))
 		.get();
 	if (!map) return null;
-	return isConcealed(db, mapId) ? 'gm' : 'table';
+	if (!isConcealed(db, mapId)) return { table: true, only: [] };
+	const only = playersOf(db, campaignId)
+		.filter((player) => !isConcealed(db, mapId, { role: 'player', userId: player.id }))
+		.map((player) => player.id);
+	return { table: false, only };
 }
 
 /**
@@ -207,12 +292,12 @@ export function backdropOf(db: Db, map: Pick<MapInfo, 'id' | 'kind'>): Backdrop 
 	return null;
 }
 
-/** A map with everything on it that `role` may see, or null if it isn't in this campaign. */
+/** A map with everything on it that someone may see, or null if it isn't in this campaign. */
 export function getMapSnapshot(
 	db: Db,
 	campaignId: string,
 	mapId: string,
-	role: Role
+	who: Who
 ): MapSnapshot | null {
 	// One transaction, so the snapshot and its sequence number agree.
 	return db.transaction((tx): MapSnapshot | null => {
@@ -221,8 +306,8 @@ export function getMapSnapshot(
 			.from(maps)
 			.where(and(eq(maps.id, mapId), eq(maps.campaignId, campaignId)))
 			.get();
-		// To a player, a map behind a hidden region is not there at all.
-		if (!map || (role !== 'gm' && isConcealed(tx, mapId))) return null;
+		// To a player, a map behind a region they can't step through is not there at all.
+		if (!map || isConcealed(tx, mapId, who)) return null;
 
 		const trail: Crumb[] = [];
 		for (let step: typeof map | undefined = map, depth = 0; step && depth < 64; depth++) {
@@ -232,22 +317,8 @@ export function getMapSnapshot(
 				: undefined;
 		}
 
-		const regionList = tx
-			.select(regionColumns)
-			.from(regions)
-			.innerJoin(targetMap, eq(targetMap.id, regions.targetMapId))
-			.where(eq(regions.mapId, mapId))
-			.orderBy(regions.createdAt)
-			.all()
-			.filter((region) => canSeeRegion(role, region));
-
-		const markerList = tx
-			.select(markerColumns)
-			.from(markers)
-			.where(and(eq(markers.mapId, mapId), isNull(markers.deletedAt)))
-			.orderBy(markers.createdAt)
-			.all()
-			.filter((marker) => canSeeMarker(role, marker));
+		const regionList = regionsOn(tx, map, who);
+		const markerList = markersOn(tx, map, who);
 
 		const drawingList = tx
 			.select(drawingColumns)
@@ -259,17 +330,17 @@ export function getMapSnapshot(
 		// The party never stands where players are kept out. The check is
 		// the net under that rule.
 		const party = readParty(tx, campaignId);
-		const tokenList = tokensOn(tx, map, role);
+		const tokenList = tokensOn(tx, map, who);
 
 		return {
-			map: mapFor(tx, map, role, tokenList),
+			map: mapFor(tx, map, who, tokenList),
 			backdrop: backdropOf(tx, map),
 			trail,
 			regions: regionList,
 			markers: markerList,
 			tokens: tokenList,
 			drawings: drawingList,
-			party: party && (role === 'gm' || !isConcealed(tx, party.mapId)) ? party : null,
+			party: party && !isConcealed(tx, party.mapId, who) ? party : null,
 			miles: milesOf(tx, map),
 			lastSeq: latestSeq(tx, campaignId)
 		};

@@ -59,6 +59,7 @@
 		type Backdrop,
 		type Command,
 		type Drawing,
+		type Grid,
 		type Hand,
 		type HandSpot,
 		type MapInfo,
@@ -66,7 +67,9 @@
 		type Marker,
 		type Party,
 		type Ping,
+		type Player,
 		type Point,
+		type Rect,
 		type Region,
 		type Role,
 		type Sight,
@@ -103,6 +106,15 @@
 		pings: (Ping & { key: number })[];
 		role: Role;
 		userId: string;
+		/** The players of the campaign, for the GM to choose who something hidden is a secret with. */
+		players: Player[];
+		/**
+		 * A grid the GM is trying on the map before keeping it: it is drawn in
+		 * place of the map's own, and the tokens are sized by it.
+		 */
+		gridPreview?: Pick<Grid, 'size' | 'x' | 'y'> | null;
+		/** The box the GM dragged over the squares of the map's picture, to line that grid up by. */
+		aligned?: Rect | null;
 		/**
 		 * A table display: the map is shown and can be moved about, and nothing
 		 * on it can be picked up or changed.
@@ -116,10 +128,13 @@
 		 * freehand, `text` waits for a click to start writing at, `template`
 		 * drags out the area of a spell. `reveal` and `cover` are the GM's:
 		 * each drags a box that the fog of war is cleared from, or put back
-		 * over. `measure` drags a ruler across either kind of map.
+		 * over. So is `align`, which drags a box over the squares of the map's
+		 * own picture to line the grid up by. `measure` drags a ruler across
+		 * either kind of map.
 		 */
 		tool:
 			| 'pan'
+			| 'align'
 			| 'place'
 			| 'draw'
 			| 'measure'
@@ -167,6 +182,10 @@
 		onmove: (marker: Marker) => void;
 		ondelete: (marker: Marker) => void;
 		onhide: (marker: Marker, hidden: boolean) => void;
+		/** The GM chose which players see a hidden marker. */
+		onshare: (marker: Marker, seenBy: string[]) => void;
+		/** A box was dragged over the squares of the map's picture, in map space. */
+		onalign: (box: Rect) => void;
 		/** The rest of what a token is, is to be changed: its picture, its colour, its outline. */
 		onedittoken: (token: Token) => void;
 		/** What this browser has in hand on the map, or null when it holds nothing. */
@@ -188,6 +207,9 @@
 		pings,
 		role,
 		userId,
+		players,
+		gridPreview = null,
+		aligned = null,
 		passive = false,
 		tool,
 		ink,
@@ -210,6 +232,8 @@
 		onmove,
 		ondelete,
 		onhide,
+		onshare,
+		onalign,
 		onedittoken,
 		onhand,
 		onping
@@ -295,6 +319,8 @@
 	 * it back: from, to, and whether Alt is keeping it off the grid.
 	 */
 	let veil = $state.raw<{ from: Point; to: Point; free: boolean } | null>(null);
+	/** The box the GM is dragging over the squares of the map's picture: one corner, and the other. */
+	let aligning = $state.raw<[Point, Point] | null>(null);
 	/**
 	 * Where the GM is dragging the party to. Once let go it waits here, no
 	 * longer `held`, until the server has moved it for everyone.
@@ -443,16 +469,24 @@
 	// ---------------------------------------------------------- battle maps
 
 	const battle = $derived(map.kind === 'battle');
+	/** The grid as it is drawn: the map's own, or one the GM is trying on it, which always shows. */
+	const grid = $derived(gridPreview ? { ...gridPreview, shown: true } : map.grid);
 	/** The side of one grid cell, in map pixels. */
-	const cell = $derived(map.grid.size);
+	const cell = $derived(grid.size);
 
 	/** Every line of the grid as one path. Empty when there is no grid to draw. */
 	const gridLines = $derived.by(() => {
-		if (!battle || !map.grid.shown) return '';
+		if (!battle || !grid.shown) return '';
 		let d = '';
-		for (let x = map.grid.x; x <= W; x += cell) d += `M${x} 0V${H}`;
-		for (let y = map.grid.y; y <= H; y += cell) d += `M0 ${y}H${W}`;
+		for (let x = grid.x; x <= W; x += cell) d += `M${x} 0V${H}`;
+		for (let y = grid.y; y <= H; y += cell) d += `M0 ${y}H${W}`;
 		return d;
+	});
+	/** The box that grid is lined up by: the one being dragged, or the one let go. */
+	const alignBox = $derived.by((): Rect | null => {
+		if (!aligning) return tool === 'align' ? aligned : null;
+		const box = boxOf(aligning);
+		return [box.x0, box.y0, box.x1, box.y1];
 	});
 
 	/** Tokens someone else has in hand right now, and where they are holding them. */
@@ -773,6 +807,7 @@
 		if (tool !== 'select') marquee = null;
 		if (tool !== 'template') casting = null;
 		if (tool !== 'reveal' && tool !== 'cover') veil = null;
+		if (tool !== 'align') aligning = null;
 	});
 
 	// --------------------------------------------------- drawing and writing
@@ -1111,6 +1146,7 @@
 				cast = [];
 				marquee = null;
 				veil = null;
+				aligning = null;
 				leading = null;
 				writing = null;
 			}
@@ -1272,6 +1308,8 @@
 		| { type: 'marquee'; add: boolean }
 		/** A box over the fog of war, to clear it there or to put it back. */
 		| { type: 'veil'; how: 'reveal' | 'cover' }
+		/** A box over the squares of the map's picture, to line the grid up by. */
+		| { type: 'align' }
 		/** The party, in the GM's hand. */
 		| { type: 'lead'; sx: number; sy: number; moved: boolean; target: Element };
 
@@ -1442,6 +1480,7 @@
 			casting = null;
 			marquee = null;
 			veil = null;
+			aligning = null;
 			if (leading?.held) leading = null;
 			const mid = midpoint();
 			gesture = {
@@ -1546,6 +1585,14 @@
 			const at = toMap(e.clientX, e.clientY);
 			veil = { from: at, to: at, free: e.altKey };
 			gesture = { type: 'veil', how: tool };
+			capture(e.pointerId);
+			return;
+		}
+
+		if (tool === 'align') {
+			const at = clamped(toMap(e.clientX, e.clientY));
+			aligning = [at, at];
+			gesture = { type: 'align' };
 			capture(e.pointerId);
 			return;
 		}
@@ -1744,6 +1791,8 @@
 			marquee = [marquee[0], toMap(e.clientX, e.clientY)];
 		} else if (g?.type === 'veil' && veil) {
 			veil = { from: veil.from, to: toMap(e.clientX, e.clientY), free: e.altKey };
+		} else if (g?.type === 'align' && aligning) {
+			aligning = [aligning[0], clamped(toMap(e.clientX, e.clientY))];
 		} else if (g?.type === 'lead') {
 			const far = Math.hypot(e.clientX - g.sx, e.clientY - g.sy);
 			if (!g.moved && far > (e.pointerType === 'mouse' ? 4 : 10)) {
@@ -1803,6 +1852,14 @@
 				// Fog that is off has nothing to clear, and comes back as it was.
 				if (fog !== map.fog) send([{ t: 'map.update', id: map.id, fog }]);
 			}
+		}
+		if (g?.type === 'align') {
+			const box = alignBox;
+			aligning = null;
+			// A box too small to have been meant is a click: the one before it stays.
+			const meant =
+				box && (box[2] - box[0]) * W * view.k >= 8 && (box[3] - box[1]) * H * view.k >= 8;
+			if (box && meant && completed) onalign(box);
 		}
 		if (g?.type === 'lead') {
 			const led = leading;
@@ -2129,16 +2186,33 @@
 		idle: 'fill-transparent stroke-[#fff8e4]/90 stroke-[1.5] [stroke-dasharray:7_6]',
 		hover: 'fill-accent/22 stroke-accent stroke-[2.5]',
 		selected: 'fill-accent/14 stroke-white stroke-[2.5]',
-		// Only the GM ever has one of these to draw: dotted, and veiled, so it
-		// reads as shut on a pale map as well as on a dark one.
-		hidden: 'fill-[#0c0e14]/35 stroke-[#f2c14e] stroke-[1.5] [stroke-dasharray:2_5]'
+		// The GM has these to draw, and so has a player who is let in on the
+		// secret: dotted, and veiled, so it reads as shut on a pale map as well
+		// as on a dark one.
+		hidden: 'fill-[#0c0e14]/35 stroke-[#f2c14e] stroke-[1.5] [stroke-dasharray:2_5]',
+		// There for everyone to see, and nobody but the GM to step into yet.
+		closed: 'fill-[#0c0e14]/25 stroke-[#fff8e4]/75 stroke-[1.5] [stroke-dasharray:2_5]'
 	};
 
 	function outlineOf(region: Region): string {
 		if (selectedRegionId === region.id) return OUTLINE.selected;
 		if (hoveredRegionId === region.id) return OUTLINE.hover;
 		if (region.hidden) return OUTLINE.hidden;
+		if (region.closed) return OUTLINE.closed;
 		return OUTLINE.idle;
+	}
+
+	/** Who a region is hidden from or closed to, in a few words, or nothing for one that is neither. */
+	function shutOf(region: Region): string {
+		const said: string[] = [];
+		if (region.hidden) {
+			const names = players.filter((p) => region.seenBy.includes(p.id)).map((p) => p.name);
+			said.push(
+				!canShape ? 'A secret' : names.length ? `A secret with ${names.join(', ')}` : 'Hidden from players'
+			);
+		}
+		if (region.closed) said.push(canShape ? 'Closed to players' : 'Not open yet');
+		return said.join(' · ');
 	}
 
 	/** The instruction shown at the top while a tool is waiting for a click. */
@@ -2459,6 +2533,18 @@
 					</g>
 				{/each}
 
+				<!-- The box the grid is being lined up by. -->
+				{#if alignBox}
+					{@const [x0, y0, x1, y1] = alignBox}
+					<rect
+						class="fill-accent/15 stroke-accent stroke-2 stroke-steady"
+						x={x0 * W}
+						y={y0 * H}
+						width={(x1 - x0) * W}
+						height={(y1 - y0) * H}
+					/>
+				{/if}
+
 				<!-- The box being dragged around things to select them. -->
 				{#if marquee}
 					{@const box = boxOf(marquee)}
@@ -2544,6 +2630,8 @@
 				{@const [x, y] = labelSpot(pointsOf(region))}
 				{@const lit = litRegionId === region.id}
 				{@const camped = partyRegionId === region.id}
+				{@const shut = shutOf(region)}
+				{@const open = canShape || !region.closed}
 				<div
 					class={[
 						'pointer-events-none absolute w-max -translate-1/2 scale-(--inv) text-center text-shadow-map',
@@ -2570,18 +2658,31 @@
 									d="M5 3.5h15l-4 5 4 5H5Z"
 								/>
 								<path class="stroke-[#fff8e4] stroke-[2.5] [stroke-linecap:round]" d="M5 3v19" />
+							</svg>{/if}{#if region.closed}<!-- A lock before the name of a region that is
+							     not open to players yet. --><svg
+								class="mr-1 inline-block size-[0.8em] -translate-y-px drop-shadow-[0_0_2px_rgb(8_10_15/0.9)]"
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2.5"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								role="img"
+								aria-label="Closed:"
+							>
+								<path d="M5 11h14v10H5Z M8 11V7a4 4 0 0 1 8 0v4" />
 							</svg>{/if}{region.name}</strong
 					>
 					{#if lit || region.hidden}
-						<!-- How to get in, and for the GM whether players can. Out of the flow,
-						     so the name does not jump when it appears. -->
+						<!-- How to get in, and whether players can. Out of the flow, so the
+						     name does not jump when it appears. -->
 						<span
 							class="absolute top-[calc(100%+2px)] left-1/2 -translate-x-1/2 text-xs whitespace-nowrap text-[#e4dcc6]"
 						>
-							{#if region.hidden}
-								<span class="font-semibold text-[#f2c14e]">Hidden{lit ? ' ·' : ' from players'}</span>
+							{#if shut}
+								<span class="font-semibold text-[#f2c14e]">{shut}{lit && open ? ' ·' : ''}</span>
 							{/if}
-							{#if lit}
+							{#if lit && open}
 								{#if region.kind === 'battle'}Battle map ·{/if}
 								<span class="touch:hidden">Double-click to enter</span>
 								<span class="hidden touch:inline">Double-tap to enter</span>
@@ -2651,7 +2752,9 @@
 							style:--c={token.color}
 							style:--o={token.outline ?? '#12151c'}
 							title="{token.name}{token.locked ? ' · locked' : ''}"
-							aria-label="Token: {token.name}{token.hidden ? ' (hidden from players)' : ''}{down
+							aria-label="Token: {token.name}{token.count != null
+								? `, ${token.count}`
+								: ''}{token.hidden ? (canShape ? ' (hidden from players)' : ' (a secret)') : ''}{down
 								? ' (down)'
 								: ''}{turnId === token.id ? ' (their turn)' : ''}{mine
 								? '. Arrow keys move it.'
@@ -2711,6 +2814,22 @@
 								<MarkIcon {look} />
 							</span>
 						{/each}
+						{#if token.count != null}
+							<!-- The number it carries, on its rim at the upper left, where
+							     the pips leave room: hit points, charges, rounds left. -->
+							<span
+								class="pointer-events-none absolute grid -translate-1/2 place-items-center rounded-full border-[#fff8e4]/85 bg-[#12151c] px-[0.3em] leading-none font-bold whitespace-nowrap text-[#fff8e4] tabular-nums"
+								style:left="{-0.354 * across}px"
+								style:top="{-0.354 * across}px"
+								style:min-width="{across * 0.36}px"
+								style:height="{across * 0.36}px"
+								style:font-size="{across * 0.23}px"
+								style:border-width="{across * 0.02}px"
+								aria-hidden="true"
+							>
+								{token.count}
+							</span>
+						{/if}
 						{#if across * view.k >= 26 || selected}
 							<span
 								class={[
@@ -2783,19 +2902,47 @@
 				{/each}
 			{/if}
 
-			<!-- The fog of war, over everything that stands on a battle map: one dark
-			     sheet with a hole for each box that has been cleared. Players can't
-			     see through it. The GM can, enough to tell what is under it. The box
-			     being dragged to clear some or cover some is drawn with it. -->
-			{#if battle && (map.fog.on || veilBox)}
+			<!-- The fog of war: one dark sheet with a hole for each part that has
+			     been cleared. Players can't see through it. The GM can, enough to
+			     tell what is under it. On a battle map it lies over everything
+			     that stands there, and the box being dragged to clear some or
+			     cover some is drawn with it. On a world map it lies under the
+			     pins and the party, which lifts it by going places: there the
+			     holes are round, and soft at the edge. -->
+			{#if map.fog.on || veilBox}
 				<svg
-					class="pointer-events-none absolute inset-0 z-2 overflow-visible"
+					class={['pointer-events-none absolute inset-0 overflow-visible', battle && 'z-2']}
 					viewBox="0 0 {W} {H}"
 					width={W}
 					height={H}
 					aria-hidden="true"
 				>
-					{#if map.fog.on}
+					{#if map.fog.on && map.fog.spots?.length}
+						<!-- Round holes overlap, so they are cut with a mask: black where
+						     the fog has lifted, fading out towards the rim of each. -->
+						<defs>
+							<radialGradient id="fog-spot">
+								<stop offset="0" stop-color="black" />
+								<stop offset="0.72" stop-color="black" />
+								<stop offset="1" stop-color="black" stop-opacity="0" />
+							</radialGradient>
+							<mask id="fog-holes" maskUnits="userSpaceOnUse" x="0" y="0" width={W} height={H}>
+								<rect width={W} height={H} fill="white" />
+								{#each map.fog.clear as [x0, y0, x1, y1], i (i)}
+									<rect x={x0 * W} y={y0 * H} width={(x1 - x0) * W} height={(y1 - y0) * H} fill="black" />
+								{/each}
+								{#each map.fog.spots as [cx, cy, rx, ry], i (i)}
+									<ellipse cx={cx * W} cy={cy * H} rx={rx * W} ry={ry * H} fill="url(#fog-spot)" />
+								{/each}
+							</mask>
+						</defs>
+						<rect
+							class={canShape ? 'fill-[#0b0d12]/55' : 'fill-[#0d1017]'}
+							width={W}
+							height={H}
+							mask="url(#fog-holes)"
+						/>
+					{:else if map.fog.on}
 						<path
 							class={canShape ? 'fill-[#0b0d12]/55' : 'fill-[#0d1017]'}
 							fill-rule="evenodd"
@@ -2840,7 +2987,11 @@
 					style:left="{marker.x * W}px"
 					style:top="{marker.y * H}px"
 					style:--c={type.color}
-					aria-label="{type.label}: {marker.title}{marker.hidden ? ' (hidden from players)' : ''}"
+					aria-label="{type.label}: {marker.title}{marker.hidden
+						? canShape
+							? ' (hidden from players)'
+							: ' (a secret)'
+						: ''}"
 					aria-pressed={selectedMarkerId === marker.id}
 					tabindex={tool === 'pan' ? 0 : -1}
 					onfocus={() => (hoveredMarkerId = marker.id)}
@@ -3005,6 +3156,8 @@
 					{onmove}
 					{ondelete}
 					{onhide}
+					{players}
+					onshare={canShape ? onshare : undefined}
 				/>
 			</div>
 		{/if}
@@ -3054,6 +3207,7 @@
 					turns={map.turns}
 					{role}
 					{userId}
+					{players}
 					tip={barPosition?.under === false ? 'top' : 'bottom'}
 					{send}
 					oncopy={copy}
@@ -3150,6 +3304,11 @@
 			<p class={hint}>
 				Drag a box over what the fog should cover.
 				<span class={keys}>Alt leaves the grid · Esc puts it away</span>
+			</p>
+		{:else if tool === 'align'}
+			<p class={hint}>
+				Drag a box over a few squares of the map's own grid, from corner to corner.
+				<span class={keys}>Esc cancels</span>
 			</p>
 		{:else if tool === 'text' && !writing}
 			<p class={hint}>

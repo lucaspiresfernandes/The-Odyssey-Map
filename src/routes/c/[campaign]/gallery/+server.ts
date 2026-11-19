@@ -13,23 +13,18 @@ import {
 } from '#lib/server/gallery.ts';
 import { requireMemberApi } from '#lib/server/session.ts';
 import { getStorage } from '#lib/server/storage.ts';
-import { imageSize, shrunk, thumbOf, tilesOf, uploadKey } from '#lib/server/tiles.ts';
+import {
+	imageSize,
+	shrunk,
+	sniffImage,
+	thumbOf,
+	tilesOf,
+	uploadKey,
+	type ImageFormat
+} from '#lib/server/tiles.ts';
 import { ActionError } from '#lib/server/world.ts';
 import { tileLevels } from '#lib/shared/tiles.ts';
 import { LIMITS, TOKEN_IMAGE_SIZE, type GalleryResponse } from '#lib/shared/types.ts';
-
-type Extension = 'png' | 'jpg' | 'gif' | 'webp' | 'avif';
-
-/** Decides the format from the file's own bytes, not from what the upload claims. */
-function sniff(bytes: Uint8Array): Extension | null {
-	const ascii = (from: number, to: number) => String.fromCharCode(...bytes.subarray(from, to));
-	if (bytes[0] === 0x89 && ascii(1, 4) === 'PNG') return 'png';
-	if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'jpg';
-	if (ascii(0, 4) === 'GIF8') return 'gif';
-	if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return 'webp';
-	if (ascii(4, 8) === 'ftyp' && ['avif', 'avis'].includes(ascii(8, 12))) return 'avif';
-	return null;
-}
 
 function refuse(status: number, error: string) {
 	return Response.json({ ok: false, error } satisfies GalleryResponse, { status });
@@ -70,7 +65,7 @@ export const POST: RequestHandler = async (event) => {
 	}
 
 	const sent = new Uint8Array(await upload.arrayBuffer());
-	const format = sniff(sent);
+	const format = sniffImage(sent);
 	if (!format) return refuse(415, 'Use a PNG, JPEG, WebP, GIF or AVIF image.');
 	const sentSize = await imageSize(sent);
 	if (!sentSize) return refuse(415, "That file doesn't look like an image that can be read.");
@@ -81,7 +76,7 @@ export const POST: RequestHandler = async (event) => {
 	// A map image is kept as it came. A token is a small thing on the map,
 	// and many of them share the table, so its picture is kept small.
 	let picture: { bytes: Uint8Array; width: number; height: number };
-	let extension: Extension = format;
+	let extension: ImageFormat = format;
 	if (kind === 'map') {
 		picture = { bytes: sent, ...sentSize };
 	} else {

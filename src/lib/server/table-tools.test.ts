@@ -400,7 +400,13 @@ describe('a picture held up for the table', () => {
 		expect(shownTo(db, gm.campaignId)).toBeNull();
 		expect(loads(lich.file)).toBe(false);
 
-		expect(showToTable(db, gm, lich.id)).toEqual({ file: lich.file, name: 'The Lich', width: 640, height: 480 });
+		expect(showToTable(db, gm, lich.id)).toEqual({
+			file: lich.file,
+			name: 'The Lich',
+			width: 640,
+			height: 480,
+			to: []
+		});
 		expect(shownTo(db, gm.campaignId)?.file).toBe(lich.file);
 		expect(loads(lich.file)).toBe(true);
 		// Holding it up does not put it on the shelf players pick from.

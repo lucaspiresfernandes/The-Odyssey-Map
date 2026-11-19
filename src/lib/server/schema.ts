@@ -64,6 +64,8 @@ export const campaigns = sqliteTable('campaigns', {
 	 * reason, and because a picture may leave the gallery while it is shown.
 	 */
 	shownFile: text('shown_file'),
+	/** The players that picture is held up for, by user id. Empty for the whole table. */
+	shownTo: text('shown_to', { mode: 'json' }).$type<string[]>().notNull().default([]),
 	createdAt: integer('created_at').notNull()
 });
 
@@ -99,7 +101,7 @@ export const maps = sqliteTable(
 		grid: text('grid', { mode: 'json' }).$type<Grid>().notNull().default(DEFAULT_GRID),
 		/** How many feet one cell of the grid stands for. */
 		cellFeet: real('cell_feet').notNull().default(DEFAULT_CELL_FEET),
-		/** The fog of war on a battle map: whether it is on, and where it has been cleared. */
+		/** The fog of war: whether it is on, and where it has been cleared. On a world map the party clears it. */
 		fog: text('fog', { mode: 'json' }).$type<Fog>().notNull().default(NO_FOG),
 		/** Whose turn it is on a battle map, and who comes after. */
 		turns: text('turns', { mode: 'json' }).$type<Turns>().notNull().default(NO_TURNS),
@@ -127,6 +129,10 @@ export const regions = sqliteTable(
 		points: text('points', { mode: 'json' }).$type<Point[]>().notNull(),
 		/** A hidden region keeps players out of its map, and of every map inside that one. */
 		hidden: integer('hidden', { mode: 'boolean' }).notNull().default(false),
+		/** The players a hidden region is there for all the same, by user id. */
+		seenBy: text('seen_by', { mode: 'json' }).$type<string[]>().notNull().default([]),
+		/** A closed region shows on the map, and players can't step into it yet. */
+		closed: integer('closed', { mode: 'boolean' }).notNull().default(false),
 		createdAt: integer('created_at').notNull()
 	},
 	(t) => [index('regions_map').on(t.mapId)]
@@ -160,6 +166,8 @@ export const markers = sqliteTable(
 		x: real('x').notNull(),
 		y: real('y').notNull(),
 		hidden: integer('hidden', { mode: 'boolean' }).notNull().default(false),
+		/** The players a hidden marker is shown to all the same, by user id. */
+		seenBy: text('seen_by', { mode: 'json' }).$type<string[]>().notNull().default([]),
 		authorId: text('author_id').notNull(),
 		authorName: text('author_name').notNull(),
 		createdAt: integer('created_at').notNull(),
@@ -205,7 +213,11 @@ export const tokens = sqliteTable(
 		// these now: anyone moves any token that isn't locked.
 		ownerId: text('owner_id'),
 		ownerName: text('owner_name'),
+		/** A number the table counts on it: hit points, charges, rounds left. Null for none. */
+		count: integer('count'),
 		hidden: integer('hidden', { mode: 'boolean' }).notNull().default(false),
+		/** The players a hidden token is shown to all the same, by user id. */
+		seenBy: text('seen_by', { mode: 'json' }).$type<string[]>().notNull().default([]),
 		createdAt: integer('created_at').notNull(),
 		updatedAt: integer('updated_at').notNull(),
 		deletedAt: integer('deleted_at')

@@ -3,14 +3,58 @@
 // one cuts it out of the others first. That keeps the fog one shape with
 // holes in it, which draws without seams.
 
-import type { Fog, MapInfo, Point, Rect } from './types';
+import { LIMITS, PARTY_SIGHT, type Fog, type MapInfo, type Oval, type Point, type Rect } from './types';
 
 type Sheet = Pick<MapInfo, 'width' | 'height' | 'grid'>;
 
-/** True when a spot is under the fog: it is on, and none of the cleared boxes holds the spot. */
+/** True when a spot is under the fog: it is on, and nothing that was cleared holds the spot. */
 export function isFogged(fog: Fog | undefined, [x, y]: Point): boolean {
 	if (!fog?.on) return false;
-	return !fog.clear.some(([x0, y0, x1, y1]) => x >= x0 && x <= x1 && y >= y0 && y <= y1);
+	if (fog.clear.some(([x0, y0, x1, y1]) => x >= x0 && x <= x1 && y >= y0 && y <= y1)) return false;
+	return !fog.spots?.some(([cx, cy, rx, ry]) => ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1);
+}
+
+/** The middle of the box around some corners: where a region is taken to be, for the fog. */
+export function middleOf(points: Point[]): Point {
+	const xs = points.map((point) => point[0]);
+	const ys = points.map((point) => point[1]);
+	return [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+}
+
+/**
+ * The fog with what the party sees from `at` cleared of it: a round patch,
+ * as wide on the map's picture as it is tall. Fog that is off has nothing
+ * to clear, and neither has a spot the party has all but stood on before.
+ * Null when the fog is in too many patches to take another.
+ */
+export function sighted(fog: Fog, map: Pick<MapInfo, 'width' | 'height'>, [x, y]: Point): Fog | null {
+	if (!fog.on) return fog;
+	const reach = PARTY_SIGHT * Math.max(map.width, map.height);
+	const rx = rounded(reach / map.width);
+	const ry = rounded(reach / map.height);
+	const spots = fog.spots ?? [];
+	const stoodNear = spots.some(
+		([cx, cy, sx, sy]) => sx >= rx && sy >= ry && ((x - cx) / sx) ** 2 + ((y - cy) / sy) ** 2 <= 0.01
+	);
+	if (stoodNear) return fog;
+	if (spots.length >= LIMITS.fogSpots) return null;
+	const spot: Oval = [rounded(x), rounded(y), rx, ry];
+	return { ...fog, spots: [...spots, spot] };
+}
+
+/**
+ * The spots along the straight way from `a` to `b` that the party sees
+ * from as it travels: close enough together that what it sees from one
+ * runs into what it sees from the next. Neither end is among them.
+ */
+export function stopsBetween(map: Pick<MapInfo, 'width' | 'height'>, a: Point, b: Point): Point[] {
+	const reach = PARTY_SIGHT * Math.max(map.width, map.height);
+	const far = Math.hypot((b[0] - a[0]) * map.width, (b[1] - a[1]) * map.height);
+	const stops = Math.floor(far / (reach * 0.7));
+	return Array.from({ length: stops }, (_, i): Point => {
+		const along = (i + 1) / (stops + 1);
+		return [a[0] + (b[0] - a[0]) * along, a[1] + (b[1] - a[1]) * along];
+	});
 }
 
 /** `rects` with `hole` cut out of them: what is left of each one it touches, in up to four pieces. */
@@ -37,7 +81,7 @@ export function without(rects: Rect[], [hx0, hy0, hx1, hy1]: Rect): Rect[] {
 /** The fog with `rect` cleared of it. Fog that is off has nothing to clear. */
 export function cleared(fog: Fog, rect: Rect): Fog {
 	if (!fog.on) return fog;
-	return { on: true, clear: [...without(fog.clear, rect), rect] };
+	return { ...fog, on: true, clear: [...without(fog.clear, rect), rect] };
 }
 
 /**
@@ -45,11 +89,13 @@ export function cleared(fog: Fog, rect: Rect): Fog {
  * where it starts: the rest of the map stays in the clear.
  */
 export function covered(fog: Fog, rect: Rect): Fog {
-	return { on: true, clear: without(fog.on ? fog.clear : [[0, 0, 1, 1]], rect) };
+	return { ...fog, on: true, clear: without(fog.on ? fog.clear : [[0, 0, 1, 1]], rect) };
 }
 
 /** Six decimal places put an edge within a thirtieth of a pixel on the biggest map there is. */
-const rounded = (n: number) => Math.round(n * 1e6) / 1e6;
+function rounded(n: number) {
+	return Math.round(n * 1e6) / 1e6;
+}
 
 /**
  * The box dragged from `a` to `b`, grown to take in every grid cell it
@@ -72,7 +118,11 @@ export function cellBox(map: Sheet, a: Point, b: Point, free = false): Rect | nu
 	return x1 > x0 && y1 > y0 ? [x0, y0, x1, y1] : null;
 }
 
-/** The fog as one path in the map's pixels: the whole map, with a hole for each cleared box. */
+/**
+ * The fog as one path in the map's pixels: the whole map, with a hole for
+ * each cleared box. The round patches of a world map overlap, so they are
+ * not in it: a map that has those is drawn through a mask instead.
+ */
 export function fogPath(fog: Fog, width: number, height: number): string {
 	let d = `M0 0H${width}V${height}H0Z`;
 	for (const [x0, y0, x1, y1] of fog.clear) {

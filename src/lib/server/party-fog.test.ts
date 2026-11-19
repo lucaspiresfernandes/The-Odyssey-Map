@@ -269,10 +269,9 @@ describe('fog of war', () => {
 		expect(names(sees(id).tokens)).toEqual(['Goblin']);
 	});
 
-	test('it is for the GM, on battle maps, and malformed fog is refused', () => {
+	test('it is for the GM, and malformed fog is refused', () => {
 		const id = battlefield();
 		expect(refusal(() => perform(db, player, { t: 'map.update', id, fog: { on: true } }))).toBe('forbidden');
-		expect(refusal(() => fogOver(mapId, { on: true }))).toBe('invalid');
 		const malformed = [
 			{ on: 'yes' },
 			{ clear: 'all' },
@@ -316,10 +315,10 @@ describe('bringing everyone along', () => {
 		const port = draw('Port Varr');
 		const crypt = draw('The Crypt', port.targetMapId, { hidden: true });
 		const vault = draw('The Vault', crypt.targetMapId);
-		expect(audienceOf(db, gm.campaignId, mapId)).toBe('table');
-		expect(audienceOf(db, gm.campaignId, port.targetMapId)).toBe('table');
-		expect(audienceOf(db, gm.campaignId, crypt.targetMapId)).toBe('gm');
-		expect(audienceOf(db, gm.campaignId, vault.targetMapId)).toBe('gm');
+		expect(audienceOf(db, gm.campaignId, mapId)).toEqual({ table: true, only: [] });
+		expect(audienceOf(db, gm.campaignId, port.targetMapId)).toEqual({ table: true, only: [] });
+		expect(audienceOf(db, gm.campaignId, crypt.targetMapId)).toEqual({ table: false, only: [] });
+		expect(audienceOf(db, gm.campaignId, vault.targetMapId)).toEqual({ table: false, only: [] });
 		expect(audienceOf(db, gm.campaignId, 'nosuchmap')).toBeNull();
 		expect(audienceOf(db, 'anothercampaign', mapId)).toBeNull();
 	});

@@ -3,6 +3,22 @@
 
 export type Role = 'gm' | 'player';
 
+/**
+ * Who is looking at the world: their role, and which person they are. A
+ * player with no id is nobody in particular: a table display, which is shown
+ * what every player may see and none of what only some of them may.
+ */
+export interface Viewer {
+	role: Role;
+	userId: string | null;
+}
+
+/** Someone who plays in a campaign, for the GM to choose who is let in on a secret. */
+export interface Player {
+	id: string;
+	name: string;
+}
+
 /** World markers belong to the GM. Player markers are the table's shared notes. */
 export type MarkerKind = 'world' | 'player';
 
@@ -37,8 +53,16 @@ export interface Marker {
 	description: string;
 	x: number;
 	y: number;
-	/** Only ever true for world markers, and only ever sent to the GM. */
+	/**
+	 * Only ever true for world markers. The GM is sent it so, and so are the
+	 * players it is a secret with: see `seenBy`.
+	 */
 	hidden: boolean;
+	/**
+	 * The players a hidden marker is shown to all the same, by id: a secret
+	 * between them and the GM. A player is only ever sent it empty.
+	 */
+	seenBy: string[];
 	/** Who added it. Among players, only this person can delete a table note. */
 	authorId: string;
 	authorName: string;
@@ -57,10 +81,17 @@ export interface Region {
 	kind: MapKind;
 	points: Point[];
 	/**
-	 * Only ever sent to the GM as true. To players a hidden region is not
-	 * there, and neither is its map nor anything inside it.
+	 * To players a hidden region is not there, and neither is its map nor
+	 * anything inside it: but for the ones named in `seenBy`.
 	 */
 	hidden: boolean;
+	/** The players a hidden region is there for all the same, by id. A player is only ever sent it empty. */
+	seenBy: string[];
+	/**
+	 * A closed region is on the map for players to see, and to wonder about:
+	 * they can't step into it until the GM opens it.
+	 */
+	closed: boolean;
 }
 
 /**
@@ -89,15 +120,26 @@ export const DEFAULT_CELL_FEET = 8;
 /** A box on a map, in map space: its left, top, right and bottom. */
 export type Rect = [number, number, number, number];
 
+/** A round patch of a map, in map space: its middle, and how far it reaches across and down. */
+export type Oval = [number, number, number, number];
+
 /**
- * The fog of war on a battle map. While it is on, the map is covered but
- * for the boxes in `clear`, which never overlap. Players see nothing of
- * what is under it; the GM sees through it.
+ * The fog of war. While it is on, the map is covered but for what has been
+ * cleared: the boxes in `clear`, which never overlap, and the round patches
+ * in `spots`. Players see nothing of what is under it; the GM sees through
+ * it.
+ *
+ * On a battle map the GM clears it by hand, in boxes. On a world map it
+ * lifts by itself wherever the party goes, a patch at a time.
  */
 export interface Fog {
 	on: boolean;
 	clear: Rect[];
+	spots?: Oval[];
 }
+
+/** How far the party sees through the fog of a world map: a part of the map's longer side. */
+export const PARTY_SIGHT = 0.08;
 
 export const NO_FOG: Fog = { on: false, clear: [] };
 
@@ -115,6 +157,11 @@ export interface Turns {
 	current: string | null;
 	/** Which time round the order this is, from 1. */
 	round: number;
+	/**
+	 * What each token rolled for its place in the order, by token id, where
+	 * the GM has typed it in. Only the GM is sent these.
+	 */
+	rolls?: Record<string, number>;
 }
 
 export const NO_TURNS: Turns = { order: [], current: null, round: 1 };
@@ -294,8 +341,15 @@ export interface Token {
 	locked: boolean;
 	/** What it is marked with, in the order of TOKEN_MARKS. Anyone's to set. */
 	marks: TokenMark[];
-	/** Only ever sent to the GM as true. */
+	/**
+	 * A number the token carries, for whatever the table counts on it: hit
+	 * points, charges, rounds left. Null for none. Anyone's to set.
+	 */
+	count: number | null;
+	/** Sent as true to the GM, and to the players it is a secret with: see `seenBy`. */
 	hidden: boolean;
+	/** The players a hidden token is shown to all the same, by id. A player is only ever sent it empty. */
+	seenBy: string[];
 	updatedAt: number;
 }
 
@@ -414,12 +468,17 @@ export interface GalleryItem {
 	tokenOutline: string | null;
 }
 
-/** A picture the GM is holding up for the whole table to look at. */
+/** A picture the GM is holding up for the table to look at: all of it, or the players it is meant for. */
 export interface Shown {
 	file: string;
 	name: string;
 	width: number;
 	height: number;
+	/**
+	 * The players it is held up for, by id. Empty for the whole table. Only
+	 * the GM is told: a player is shown the picture or isn't.
+	 */
+	to?: string[];
 }
 
 /** What the endpoint that holds a picture up for the table answers with. */
@@ -527,6 +586,8 @@ export interface MarkerInput {
 	x: number;
 	y: number;
 	hidden: boolean;
+	/** The GM's to set: the players a hidden marker is a secret with. */
+	seenBy: string[];
 }
 
 export interface TokenInput {
@@ -544,8 +605,12 @@ export interface TokenInput {
 	locked: boolean;
 	/** Anyone's to set. */
 	marks: TokenMark[];
+	/** Anyone's to set. Null takes the number off. */
+	count: number | null;
 	/** The GM's to set. */
 	hidden: boolean;
+	/** The GM's to set: the players a hidden token is a secret with. */
+	seenBy: string[];
 }
 
 export interface DrawingInput {
@@ -588,10 +653,21 @@ export type Command =
 			name: string;
 			points: Point[];
 			hidden?: boolean;
+			closed?: boolean;
 			kind?: MapKind;
 	  }
-	/** Reshapes a region, hides or reveals it, or both. */
-	| { t: 'region.update'; id: string; points?: Point[]; hidden?: boolean }
+	/**
+	 * Reshapes a region, hides or reveals it, says which players a hidden
+	 * one is there for, closes it to players or opens it: whichever are given.
+	 */
+	| {
+			t: 'region.update';
+			id: string;
+			points?: Point[];
+			hidden?: boolean;
+			seenBy?: string[];
+			closed?: boolean;
+	  }
 	/** For good, along with the map behind the region and everything inside it. */
 	| { t: 'region.delete'; id: string }
 	/**
@@ -613,10 +689,20 @@ export type Command =
 			turns?: Partial<Turns>;
 			miles?: number | null;
 	  }
-	/** Puts the party at a spot of a world map, wherever it was before. */
-	| { t: 'party.move'; mapId: string; x: number; y: number }
+	/**
+	 * Puts the party at a spot of a world map, wherever it was before. With
+	 * `along`, it travels there from where it stands on that map: fog lifts
+	 * all the way, not only where it arrives.
+	 */
+	| { t: 'party.move'; mapId: string; x: number; y: number; along?: boolean }
 	/** Takes the party off the maps, until it is put on one again. */
 	| { t: 'party.remove' }
+	/**
+	 * Ends the turn of `from` on a battle map and moves on to the next.
+	 * Anyone at the table can, for a token they can see. Naming whose turn
+	 * is being ended keeps two people who press at once from skipping one.
+	 */
+	| { t: 'turn.next'; mapId: string; from: string | null }
 	/** Takes back the change with this sequence number by performing its opposite. */
 	| { t: 'history.revert'; seq: number }
 	/**
@@ -660,10 +746,11 @@ export type Patch =
 	/** `targetMapId` is the map that can no longer be reached through it. */
 	| { t: 'region.remove'; id: string; mapId: string; targetMapId: string }
 	/**
-	 * `tokens` comes along when the fog on the map changed for a player: the
-	 * tokens of that map they can see now, in place of the ones they had.
+	 * When the fog on the map changed for a player, what they can see of it
+	 * now comes along, in place of what they had: the `tokens` of a battle
+	 * map, the `markers` and `regions` of a world map.
 	 */
-	| { t: 'map.upsert'; map: MapInfo; tokens?: Token[] }
+	| { t: 'map.upsert'; map: MapInfo; tokens?: Token[]; markers?: Marker[]; regions?: Region[] }
 	/** Where the party is now, or null once it is nowhere. */
 	| { t: 'party.set'; party: Party | null }
 	/**
@@ -839,10 +926,23 @@ export interface LiveIdentity {
  */
 export interface Broadcast {
 	campaignId: string;
-	events: { seq: number; to: Record<Role, LiveEvent | null> }[];
-	gather?: Record<Role, Gather | null>;
-	/** A picture held up for the whole table, or null once it is put away. */
-	show?: { shown: Shown | null };
+	/**
+	 * `to` is what each role is sent. `only` is for the players who are let
+	 * in on something the rest are not, by user id: what each of them is sent
+	 * in place of what the players are, which may be nothing at all.
+	 */
+	events: {
+		seq: number;
+		to: Record<Role, LiveEvent | null>;
+		only?: Record<string, LiveEvent | null>;
+	}[];
+	/** `only` names the players who may follow a call the rest of them may not, by user id. */
+	gather?: Record<Role, Gather | null> & { only?: string[] };
+	/**
+	 * A picture held up, or null once it is put away. `to` names the players
+	 * it is held up for, by user id: empty for the whole table.
+	 */
+	show?: { shown: Shown | null; to: string[] };
 }
 
 export const LIMITS = {
@@ -875,6 +975,16 @@ export const LIMITS = {
 	turns: 100,
 	/** The most boxes the fog on one map is cleared by. */
 	fogRects: 400,
+	/** The most round patches the party has cleared the fog of one world map by. */
+	fogSpots: 2000,
+	/** The least and the most a token's number can be. */
+	countMin: -999,
+	countMax: 9999,
+	/** The least and the most a token can have rolled for its place in the turn order. */
+	rollMin: -99,
+	rollMax: 999,
+	/** The most players one secret is shared with. */
+	seenBy: 64,
 	regionPoints: 200,
 	// Room for a big map that has been through an upscaler.
 	imageBytes: 256 * 1024 * 1024,

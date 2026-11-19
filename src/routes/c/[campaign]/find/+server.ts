@@ -9,8 +9,8 @@ import { requireMemberApi } from '#lib/server/session.ts';
 import type { FindResponse } from '#lib/shared/types.ts';
 
 export const GET: RequestHandler = (event) => {
-	const { campaign } = requireMemberApi(event, event.params.campaign!);
-	const entries = findable(getDb(), campaign.id, campaign.role);
+	const { user, campaign } = requireMemberApi(event, event.params.campaign!);
+	const entries = findable(getDb(), campaign.id, { role: campaign.role, userId: user.id });
 	return Response.json({ ok: true, entries } satisfies FindResponse, {
 		headers: { 'cache-control': 'no-store' }
 	});

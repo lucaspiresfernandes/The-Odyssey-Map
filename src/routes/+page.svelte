@@ -1,8 +1,44 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
+	import { goto } from '$app/navigation';
 	import type { PageProps } from './$types';
 
 	let { data, form }: PageProps = $props();
+
+	/** A campaign is being made from a file, and what went wrong with the last one that was tried. */
+	let importing = $state(false);
+	let importError = $state('');
+
+	/**
+	 * Makes a new campaign out of a file that was exported from one. The file
+	 * is sent as it is, however big, and the new campaign is opened once it
+	 * is there.
+	 */
+	async function importFrom(input: HTMLInputElement) {
+		const file = input.files?.[0];
+		input.value = '';
+		if (!file || importing) return;
+		importing = true;
+		importError = '';
+		try {
+			const response = await fetch('/import', {
+				method: 'POST',
+				headers: { 'content-type': 'application/x-tar' },
+				body: file
+			});
+			const body = (await response.json().catch(() => null)) as {
+				ok?: boolean;
+				id?: string;
+				error?: string;
+			} | null;
+			if (body?.ok && body.id) return await goto(`/c/${body.id}`);
+			importError = body?.error ?? 'Something went wrong.';
+		} catch {
+			importError = "Can't reach the server.";
+		} finally {
+			importing = false;
+		}
+	}
 
 	let mode = $state<'login' | 'register'>('login');
 	const shown = $derived(form?.form === 'register' || form?.form === 'login' ? form.form : mode);
@@ -33,16 +69,26 @@
 			{#if data.campaigns.length}
 				<ul class="grid gap-2">
 					{#each data.campaigns as campaign (campaign.id)}
-						<li>
+						<li class="flex items-stretch gap-2">
 							<a
 								href="/c/{campaign.id}"
-								class="flex items-center justify-between gap-3 rounded-[10px] border bg-panel-2 px-3.5 py-3 text-cream no-underline hover:border-accent"
+								class="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-[10px] border bg-panel-2 px-3.5 py-3 text-cream no-underline hover:border-accent"
 							>
-								<strong class="font-serif text-[17px] font-semibold">{campaign.name}</strong>
-								<span class="text-xs text-muted">
+								<strong class="truncate font-serif text-[17px] font-semibold">{campaign.name}</strong>
+								<span class="shrink-0 text-xs text-muted">
 									{campaign.role === 'gm' ? 'Game master' : 'Player'}
 								</span>
 							</a>
+							{#if campaign.role === 'gm'}
+								<!-- The whole campaign as one file: a backup, or a world to hand on. -->
+								<a
+									class="btn btn-ghost h-auto shrink-0 no-underline"
+									href="/c/{campaign.id}/export"
+									download
+									title="Download this campaign as one file: its maps, what is on them, and its pictures"
+									>Export</a
+								>
+							{/if}
 						</li>
 					{/each}
 				</ul>
@@ -64,6 +110,20 @@
 					<button class="btn btn-primary">Create</button>
 				</form>
 				{#if form?.form === 'create'}<p class="text-sm text-danger">{form.message}</p>{/if}
+				<!-- A campaign that was exported, here or anywhere, comes back as a new one. -->
+				<label
+					class={['btn btn-ghost justify-self-start', importing && 'pointer-events-none opacity-60']}
+				>
+					{importing ? 'Importing…' : 'Import a campaign from a file'}
+					<input
+						class="sr-only"
+						type="file"
+						accept=".tar,application/x-tar"
+						disabled={importing}
+						onchange={(e) => importFrom(e.currentTarget)}
+					/>
+				</label>
+				{#if importError}<p class="text-sm text-danger" role="alert">{importError}</p>{/if}
 			{/if}
 		</section>
 	{:else}

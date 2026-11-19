@@ -10,10 +10,12 @@
 		map: MapInfo;
 		/** Resolves to true when the change went through and the dialog can close. */
 		onsubmit: (grid: Grid, cellFeet: number) => Promise<boolean>;
+		/** The GM would sooner line the grid up on the map itself, by dragging. */
+		onalign: () => void;
 		onclose: () => void;
 	}
 
-	let { map, onsubmit, onclose }: Props = $props();
+	let { map, onsubmit, onalign, onclose }: Props = $props();
 
 	// Deliberately a one-time copy: the form owns its fields once it is open.
 	// svelte-ignore state_referenced_locally
@@ -61,6 +63,13 @@
 
 <Modal title="Set up the grid" {onclose}>
 	<form class="grid gap-3.5" onsubmit={submit}>
+		<!-- The quick way, for an image that has squares of its own drawn on. -->
+		<div class="flex items-center justify-between gap-3 rounded-[10px] border bg-panel-2 px-3 py-2.5">
+			<span class="text-[13px] text-muted">
+				Does the image have squares of its own? Drag a box over a few of them instead of typing.
+			</span>
+			<button type="button" class="btn btn-sm shrink-0" onclick={onalign}>Line it up on the map</button>
+		</div>
 		<label class="field">
 			<span>Size of one cell, in pixels of the map image</span>
 			<input

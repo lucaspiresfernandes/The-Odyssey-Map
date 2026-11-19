@@ -6,7 +6,7 @@
 // writes the change, and appends one row per change to the event log, all in
 // a single transaction.
 
-import { and, count, eq, gt, inArray, isNull, max, or } from 'drizzle-orm';
+import { and, count, eq, gt, inArray, isNull, max, or, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import type { Db } from './db';
 import { newId } from './ids';
@@ -16,22 +16,29 @@ import {
 	gallery,
 	maps,
 	markers,
+	members,
 	parties,
 	regions,
 	tokens
 } from './schema';
-import { isFogged } from '../shared/fog';
+import { isFogged, middleOf, sighted, stopsBetween } from '../shared/fog';
 import { wrapOffset } from '../shared/grid';
 import {
 	canChangeDrawing,
 	canEditMarkerKind,
 	canEditWorld,
+	canEnterRegion,
 	canHideToken,
 	canMoveParty,
 	canRemoveMarker,
 	canRestoreToken,
-	canSeeEvent
+	canSeeEvent,
+	canSeeMarker,
+	canSeeToken,
+	roleOf,
+	type Who
 } from '../shared/rules';
+import { nextTurn } from '../shared/turns';
 import {
 	DEFAULT_MAP_SIZE,
 	DRAWING_SIZE,
@@ -56,6 +63,7 @@ import {
 	type MarkerInput,
 	type MarkerKind,
 	type MarkerType,
+	type Oval,
 	type Party,
 	type Point,
 	type Rect,
@@ -65,7 +73,8 @@ import {
 	type Token,
 	type TokenInput,
 	type TokenMark,
-	type Turns
+	type Turns,
+	type Viewer
 } from '../shared/types';
 
 export interface Actor {
@@ -74,6 +83,9 @@ export interface Actor {
 	campaignId: string;
 	role: Role;
 }
+
+/** The actor as someone looking at the world: what they may see hangs on who they are. */
+export const viewerOf = (actor: Actor): Viewer => ({ role: actor.role, userId: actor.userId });
 
 export type ErrorCode = 'forbidden' | 'not_found' | 'invalid' | 'conflict';
 
@@ -115,6 +127,7 @@ export const markerColumns = {
 	x: markers.x,
 	y: markers.y,
 	hidden: markers.hidden,
+	seenBy: markers.seenBy,
 	authorId: markers.authorId,
 	authorName: markers.authorName,
 	updatedAt: markers.updatedAt
@@ -131,7 +144,9 @@ export const regionColumns = {
 	name: targetMap.name,
 	kind: targetMap.kind,
 	points: regions.points,
-	hidden: regions.hidden
+	hidden: regions.hidden,
+	seenBy: regions.seenBy,
+	closed: regions.closed
 };
 
 export const mapColumns = {
@@ -163,7 +178,9 @@ export const tokenColumns = {
 	rotation: tokens.rotation,
 	locked: tokens.locked,
 	marks: tokens.marks,
+	count: tokens.count,
 	hidden: tokens.hidden,
+	seenBy: tokens.seenBy,
 	updatedAt: tokens.updatedAt
 };
 
@@ -180,24 +197,59 @@ export const drawingColumns = {
 	updatedAt: drawings.updatedAt
 };
 
+/** The map a region is drawn on: the fog there can keep the region out of sight. */
+const outerMap = alias(maps, 'outer');
+
 /**
- * True when players are kept out of this map: the region that leads to it is
- * hidden, or one further up the way there is.
+ * The regions on the way to a map, the one that leads to it first and the
+ * one drawn on the first map of the campaign last. Each comes with the fog
+ * of the map it is drawn on.
  */
-export function isConcealed(db: Db, mapId: string): boolean {
+export function doorsTo(db: Db, mapId: string) {
+	const doors = [];
 	let id = mapId;
 	for (let depth = 0; depth < 64; depth++) {
 		const door = db
-			.select({ hidden: regions.hidden, mapId: regions.mapId })
+			.select({
+				id: regions.id,
+				mapId: regions.mapId,
+				targetMapId: regions.targetMapId,
+				points: regions.points,
+				hidden: regions.hidden,
+				seenBy: regions.seenBy,
+				closed: regions.closed,
+				fog: outerMap.fog
+			})
 			.from(regions)
+			.innerJoin(outerMap, eq(outerMap.id, regions.mapId))
 			.where(eq(regions.targetMapId, id))
 			.get();
 		// No region leads to the root map. It is always open.
-		if (!door) return false;
-		if (door.hidden) return true;
+		if (!door) break;
+		doors.push(door);
 		id = door.mapId;
 	}
-	return false;
+	return doors;
+}
+
+/**
+ * True when someone is kept out of this map: a region on the way to it is
+ * hidden from them, closed, or still under the fog of the map it is drawn
+ * on. Nothing is kept from the GM. With nobody named, it is asked of a
+ * player who is let in on no secret: what the whole table may open.
+ */
+export function isConcealed(db: Db, mapId: string, who: Who = 'player'): boolean {
+	if (roleOf(who) === 'gm') return false;
+	return doorsTo(db, mapId).some((door) => !canEnterRegion(who, door, door.fog));
+}
+
+/**
+ * True when some player is kept out of this map by the GM's own hand: a
+ * region on the way is hidden, even if a few are let in on it, or closed.
+ * Fog doesn't count. The party lifts that by going there.
+ */
+function isShut(db: Db, mapId: string): boolean {
+	return doorsTo(db, mapId).some((door) => door.hidden || door.closed);
 }
 
 // Every lookup is scoped to the actor's campaign, so an id from another
@@ -210,7 +262,7 @@ function findMap(db: Db, actor: Actor, id: string): MapInfo {
 		.from(maps)
 		.where(and(eq(maps.id, id), eq(maps.campaignId, actor.campaignId)))
 		.get();
-	if (!map || (actor.role !== 'gm' && isConcealed(db, id))) {
+	if (!map || isConcealed(db, id, viewerOf(actor))) {
 		fail('not_found', 'That map does not exist.');
 	}
 	return map;
@@ -222,7 +274,7 @@ function findMarker(
 	id: string
 ): { marker: Marker; deletedAt: number | null } {
 	const row = db
-		.select({ marker: markerColumns, deletedAt: markers.deletedAt })
+		.select({ marker: markerColumns, deletedAt: markers.deletedAt, fog: maps.fog })
 		.from(markers)
 		.innerJoin(maps, eq(maps.id, markers.mapId))
 		.where(and(eq(markers.id, id), eq(maps.campaignId, actor.campaignId)))
@@ -230,12 +282,12 @@ function findMarker(
 	// A player asking about a world marker they cannot see, or any marker on
 	// a map they are kept out of, gets the same answer as for an id that was
 	// never used.
+	const viewer = viewerOf(actor);
 	const secret =
 		row &&
-		actor.role !== 'gm' &&
-		((row.marker.kind === 'world' && row.marker.hidden) || isConcealed(db, row.marker.mapId));
+		(!canSeeMarker(viewer, row.marker, row.fog) || isConcealed(db, row.marker.mapId, viewer));
 	if (!row || secret) fail('not_found', 'That marker does not exist.');
-	return row;
+	return { marker: row.marker, deletedAt: row.deletedAt };
 }
 
 function findToken(db: Db, actor: Actor, id: string): { token: Token; deletedAt: number | null } {
@@ -247,12 +299,9 @@ function findToken(db: Db, actor: Actor, id: string): { token: Token; deletedAt:
 		.get();
 	// As with a hidden marker: to a player, a token they cannot see was never
 	// there. That goes for one under the fog as well.
+	const viewer = viewerOf(actor);
 	const secret =
-		row &&
-		actor.role !== 'gm' &&
-		(row.token.hidden ||
-			isFogged(row.fog, [row.token.x, row.token.y]) ||
-			isConcealed(db, row.token.mapId));
+		row && (!canSeeToken(viewer, row.token, row.fog) || isConcealed(db, row.token.mapId, viewer));
 	if (!row || secret) fail('not_found', 'That token does not exist.');
 	return { token: row.token, deletedAt: row.deletedAt };
 }
@@ -278,7 +327,7 @@ function findDrawing(
 		.innerJoin(maps, eq(maps.id, drawings.mapId))
 		.where(and(eq(drawings.id, id), eq(maps.campaignId, actor.campaignId)))
 		.get();
-	const secret = row && actor.role !== 'gm' && isConcealed(db, row.drawing.mapId);
+	const secret = row && isConcealed(db, row.drawing.mapId, viewerOf(actor));
 	if (!row || secret) fail('not_found', 'That drawing does not exist.');
 	return row;
 }
@@ -427,6 +476,30 @@ function asBool(value: unknown): boolean {
 	return value;
 }
 
+/**
+ * The players a hidden thing is a secret with, by user id: each of them
+ * once, and each a player of this campaign.
+ */
+function asSeenBy(db: Db, actor: Actor, value: unknown): string[] {
+	if (!Array.isArray(value) || value.length > LIMITS.seenBy) fail('invalid', 'Malformed request.');
+	const asked = new Set(value.map(asId));
+	if (asked.size === 0) return [];
+	const players = db
+		.select({ id: members.userId })
+		.from(members)
+		.where(and(eq(members.campaignId, actor.campaignId), eq(members.role, 'player')))
+		.orderBy(members.joinedAt, sql`${members}.rowid`)
+		.all()
+		.map((member) => member.id);
+	if ([...asked].some((id) => !players.includes(id))) {
+		fail('not_found', 'That player is not in this campaign.');
+	}
+	return players.filter((id) => asked.has(id));
+}
+
+const sameList = (a: readonly string[] | undefined, b: readonly string[] | undefined) =>
+	(a ?? []).join() === (b ?? []).join();
+
 function asImageFile(value: unknown): string {
 	if (typeof value !== 'string' || !IMAGE_FILE_PATTERN.test(value)) {
 		fail('invalid', 'That picture could not be used.');
@@ -504,8 +577,22 @@ function asMarks(value: unknown): TokenMark[] {
 	return TOKEN_MARK_IDS.filter((mark) => value.includes(mark)) as TokenMark[];
 }
 
+/** The number a token carries, or null for none. */
+function asCount(value: unknown): number | null {
+	if (value === null) return null;
+	if (
+		typeof value !== 'number' ||
+		!Number.isInteger(value) ||
+		value < LIMITS.countMin ||
+		value > LIMITS.countMax
+	) {
+		fail('invalid', `A token's number is a whole one, from ${LIMITS.countMin} to ${LIMITS.countMax}.`);
+	}
+	return value;
+}
+
 /** Validates whichever token fields are present and drops everything else. */
-function asTokenChanges(value: unknown): Partial<TokenInput> {
+function asTokenChanges(db: Db, actor: Actor, value: unknown): Partial<TokenInput> {
 	const raw = asRecord(value);
 	const out: Partial<TokenInput> = {};
 	if (raw.name !== undefined) out.name = asText(raw.name, 'The name', LIMITS.tokenName, true);
@@ -530,12 +617,14 @@ function asTokenChanges(value: unknown): Partial<TokenInput> {
 		out.rotation = ((turn % 360) + 360) % 360;
 	}
 	if (raw.locked !== undefined) out.locked = asBool(raw.locked);
+	if (raw.count !== undefined) out.count = asCount(raw.count);
 	if (raw.hidden !== undefined) out.hidden = asBool(raw.hidden);
+	if (raw.seenBy !== undefined) out.seenBy = asSeenBy(db, actor, raw.seenBy);
 	return out;
 }
 
 /** Validates whichever marker fields are present and drops everything else. */
-function asMarkerChanges(value: unknown): Partial<MarkerInput> {
+function asMarkerChanges(db: Db, actor: Actor, value: unknown): Partial<MarkerInput> {
 	const raw = asRecord(value);
 	const out: Partial<MarkerInput> = {};
 	if (raw.type !== undefined) out.type = asMarkerType(raw.type);
@@ -546,6 +635,7 @@ function asMarkerChanges(value: unknown): Partial<MarkerInput> {
 	if (raw.x !== undefined) out.x = asCoord(raw.x);
 	if (raw.y !== undefined) out.y = asCoord(raw.y);
 	if (raw.hidden !== undefined) out.hidden = asBool(raw.hidden);
+	if (raw.seenBy !== undefined) out.seenBy = asSeenBy(db, actor, raw.seenBy);
 	return out;
 }
 
@@ -576,9 +666,11 @@ function createMarker(db: Db, actor: Actor, raw: Record<string, unknown>): Store
 	const kind: MarkerKind = raw.kind;
 	requireMarkerEdit(actor, kind);
 
-	const input = asMarkerChanges(raw);
+	const input = asMarkerChanges(db, actor, raw);
 	if (input.title === undefined) fail('invalid', "The title can't be empty.");
 	if (input.x === undefined || input.y === undefined) fail('invalid', 'The marker needs a position.');
+	// Hiding is a GM tool for world markers. Table notes are always shared.
+	const hidden = kind === 'world' && input.hidden === true;
 
 	const id = newId();
 	const now = Date.now();
@@ -592,8 +684,9 @@ function createMarker(db: Db, actor: Actor, raw: Record<string, unknown>): Store
 			description: input.description ?? '',
 			x: input.x,
 			y: input.y,
-			// Hiding is a GM tool for world markers. Table notes are always shared.
-			hidden: kind === 'world' && input.hidden === true,
+			hidden,
+			// A secret is something hidden: what everyone sees is shared with nobody in particular.
+			seenBy: hidden ? (input.seenBy ?? []) : [],
 			authorId: actor.userId,
 			authorName: actor.name,
 			createdAt: now,
@@ -608,16 +701,15 @@ function updateMarker(db: Db, actor: Actor, id: string, rawChanges: unknown): St
 	requireMarkerEdit(actor, before.kind);
 	if (deletedAt !== null) fail('conflict', 'That marker was deleted. Restore it first.');
 
-	const changes = asMarkerChanges(rawChanges);
-	if (changes.hidden !== undefined && before.kind !== 'world') {
+	const changes = asMarkerChanges(db, actor, rawChanges);
+	if ((changes.hidden !== undefined || changes.seenBy !== undefined) && before.kind !== 'world') {
 		fail('invalid', 'Only world markers can be hidden.');
 	}
 
 	const after: Marker = { ...before, ...changes };
-	const changed = (Object.keys(changes) as (keyof MarkerInput)[]).some(
-		(key) => before[key] !== after[key]
-	);
-	if (!changed) return [];
+	// Revealed to everyone, it is a secret with nobody.
+	if (!after.hidden) after.seenBy = [];
+	if (!MARKER_FIELDS.some((field) => markerDiffers(before, after, field))) return [];
 
 	after.updatedAt = Date.now();
 	db.update(markers)
@@ -628,6 +720,7 @@ function updateMarker(db: Db, actor: Actor, id: string, rawChanges: unknown): St
 			x: after.x,
 			y: after.y,
 			hidden: after.hidden,
+			seenBy: after.seenBy,
 			updatedAt: after.updatedAt
 		})
 		.where(eq(markers.id, id))
@@ -681,8 +774,10 @@ function createToken(db: Db, actor: Actor, raw: Record<string, unknown>): Stored
 	const map = findMap(db, actor, asId(raw.mapId));
 	if (map.kind !== 'battle') fail('invalid', 'Tokens go on battle maps.');
 
-	const input = asTokenChanges(raw);
+	const input = asTokenChanges(db, actor, raw);
 	if (input.name === undefined) fail('invalid', "The name can't be empty.");
+	// Only the GM has anything to hide.
+	const hidden = actor.role === 'gm' && input.hidden === true;
 	if (input.x === undefined || input.y === undefined) fail('invalid', 'The token needs a position.');
 	requireInSight(actor, map.fog, input.x, input.y);
 
@@ -706,8 +801,9 @@ function createToken(db: Db, actor: Actor, raw: Record<string, unknown>): Stored
 			rotation: input.rotation ?? 0,
 			locked: input.locked === true,
 			marks: input.marks ?? [],
-			// Only the GM has anything to hide.
-			hidden: actor.role === 'gm' && input.hidden === true,
+			count: input.count ?? null,
+			hidden,
+			seenBy: hidden ? (input.seenBy ?? []) : [],
 			createdAt: now,
 			updatedAt: now
 		})
@@ -759,7 +855,9 @@ function duplicateToken(db: Db, actor: Actor, id: string): StoredEvent[] {
 			rotation: token.rotation,
 			locked: false,
 			marks: token.marks,
+			count: token.count,
 			hidden: token.hidden,
+			seenBy: token.seenBy,
 			createdAt: now,
 			updatedAt: now
 		})
@@ -778,19 +876,23 @@ const TOKEN_FIELDS = [
 	'rotation',
 	'locked',
 	'marks',
-	'hidden'
+	'count',
+	'hidden',
+	'seenBy'
 ] as const;
 /** What a lock holds in place. */
 const TOKEN_PLACING = ['x', 'y', 'size', 'rotation'] as const;
 
 /**
- * Whether a field of a token is not what it was. Its marks are a list, so
- * they are compared by what is in them. A token from before there were
- * marks has none, which is the same as an empty list.
+ * Whether a field of a token is not what it was. Its marks are a list, and
+ * so are the players it is a secret with: they are compared by what is in
+ * them. A token from before there were marks has none, which is the same as
+ * an empty list, and one from before tokens carried a number has no number.
  */
 function tokenDiffers(before: Token, after: Token, field: (typeof TOKEN_FIELDS)[number]): boolean {
-	if (field !== 'marks') return before[field] !== after[field];
-	return (before.marks ?? []).join() !== (after.marks ?? []).join();
+	if (field === 'marks' || field === 'seenBy') return !sameList(before[field], after[field]);
+	if (field === 'count') return (before.count ?? null) !== (after.count ?? null);
+	return before[field] !== after[field];
 }
 
 /** `restoring` says this is undo, putting back what an earlier change took away. */
@@ -804,13 +906,16 @@ function updateToken(
 	const { token: before, deletedAt } = findToken(db, actor, id);
 	if (deletedAt !== null) fail('conflict', 'That token was deleted. Restore it first.');
 
-	const changes = asTokenChanges(rawChanges);
-	// Hiding is the GM's. Everything else about a token is the whole table's.
-	if (!canHideToken(actor.role) && changes.hidden !== undefined) {
+	const changes = asTokenChanges(db, actor, rawChanges);
+	// Hiding is the GM's, and so is saying who a hidden token is a secret
+	// with. Everything else about a token is the whole table's.
+	if (!canHideToken(actor.role) && (changes.hidden !== undefined || changes.seenBy !== undefined)) {
 		fail('forbidden', 'Only the GM can hide a token.');
 	}
 
 	const after: Token = { ...before, ...changes };
+	// Revealed to everyone, it is a secret with nobody.
+	if (!after.hidden) after.seenBy = [];
 	if (!TOKEN_FIELDS.some((field) => tokenDiffers(before, after, field))) return [];
 	// A lock holds until it is taken off. The same change can do both.
 	if (before.locked && after.locked && TOKEN_PLACING.some((f) => before[f] !== after[f])) {
@@ -838,7 +943,9 @@ function updateToken(
 			rotation: after.rotation,
 			locked: after.locked,
 			marks: after.marks,
+			count: after.count,
 			hidden: after.hidden,
+			seenBy: after.seenBy,
 			updatedAt: after.updatedAt
 		})
 		.where(eq(tokens.id, id))
@@ -1068,13 +1175,22 @@ function createRegion(db: Db, actor: Actor, raw: Record<string, unknown>): Store
 	const name = asText(raw.name, 'The name', LIMITS.name, true);
 	const points = asPoints(raw.points);
 	const hidden = raw.hidden !== undefined && asBool(raw.hidden);
+	const closed = raw.closed !== undefined && asBool(raw.closed);
 	const kind = raw.kind === undefined ? 'world' : asMapKind(raw.kind);
 
 	// Each region is a doorway to a map of its own, created along with it.
 	const targetId = insertMap(db, actor.campaignId, map.id, name, kind);
 	const id = newId();
 	db.insert(regions)
-		.values({ id, mapId: map.id, targetMapId: targetId, points, hidden, createdAt: Date.now() })
+		.values({
+			id,
+			mapId: map.id,
+			targetMapId: targetId,
+			points,
+			hidden,
+			closed,
+			createdAt: Date.now()
+		})
 		.run();
 
 	return [
@@ -1086,14 +1202,15 @@ function createRegion(db: Db, actor: Actor, raw: Record<string, unknown>): Store
 const samePoints = (a: Point[], b: Point[]) => JSON.stringify(a) === JSON.stringify(b);
 
 /**
- * Reshapes a region, hides it or reveals it, whichever of the two is asked
+ * Reshapes a region, hides it or reveals it, says which players a hidden
+ * one is there for, closes it to players or opens it: whichever are asked
  * for. Its name is the name of its map, changed with `map.update`.
  */
 function updateRegion(
 	db: Db,
 	actor: Actor,
 	id: string,
-	changes: { points?: unknown; hidden?: unknown }
+	changes: { points?: unknown; hidden?: unknown; seenBy?: unknown; closed?: unknown }
 ): StoredEvent[] {
 	requireWorldEdit(actor);
 	const before = findRegion(db, actor, id);
@@ -1101,16 +1218,34 @@ function updateRegion(
 	const after: Region = { ...before };
 	if (changes.points !== undefined) after.points = asPoints(changes.points);
 	if (changes.hidden !== undefined) after.hidden = asBool(changes.hidden);
-	if (samePoints(before.points, after.points) && before.hidden === after.hidden) return [];
+	if (changes.seenBy !== undefined) after.seenBy = asSeenBy(db, actor, changes.seenBy);
+	if (changes.closed !== undefined) after.closed = asBool(changes.closed);
+	// Revealed to everyone, it is a secret with nobody.
+	if (!after.hidden) after.seenBy = [];
+	if (
+		samePoints(before.points, after.points) &&
+		before.hidden === after.hidden &&
+		sameList(before.seenBy, after.seenBy) &&
+		before.closed === after.closed
+	) {
+		return [];
+	}
 	// The party is where the players are, so never somewhere they are kept out of.
-	if (after.hidden && !before.hidden) {
-		if (readParty(db, actor.campaignId)?.trail.includes(before.targetMapId)) {
-			fail('conflict', 'The party is in there. Move it out before hiding the region.');
-		}
+	const shutting = (after.hidden && !before.hidden) || (after.closed && !before.closed);
+	if (shutting && readParty(db, actor.campaignId)?.trail.includes(before.targetMapId)) {
+		fail(
+			'conflict',
+			`The party is in there. Move it out before ${after.closed && !before.closed ? 'closing' : 'hiding'} the region.`
+		);
 	}
 
 	db.update(regions)
-		.set({ points: after.points, hidden: after.hidden })
+		.set({
+			points: after.points,
+			hidden: after.hidden,
+			seenBy: after.seenBy,
+			closed: after.closed
+		})
 		.where(eq(regions.id, id))
 		.run();
 	return [record(db, actor, before.mapId, 'region', 'update', before, after)];
@@ -1207,7 +1342,56 @@ function asTurns(db: Db, mapId: string, value: unknown, current: Turns): Turns {
 	if (typeof round !== 'number' || !Number.isInteger(round) || round < 1 || round > 9999) {
 		fail('invalid', 'Malformed turn order.');
 	}
-	return { order, current: whose, round };
+	// What each token rolled for its place, for as long as it has one. They
+	// are kept in the order the tokens take their turns in, so that the same
+	// rolls always read the same.
+	const given = raw.rolls === undefined ? (current.rolls ?? {}) : asRecord(raw.rolls);
+	const rolls: Record<string, number> = {};
+	for (const id of order) {
+		const roll = given[id];
+		if (roll === undefined || roll === null) continue;
+		if (
+			typeof roll !== 'number' ||
+			!Number.isInteger(roll) ||
+			roll < LIMITS.rollMin ||
+			roll > LIMITS.rollMax
+		) {
+			fail('invalid', `A roll is a whole number, from ${LIMITS.rollMin} to ${LIMITS.rollMax}.`);
+		}
+		rolls[id] = roll;
+	}
+	const turns: Turns = { order, current: whose, round };
+	if (Object.keys(rolls).length) turns.rolls = rolls;
+	return turns;
+}
+
+/**
+ * Ends the turn of the token named, and moves on to the next. The GM runs
+ * the fight, but ending a turn is the table's: anyone can, for a token they
+ * can see. Starting the fight, and moving on from a turn that is nobody's
+ * to the players, stay with the GM.
+ */
+function passTurn(db: Db, actor: Actor, raw: Record<string, unknown>): StoredEvent[] {
+	const map = findMap(db, actor, asId(raw.mapId));
+	if (map.kind !== 'battle') fail('invalid', 'Turns are taken on battle maps.');
+	const from = raw.from === null ? null : asId(raw.from);
+	// Someone else has moved the fight on already: that turn is over.
+	if (map.turns.current !== from) return [];
+
+	const here = db
+		.select(tokenColumns)
+		.from(tokens)
+		.where(and(eq(tokens.mapId, map.id), isNull(tokens.deletedAt)))
+		.all();
+	if (actor.role !== 'gm') {
+		const whose = here.find((token) => token.id === from);
+		if (!whose || !canSeeToken(viewerOf(actor), whose, map.fog)) {
+			fail('forbidden', 'Only the GM can move on from this turn.');
+		}
+	}
+	const next = nextTurn(map.turns, here.map((token) => token.id));
+	if (!next) return [];
+	return writeMap(db, actor, map, { ...map, turns: { ...map.turns, ...next } });
 }
 
 /** How many miles across a world map is, or null for no scale of its own. */
@@ -1228,19 +1412,69 @@ function asMiles(value: unknown): number | null {
 function asFog(value: unknown, current: Fog): Fog {
 	const raw = asRecord(value);
 	const on = raw.on === undefined ? current.on : asBool(raw.on);
-	if (raw.clear === undefined) return { on, clear: current.clear };
-	if (!Array.isArray(raw.clear)) fail('invalid', 'Malformed fog.');
-	if (raw.clear.length > LIMITS.fogRects) {
-		fail('conflict', 'The fog is in too many pieces. Cover the whole map and start again.');
+	// Six decimal places put an edge within a thirtieth of a pixel on any map.
+	const fine = (n: number) => Math.round(n * 1e6) / 1e6;
+	let clear = current.clear;
+	if (raw.clear !== undefined) {
+		if (!Array.isArray(raw.clear)) fail('invalid', 'Malformed fog.');
+		if (raw.clear.length > LIMITS.fogRects) {
+			fail('conflict', 'The fog is in too many pieces. Cover the whole map and start again.');
+		}
+		clear = raw.clear.map((box): Rect => {
+			if (!Array.isArray(box) || box.length !== 4) fail('invalid', 'Malformed fog.');
+			const [x0, y0, x1, y1] = box.map((n) => fine(asCoord(n)));
+			if (x0 >= x1 || y0 >= y1) fail('invalid', 'Malformed fog.');
+			return [x0, y0, x1, y1];
+		});
 	}
-	const clear = raw.clear.map((box): Rect => {
-		if (!Array.isArray(box) || box.length !== 4) fail('invalid', 'Malformed fog.');
-		// Six decimal places put an edge within a thirtieth of a pixel on any map.
-		const [x0, y0, x1, y1] = box.map((n) => Math.round(asCoord(n) * 1e6) / 1e6);
-		if (x0 >= x1 || y0 >= y1) fail('invalid', 'Malformed fog.');
-		return [x0, y0, x1, y1];
-	});
-	return { on, clear };
+	let spots = current.spots ?? [];
+	if (raw.spots !== undefined) {
+		if (!Array.isArray(raw.spots) || raw.spots.length > LIMITS.fogSpots) {
+			fail('invalid', 'Malformed fog.');
+		}
+		spots = raw.spots.map((spot): Oval => {
+			if (!Array.isArray(spot) || spot.length !== 4) fail('invalid', 'Malformed fog.');
+			const [rx, ry] = [spot[2], spot[3]];
+			const reach = (n: unknown): n is number => typeof n === 'number' && n > 0 && n <= 4;
+			if (!reach(rx) || !reach(ry)) fail('invalid', 'Malformed fog.');
+			return [fine(asCoord(spot[0])), fine(asCoord(spot[1])), fine(rx), fine(ry)];
+		});
+	}
+	// Kept without the patches where there are none, as fog always was.
+	return spots.length ? { on, clear, spots } : { on, clear };
+}
+
+/**
+ * Where the party is as far as one map is concerned: the spot it stands on,
+ * if it is on this map, or the middle of the region it is somewhere inside
+ * of. Null when it is elsewhere, or nowhere.
+ */
+function partySpotOn(db: Db, party: Party | null, mapId: string): Point | null {
+	if (!party) return null;
+	if (party.mapId === mapId) return [party.x, party.y];
+	const at = party.trail.indexOf(mapId);
+	if (at === -1) return null;
+	const door = db
+		.select({ points: regions.points })
+		.from(regions)
+		.where(and(eq(regions.mapId, mapId), eq(regions.targetMapId, party.trail[at + 1])))
+		.get();
+	return door ? middleOf(door.points) : null;
+}
+
+/**
+ * The fog of a world map with what the party can see from where it is
+ * cleared of it. A map the party isn't on or inside of keeps its fog as it
+ * is, and so does a battle map: its fog is cleared by hand.
+ */
+function inPartySight(db: Db, campaignId: string, map: MapInfo, fog: Fog): Fog {
+	if (map.kind !== 'world' || !fog.on) return fog;
+	const spot = partySpotOn(db, readParty(db, campaignId), map.id);
+	if (!spot) return fog;
+	return (
+		sighted(fog, map, spot) ??
+		fail('conflict', 'The fog of this map is in too many patches. Turn it off and on again.')
+	);
 }
 
 function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): StoredEvent[] {
@@ -1317,8 +1551,12 @@ function updateMap(
 	if (changes.grid !== undefined) after.grid = asGrid(changes.grid, before.grid);
 	if (cellFeet !== undefined) after.cellFeet = asCellFeet(cellFeet);
 	if (fog !== undefined) {
-		if (before.kind !== 'battle') fail('invalid', 'Fog of war goes on battle maps.');
 		after.fog = asFog(fog, before.fog);
+		// On a world map the fog is the party's to lift: wherever it is when
+		// the fog comes down, it can see around itself.
+		if (after.fog.on && !before.fog.on) {
+			after.fog = inPartySight(db, actor.campaignId, before, after.fog);
+		}
 	}
 	if (turns !== undefined) {
 		if (before.kind !== 'battle') fail('invalid', 'Turns are taken on battle maps.');
@@ -1358,11 +1596,16 @@ export function readParty(db: Db, campaignId: string): Party | null {
 	return { id: campaignId, mapId: row.mapId, x: row.x, y: row.y, trail: trailOf(db, row.mapId) };
 }
 
-/** Puts the party at `to`, or with null takes it off the maps altogether. */
+/**
+ * Puts the party at `to`, or with null takes it off the maps altogether.
+ * With `along`, it travels to a spot of the map it is on: what it passes on
+ * the way comes out of the fog too.
+ */
 function writeParty(
 	db: Db,
 	actor: Actor,
-	to: { mapId: string; x: number; y: number } | null
+	to: { mapId: string; x: number; y: number } | null,
+	along = false
 ): StoredEvent[] {
 	const before = readParty(db, actor.campaignId);
 	if (!to) {
@@ -1377,8 +1620,22 @@ function writeParty(
 		.values({ campaignId: actor.campaignId, ...row })
 		.onConflictDoUpdate({ target: parties.campaignId, set: row })
 		.run();
-	const after = readParty(db, actor.campaignId);
-	return [record(db, actor, to.mapId, 'party', before ? 'update' : 'create', before, after)];
+	const after = readParty(db, actor.campaignId)!;
+	const made = [record(db, actor, to.mapId, 'party', before ? 'update' : 'create', before, after)];
+	// Where the party goes, the fog of a world map lifts: around the spot it
+	// stands on, and on every map further out, around the region it is in.
+	for (const mapId of after.trail) {
+		const map = readMap(db, mapId);
+		let fog = map.fog;
+		if (along && before?.mapId === mapId && mapId === to.mapId && map.kind === 'world') {
+			for (const stop of stopsBetween(map, [before.x, before.y], [to.x, to.y])) {
+				fog = sighted(fog, map, stop) ?? fog;
+			}
+		}
+		fog = inPartySight(db, actor.campaignId, map, fog);
+		if (fog !== map.fog) made.push(...writeMap(db, actor, map, { ...map, fog }));
+	}
+	return made;
 }
 
 /**
@@ -1391,10 +1648,15 @@ function moveParty(db: Db, actor: Actor, raw: Record<string, unknown>): StoredEv
 	if (map.kind === 'battle') {
 		fail('invalid', 'The party goes on world maps. On a battle map, tokens stand for it.');
 	}
-	if (isConcealed(db, map.id)) {
-		fail('conflict', "Players can't go there yet. Reveal the region that leads there first.");
+	// Fog is no bar: the party lifts it by going there.
+	if (isShut(db, map.id)) {
+		fail(
+			'conflict',
+			"Players can't go there yet. Reveal the region that leads there to all of them, and open it, first."
+		);
 	}
-	return writeParty(db, actor, { mapId: map.id, x: asCoord(raw.x), y: asCoord(raw.y) });
+	const along = raw.along !== undefined && asBool(raw.along);
+	return writeParty(db, actor, { mapId: map.id, x: asCoord(raw.x), y: asCoord(raw.y) }, along);
 }
 
 /** Takes the party off the maps: it is nowhere until it is put on one again. */
@@ -1405,7 +1667,13 @@ function removeParty(db: Db, actor: Actor): StoredEvent[] {
 
 // ------------------------------------------------------------------ revert
 
-const MARKER_FIELDS = ['type', 'title', 'description', 'x', 'y', 'hidden'] as const;
+const MARKER_FIELDS = ['type', 'title', 'description', 'x', 'y', 'hidden', 'seenBy'] as const;
+
+/** Whether a field of a marker is not what it was. The players it is a secret with are a list. */
+function markerDiffers(before: Marker, after: Marker, field: (typeof MARKER_FIELDS)[number]): boolean {
+	if (field === 'seenBy') return !sameList(before.seenBy, after.seenBy);
+	return before[field] !== after[field];
+}
 
 /**
  * The changes among these that `revert` can take back, as sequence numbers.
@@ -1453,7 +1721,8 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 		const after = event.after as Marker;
 		const changes: Record<string, unknown> = {};
 		for (const field of MARKER_FIELDS) {
-			if (before[field] !== after[field]) changes[field] = before[field];
+			if (!markerDiffers(before, after, field)) continue;
+			changes[field] = field === 'seenBy' ? (before.seenBy ?? []) : before[field];
 		}
 		return updateMarker(db, actor, id, changes);
 	}
@@ -1483,7 +1752,9 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 		const changes: Record<string, unknown> = {};
 		for (const field of TOKEN_FIELDS) {
 			if (!tokenDiffers(before, after, field)) continue;
-			changes[field] = field === 'marks' ? (before.marks ?? []) : before[field];
+			if (field === 'marks' || field === 'seenBy') changes[field] = before[field] ?? [];
+			else if (field === 'count') changes.count = before.count ?? null;
+			else changes[field] = before[field];
 		}
 		return updateToken(db, actor, id, changes, true);
 	}
@@ -1499,13 +1770,17 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 			return deleteRegion(db, actor, id);
 		}
 		// As with markers, only what this edit changed is put back. Events
-		// from before regions could be hidden have no `hidden` to compare.
+		// from before regions could be hidden, shared or closed have none of
+		// that to compare.
 		const before = event.before as Region;
 		const after = event.after as Region;
 		const hid = Boolean(before.hidden) !== Boolean(after.hidden);
+		const shut = Boolean(before.closed) !== Boolean(after.closed);
 		return updateRegion(db, actor, id, {
 			points: samePoints(before.points, after.points) ? undefined : before.points,
-			hidden: hid ? Boolean(before.hidden) : undefined
+			hidden: hid ? Boolean(before.hidden) : undefined,
+			seenBy: sameList(before.seenBy, after.seenBy) ? undefined : (before.seenBy ?? []),
+			closed: shut ? Boolean(before.closed) : undefined
 		});
 	}
 
@@ -1593,6 +1868,8 @@ function run(db: Db, actor: Actor, input: unknown, nested = false): StoredEvent[
 			return moveParty(db, actor, cmd);
 		case 'party.remove':
 			return removeParty(db, actor);
+		case 'turn.next':
+			return passTurn(db, actor, cmd);
 		case 'token.create':
 			return createToken(db, actor, cmd);
 		case 'token.update':

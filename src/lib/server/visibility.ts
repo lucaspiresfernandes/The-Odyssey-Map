@@ -4,15 +4,25 @@
 // markers, hidden tokens, tokens under the fog, hidden regions, and turn
 // orders that name tokens a player can't see. Nothing leaves the app
 // without passing through the functions below, which decide what a given
-// role is allowed to receive. That includes what is handed to
+// person is allowed to receive. That includes what is handed to
 // the WebSocket server to deliver.
+//
+// What someone may see hangs on who they are: the GM, a player, and among
+// the players the ones a hidden thing is a secret with.
 
 import { eq } from 'drizzle-orm';
 import type { Db } from './db';
-import { mapFor, tokensOn } from './queries';
-import { maps } from './schema';
-import { isConcealed, mapColumns } from './world';
-import { canSeeMarker, canSeeRegion, canSeeToken } from '../shared/rules';
+import { mapFor, markersOn, regionsOn, tokensOn } from './queries';
+import { maps, regions } from './schema';
+import { isConcealed, mapColumns, regionColumns, targetMap } from './world';
+import {
+	canSeeMarker,
+	canSeeRegion,
+	canSeeToken,
+	forEyes,
+	roleOf,
+	type Who
+} from '../shared/rules';
 import {
 	NO_FOG,
 	type Drawing,
@@ -23,26 +33,28 @@ import {
 	type Party,
 	type Patch,
 	type Region,
-	type Role,
 	type StoredEvent,
 	type Token
 } from '../shared/types';
 
 /**
- * Turns an event into the change a client of this role should apply, or
- * null when the role must not learn that anything happened.
+ * Turns an event into the change this person's browser should apply, or
+ * null when they must not learn that anything happened.
  *
  * For a player, a marker, token or region being hidden looks exactly like a
  * delete, and one being revealed looks exactly like a create. So does a
- * token going under the fog and coming out of it: `fog` is the fog on the
- * token's map, which decides that.
+ * token going under the fog and coming out of it, and a secret being shared
+ * with them or taken back. `fog` is the fog on the map the thing is on,
+ * which decides the first of those.
  */
-export function projectEvent(event: StoredEvent, role: Role, fog: Fog = NO_FOG): Patch | null {
+export function projectEvent(event: StoredEvent, who: Who, fog: Fog = NO_FOG): Patch | null {
 	if (event.entity === 'marker') {
 		const before = event.before as Marker | null;
 		const after = event.after as Marker | null;
-		if (after && canSeeMarker(role, after)) return { t: 'marker.upsert', marker: after };
-		if (before && canSeeMarker(role, before)) {
+		if (after && canSeeMarker(who, after, fog)) {
+			return { t: 'marker.upsert', marker: forEyes(who, after) };
+		}
+		if (before && canSeeMarker(who, before, fog)) {
 			return { t: 'marker.remove', id: event.entityId, mapId: event.mapId };
 		}
 		return null;
@@ -51,8 +63,10 @@ export function projectEvent(event: StoredEvent, role: Role, fog: Fog = NO_FOG):
 	if (event.entity === 'token') {
 		const before = event.before as Token | null;
 		const after = event.after as Token | null;
-		if (after && canSeeToken(role, after, fog)) return { t: 'token.upsert', token: after };
-		if (before && canSeeToken(role, before, fog)) {
+		if (after && canSeeToken(who, after, fog)) {
+			return { t: 'token.upsert', token: forEyes(who, after) };
+		}
+		if (before && canSeeToken(who, before, fog)) {
 			return { t: 'token.remove', id: event.entityId, mapId: event.mapId };
 		}
 		return null;
@@ -69,8 +83,10 @@ export function projectEvent(event: StoredEvent, role: Role, fog: Fog = NO_FOG):
 	if (event.entity === 'region') {
 		const before = event.before as Region | null;
 		const after = event.after as Region | null;
-		if (after && canSeeRegion(role, after)) return { t: 'region.upsert', region: after };
-		if (before && canSeeRegion(role, before)) {
+		if (after && canSeeRegion(who, after, fog)) {
+			return { t: 'region.upsert', region: forEyes(who, after) };
+		}
+		if (before && canSeeRegion(who, before, fog)) {
 			return {
 				t: 'region.remove',
 				id: event.entityId,
@@ -98,43 +114,76 @@ const fogChanged = (event: StoredEvent) =>
 	JSON.stringify((event.before as MapInfo).fog) !== JSON.stringify((event.after as MapInfo).fog);
 
 /**
- * What a client of this role is sent about an event, if anything. Asked
- * right after the change is written: whether a map is closed to players,
- * and what its fog covers, are read from the database as it is now.
+ * A map someone is kept out of was renamed. If they can see the region that
+ * leads to it, the name lettered on that region is theirs to read: they are
+ * sent the region again, which is all they are told.
  */
-export function toLiveEvent(db: Db, event: StoredEvent, role: Role): LiveEvent | null {
-	// Nothing that happens on a map behind a hidden region reaches a player.
-	if (role !== 'gm' && isConcealed(db, event.mapId)) return null;
+function renamedDoor(db: Db, event: StoredEvent, who: Who): Patch | null {
+	if (event.entity !== 'map' || event.action !== 'update') return null;
+	if ((event.before as MapInfo).name === (event.after as MapInfo).name) return null;
+	const door = db
+		.select({ region: regionColumns, fog: maps.fog })
+		.from(regions)
+		.innerJoin(targetMap, eq(targetMap.id, regions.targetMapId))
+		.innerJoin(maps, eq(maps.id, regions.mapId))
+		.where(eq(regions.targetMapId, event.mapId))
+		.get();
+	if (!door || !canSeeRegion(who, door.region, door.fog)) return null;
+	if (isConcealed(db, door.region.mapId, who)) return null;
+	return { t: 'region.upsert', region: forEyes(who, door.region) };
+}
 
-	// What happens to a token is weighed against the map it is on: its fog,
-	// and for the turn order, who else stands there.
+/**
+ * What this person is sent about an event, if anything. Asked right after
+ * the change is written: whether a map is closed to them, and what its fog
+ * covers, are read from the database as it is now.
+ */
+export function toLiveEvent(db: Db, event: StoredEvent, who: Who): LiveEvent | null {
+	const gm = roleOf(who) === 'gm';
+	const live = (patch: Patch): LiveEvent => ({
+		seq: event.seq,
+		at: event.at,
+		actor: { id: event.actorId, name: event.actorName },
+		patch
+	});
+
+	// Nothing that happens on a map someone is kept out of reaches them, but
+	// for the name of it, where they can read that on the region outside.
+	if (!gm && isConcealed(db, event.mapId, who)) {
+		const door = renamedDoor(db, event, who);
+		return door && live(door);
+	}
+
+	// What happens to something on a map is weighed against that map: its
+	// fog, and for the turn order, who else stands there.
 	let home: MapInfo | undefined;
-	if (role !== 'gm' && event.entity === 'token') {
+	if (!gm && (event.entity === 'token' || event.entity === 'marker' || event.entity === 'region')) {
 		home = db.select(mapColumns).from(maps).where(eq(maps.id, event.mapId)).get();
 	}
-	const patch = projectEvent(event, role, home?.fog);
+	const patch = projectEvent(event, who, home?.fog);
 	if (!patch) return null;
-	if (role !== 'gm' && patch.t === 'map.upsert') {
-		// Fog that moved has uncovered some tokens for the players and covered
+	if (!gm && patch.t === 'map.upsert') {
+		const seen = tokensOn(db, patch.map, who);
+		// Fog that moved has uncovered some things for the players and covered
 		// others. They are sent the lot as they may see it now.
-		const seen = tokensOn(db, patch.map, role);
-		if (fogChanged(event)) patch.tokens = seen;
+		if (fogChanged(event)) {
+			if (patch.map.kind === 'battle') patch.tokens = seen;
+			else {
+				patch.markers = markersOn(db, patch.map, who);
+				patch.regions = regionsOn(db, patch.map, who);
+			}
+		}
 		// Of the turn order, only the tokens they can see.
-		patch.map = mapFor(db, patch.map, role, seen);
+		patch.map = mapFor(db, patch.map, who, seen);
 	}
 	// A token that takes turns has come into a player's sight, or gone out
 	// of it: the turn order they are shown changes with that.
 	if (home && (patch.t === 'token.upsert' || patch.t === 'token.remove')) {
 		const before = event.before as Token | null;
-		const wasSeen = !!before && canSeeToken(role, before, home.fog);
+		const wasSeen = !!before && canSeeToken(who, before, home.fog);
 		if ((patch.t === 'token.remove' || !wasSeen) && home.turns.order.includes(event.entityId)) {
-			patch.turns = mapFor(db, home, role).turns;
+			patch.turns = mapFor(db, home, who).turns;
 		}
 	}
-	return {
-		seq: event.seq,
-		at: event.at,
-		actor: { id: event.actorId, name: event.actorName },
-		patch
-	};
+	return live(patch);
 }

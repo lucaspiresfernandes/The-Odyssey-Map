@@ -9,10 +9,11 @@
 //   - A command from a browser is forwarded to the app exactly as the browser
 //     would have posted it, and the app's answer is sent back.
 //   - After every change the app tells this server what to deliver, already
-//     filtered for each role. The same goes for the GM bringing everyone to
+//     filtered for each role, and for each player who is let in on something
+//     the others are not. The same goes for the GM bringing everyone to
 //     what they are looking at: the app says who may follow. The last call
 //     is kept for as long as this server runs, for whoever connects later.
-//     So is the picture the GM is holding up for the table, which the app
+//     So is the picture the GM is holding up, and who for, which the app
 //     also tells of whenever a browser connects.
 //   - What a browser has in hand goes straight from one browser to the
 //     others: the token it is dragging, the distance it is measuring. So
@@ -111,15 +112,36 @@ const delivered = new Map<string, number>();
 
 /**
  * The last time the GM brought everyone somewhere, per campaign and for
- * each role as the app allowed it. Whoever connects later is sent it, so
- * that arriving late doesn't mean looking at the wrong map.
+ * each role as the app allowed it, and for each player who was let follow
+ * a call the others were not. Whoever connects later is sent it, so that
+ * arriving late doesn't mean looking at the wrong map.
  */
-const lastGather = new Map<string, Record<Role, Gather | null>>();
+const lastGather = new Map<string, Record<Role, Gather | null> & { players: Map<string, Gather> }>();
 /** A call that old is no longer where the table is. */
 const GATHER_KEPT = 6 * 60 * 60 * 1000;
 
-/** The picture held up for the table per campaign, and when the app last said so through here. */
-const heldUp = new Map<string, { shown: Shown | null; at: number }>();
+/** The picture held up per campaign, the players it is for, and when the app last said so through here. */
+const heldUp = new Map<string, { shown: Shown | null; to: string[]; at: number }>();
+
+/**
+ * Who a socket is among the players, by user id, or null for the GM and for
+ * a table display: a display is shown what every player may see, and none
+ * of what only some of them may.
+ */
+const playerOf = (ws: Socket): string | null =>
+	ws.data.role === 'player' && !ws.data.display ? ws.data.user.id : null;
+
+/**
+ * A picture held up for the players in `to`, or with none for the whole
+ * table, as one socket is shown it. Only the GM is told who it is for.
+ */
+function shownFor(ws: Socket, shown: Shown | null, to: string[]): Shown | null {
+	if (!shown) return null;
+	const { to: _, ...bare } = shown;
+	if (ws.data.role === 'gm') return { ...bare, to };
+	const id = playerOf(ws);
+	return to.length === 0 || (id !== null && to.includes(id)) ? bare : null;
+}
 
 // Players and the GM listen on separate topics, because the same event can
 // mean different things to each (or nothing at all to a player).
@@ -339,35 +361,58 @@ async function publish(request: Request): Promise<Response> {
 		return new Response('Forbidden', { status: 403 });
 	}
 	const { campaignId, events, gather, show } = (await request.json()) as Broadcast;
+	const room = rooms.get(campaignId) ?? [];
 	// The GM bringing everyone along: the app has said which roles may follow.
 	// Each role keeps the last call it was let follow: one the players were
 	// left out of doesn't take theirs away.
 	if (gather) {
-		const kept = lastGather.get(campaignId) ?? { gm: null, player: null };
+		const kept = lastGather.get(campaignId) ?? { gm: null, player: null, players: new Map() };
 		for (const role of ROLES) kept[role] = gather[role] ?? kept[role];
 		lastGather.set(campaignId, kept);
+		for (const role of ROLES) {
+			const call = gather[role];
+			if (!call) continue;
+			const message: ServerMessage = { t: 'gather', gather: call };
+			server.publish(topic(campaignId, role), JSON.stringify(message));
+		}
+		// The players who may follow a call the table may not: each by name.
+		const call = gather.gm;
+		if (call && !gather.player) {
+			const let_in = new Set(gather.only ?? []);
+			for (const id of let_in) kept.players.set(id, call);
+			for (const ws of room) {
+				const id = playerOf(ws);
+				if (id !== null && let_in.has(id)) send(ws, { t: 'gather', gather: call });
+			}
+		}
 	}
-	for (const role of ROLES) {
-		const call = gather?.[role];
-		if (!call) continue;
-		const message: ServerMessage = { t: 'gather', gather: call };
-		server.publish(topic(campaignId, role), JSON.stringify(message));
-	}
-	// A picture held up for the table, or put away: the same news for everyone.
+	// A picture held up, or put away. Everyone is told: the ones it is not
+	// for, that nothing is up.
 	if (show) {
-		heldUp.set(campaignId, { shown: show.shown, at: Date.now() });
-		const message = JSON.stringify({ t: 'show', shown: show.shown } satisfies ServerMessage);
-		for (const role of ROLES) server.publish(topic(campaignId, role), message);
+		const to = show.to ?? [];
+		heldUp.set(campaignId, { shown: show.shown, to, at: Date.now() });
+		for (const ws of room) send(ws, { t: 'show', shown: shownFor(ws, show.shown, to) });
 	}
 	for (const event of events) {
 		delivered.set(campaignId, Math.max(delivered.get(campaignId) ?? 0, event.seq));
-		for (const role of ROLES) {
-			// The app has already decided what each role may see. A null
-			// means this role must not learn that anything happened.
-			const live = event.to[role];
-			if (!live) continue;
-			const message: ServerMessage = { t: 'event', event: live };
-			server.publish(topic(campaignId, role), JSON.stringify(message));
+		const { only } = event;
+		if (!only) {
+			for (const role of ROLES) {
+				// The app has already decided what each role may see. A null
+				// means this role must not learn that anything happened.
+				const live = event.to[role];
+				if (!live) continue;
+				const message: ServerMessage = { t: 'event', event: live };
+				server.publish(topic(campaignId, role), JSON.stringify(message));
+			}
+			continue;
+		}
+		// Some players are owed something else than the rest: each socket is
+		// sent what is its own.
+		for (const ws of room) {
+			const id = playerOf(ws);
+			const live = id !== null && id in only ? only[id] : event.to[ws.data.role];
+			if (live) send(ws, { t: 'event', event: live });
 		}
 	}
 	return new Response('ok');
@@ -437,10 +482,18 @@ const server = Bun.serve({
 				hands: hands(ws),
 				// What the app said when it identified this browser, unless the
 				// picture has been changed through here since it was asked.
-				shown: held && held.at >= ws.data.identifiedAt ? held.shown : ws.data.shown
+				shown:
+					held && held.at >= ws.data.identifiedAt
+						? shownFor(ws, held.shown, held.to)
+						: ws.data.shown
 			});
-			// Where the GM last brought everyone, for someone arriving late.
-			const call = lastGather.get(campaignId)?.[role];
+			// Where the GM last brought everyone, for someone arriving late:
+			// the table, or this player among the few who were let follow,
+			// whichever call came last.
+			const kept = lastGather.get(campaignId);
+			const mine = kept?.players.get(playerOf(ws) ?? '');
+			let call = kept?.[role] ?? null;
+			if (mine && (!call || mine.at > call.at)) call = mine;
 			if (call && Date.now() - call.at < GATHER_KEPT) {
 				send(ws, { t: 'gather', gather: call, late: true });
 			}

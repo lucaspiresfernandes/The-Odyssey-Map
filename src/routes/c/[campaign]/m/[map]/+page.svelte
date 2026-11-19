@@ -12,12 +12,13 @@
 	import MarkerGlyph from '#lib/components/MarkerGlyph.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import NamePrompt from '#lib/components/NamePrompt.svelte';
+	import PlayerPicker from '#lib/components/PlayerPicker.svelte';
 	import ScalePrompt from '#lib/components/ScalePrompt.svelte';
 	import TokenDock from '#lib/components/TokenDock.svelte';
 	import TokenForm from '#lib/components/TokenForm.svelte';
 	import ToolButton, { type ToolIcon } from '#lib/components/ToolButton.svelte';
 	import TurnOrder from '#lib/components/TurnOrder.svelte';
-	import { freeCell, milesCount, snapToGrid } from '#lib/shared/grid.ts';
+	import { freeCell, gridFromBox, milesCount, snapToGrid } from '#lib/shared/grid.ts';
 	import { canEditWorld } from '#lib/shared/rules.ts';
 	import { tileLevels } from '#lib/shared/tiles.ts';
 	import {
@@ -36,7 +37,9 @@
 		type MarkerKind,
 		type MarkerType,
 		type Patch,
+		type Player,
 		type Point,
+		type Rect,
 		type Region,
 		type TemplateKind,
 		type Token,
@@ -59,8 +62,10 @@
 	$effect(() =>
 		live.subscribe((event) => {
 			const scale = world.map.miles;
+			// Read before the event is applied: it may be what takes the way here off the map.
+			const way = world.trail.map((crumb) => crumb.id);
 			world.apply(event);
-			leaveIfShut(event.patch);
+			leaveIfShut(event.patch, way);
 			refreshIfBorrowed(event.patch);
 			// With a scale of its own given or taken away, how far across this
 			// map is has to be worked out again, which only the server does.
@@ -73,6 +78,17 @@
 
 	const campaignId = $derived(data.campaign.id);
 	const isGm = $derived(canEditWorld(data.role));
+	/**
+	 * The players of the campaign, for the GM to choose who is let in on a
+	 * secret: the ones who had joined when this page loaded, and whoever has
+	 * come to the table since.
+	 */
+	const players = $derived.by((): Player[] => {
+		if (!isGm) return [];
+		const known = new Set(data.players.map((player) => player.id));
+		const arrived = live.online.filter((each) => each.role === 'player' && !known.has(each.id));
+		return [...data.players, ...arrived.map(({ id, name }) => ({ id, name }))];
+	});
 	/**
 	 * This window is a table display: the players' view of the map and
 	 * nothing else, for a screen the whole table looks at. It shows, and
@@ -101,9 +117,10 @@
 	 * and moves things. The others are picked from the palette in the corner.
 	 * `sketch` is the pen, which draws a line freehand or one of the shapes:
 	 * see `pen`. `reveal` and `cover` are the GM's two ways with the fog
-	 * of war.
+	 * of war, and `align` is theirs too: it lines the grid up with the squares
+	 * of the map's own picture.
 	 */
-	type BattleTool = 'pan' | 'select' | 'measure' | 'sketch' | 'reveal' | 'cover';
+	type BattleTool = 'pan' | 'select' | 'measure' | 'sketch' | 'reveal' | 'cover' | 'align';
 	/** What the pen draws: a line freehand, or a shape dragged out. */
 	type Pen = 'line' | TemplateKind | 'text';
 	type Prompt =
@@ -141,6 +158,12 @@
 	let turnOrder = $state<ReturnType<typeof TurnOrder>>();
 	/** The GM is setting up the grid of this battle map. */
 	let setup = $state(false);
+	/** The box the GM dragged over the squares of the map's picture, to line the grid up by. */
+	let alignBox = $state.raw<Rect | null>(null);
+	/** How many of those squares the box covers, from its left edge to its right. */
+	let alignCount = $state(1);
+	/** The GM is choosing which players see the selected region. */
+	let sharingRegion = $state(false);
 	/** The GM is saying how many miles across this world map is. */
 	let scaling = $state(false);
 	/** The finder is open. */
@@ -202,6 +225,15 @@
 	);
 	/** The GM has one of the two fog tools in hand. */
 	const fogging = $derived(battleTool === 'reveal' || battleTool === 'cover');
+	/** The grid that the box dragged over the map's squares makes, to try on before keeping it. */
+	const alignGrid = $derived(
+		battleTool === 'align' && alignBox
+			? gridFromBox(world.map, alignBox, Math.max(1, Math.round(alignCount || 1)), {
+					min: LIMITS.gridMin,
+					max: LIMITS.gridMax
+				})
+			: null
+	);
 
 	/** The markers of this map that are of a type this person wants to see. */
 	const shownMarkers = $derived(
@@ -267,6 +299,8 @@
 			tokenForm = null;
 			filterOpen = false;
 			setup = false;
+			alignBox = null;
+			sharingRegion = false;
 			scaling = false;
 			finding = false;
 			gallery = null;
@@ -452,11 +486,21 @@
 
 	// ------------------------------------------------ a picture for the table
 
-	/** Holds a picture of the gallery up for the whole table, or with null puts it away. */
-	async function showPicture(item: GalleryItem | null) {
+	/**
+	 * Holds a picture of the gallery up, or with null puts it away: for the
+	 * players in `to`, or with none, for the whole table.
+	 */
+	async function showPicture(item: GalleryItem | null, to: string[] = []) {
 		try {
-			await live.show(item?.id ?? null);
-			if (item) say(`The table is looking at “${item.name}”.`, 'success');
+			await live.show(item?.id ?? null, to);
+			if (!item) return;
+			const names = players.filter((player) => to.includes(player.id)).map((player) => player.name);
+			say(
+				names.length
+					? `${names.join(', ')} ${names.length > 1 ? 'are' : 'is'} looking at “${item.name}”.`
+					: `The table is looking at “${item.name}”.`,
+				'success'
+			);
 		} catch (err) {
 			say((err as Error).message, 'failure');
 		}
@@ -534,9 +578,39 @@
 		return run({ t: 'map.update', id: world.map.id, turns });
 	}
 
+	/**
+	 * Ends the turn it is and moves on to the next: anyone's to do, for a
+	 * token they can see. Whose turn is being ended goes along, so that two
+	 * people pressing at once don't skip one.
+	 */
+	function passTurn() {
+		return run({ t: 'turn.next', mapId: world.map.id, from: world.map.turns.current });
+	}
+
+	// ------------------------------------------------------------- the grid
+
+	/** The GM would sooner drag the grid onto the map than type it in. */
+	function startAligning() {
+		setup = false;
+		alignBox = null;
+		alignCount = 1;
+		take('align');
+	}
+
+	/** Keeps the grid that was tried on. Undo puts the old one back. */
+	async function keepAlignment() {
+		const grid = alignGrid;
+		if (!grid) return;
+		const { ok, step } = await attempt({ t: 'map.update', id: world.map.id, grid });
+		if (!ok) return;
+		putAway();
+		say('The grid is lined up.', 'success', step);
+	}
+
 	/** Takes a tool of the battle map in hand. */
 	function take(next: BattleTool) {
 		battleTool = next;
+		if (next !== 'align') alignBox = null;
 		// A box to select with keeps what is selected: Shift adds to it.
 		if (next !== 'pan' && next !== 'select') selectedIds = [];
 	}
@@ -554,6 +628,27 @@
 	 */
 	function pickFog() {
 		take(fogging ? 'pan' : world.map.fog.on ? 'reveal' : 'cover');
+	}
+
+	/**
+	 * Covers a world map with fog that lifts wherever the party goes, or
+	 * takes that fog off again. Each map has its own.
+	 */
+	async function fogWorld() {
+		const on = !world.map.fog.on;
+		const { ok, step } = await attempt({
+			t: 'map.update',
+			id: world.map.id,
+			fog: { on, clear: [], spots: [] }
+		});
+		if (!ok) return;
+		say(
+			on
+				? 'This map is under fog. It lifts wherever the party goes.'
+				: 'Lifted the fog from this map.',
+			'success',
+			step
+		);
 	}
 
 	/** Covers the whole map with fog, or where there is some, lifts all of it. */
@@ -575,7 +670,7 @@
 			if (players) say('Everyone is brought here.', 'success');
 			else {
 				say(
-					"Players can't come in here while a region on the way is hidden. Your other screens follow.",
+					"The table can't come in here while a region on the way is hidden or closed. Your other screens follow, and any player who is let in.",
 					'warning'
 				);
 			}
@@ -659,6 +754,11 @@
 	// ------------------------------------------------------ maps & regions
 
 	async function enter(region: Region) {
+		// A closed region is there to be seen, and wondered about.
+		if (region.closed && !isGm) {
+			say(`“${region.name}” is not open to you yet.`, 'info');
+			return;
+		}
 		await canvas?.flyTo(region);
 		try {
 			await goto(mapUrl(region.targetMapId));
@@ -667,7 +767,7 @@
 		}
 	}
 
-	function saveName(name: string, hidden: boolean, kind: MapKind) {
+	function saveName(name: string, hidden: boolean, kind: MapKind, closed: boolean) {
 		if (!prompt) return Promise.resolve(false);
 		if (prompt.kind === 'rename') return run({ t: 'map.update', id: prompt.mapId, name });
 		return run({
@@ -676,21 +776,32 @@
 			name,
 			points: prompt.points,
 			hidden,
+			closed,
 			kind
 		});
 	}
 
 	/**
-	 * A region has gone from some map: deleted, or to a player, hidden.
+	 * A region has gone from some map: deleted, or to a player, hidden,
+	 * closed, or under fog that has come down on the map it is drawn on.
 	 * Whoever is standing in the map it led to, or deeper, is walked back out
 	 * to the map the region was on. The GM is only ever told of a deletion,
-	 * and then the map they are in no longer exists.
+	 * and then the map they are in no longer exists. `way` is the maps on the
+	 * way here, as they were before this news.
 	 */
-	function leaveIfShut(patch: Patch) {
-		if (patch.t !== 'region.remove') return;
-		if (world.trail.some((crumb) => crumb.id === patch.targetMapId)) {
-			goto(mapUrl(patch.mapId));
+	function leaveIfShut(patch: Patch, way: string[]) {
+		let outside: string | null = null;
+		if (patch.t === 'region.remove' && way.includes(patch.targetMapId)) outside = patch.mapId;
+		if (!isGm && patch.t === 'region.upsert' && patch.region.closed) {
+			if (way.includes(patch.region.targetMapId)) outside = patch.region.mapId;
 		}
+		// Fog that moved comes with the regions a player can still see there.
+		if (!isGm && patch.t === 'map.upsert' && patch.regions) {
+			const next = way[way.indexOf(patch.map.id) + 1];
+			const open = patch.regions.some((region) => region.targetMapId === next && !region.closed);
+			if (way.includes(patch.map.id) && next && !open) outside = patch.map.id;
+		}
+		if (outside) goto(mapUrl(outside));
 	}
 
 	/**
@@ -778,8 +889,8 @@
 				if (!e.repeat) take(hit.tool);
 				return;
 			}
-			// And N moves the fight on to the next turn, for whoever runs it.
-			if (isGm && e.key.toLowerCase() === 'n' && world.map.turns.order.length) {
+			// And N moves the fight on to the next turn, for whoever may end this one.
+			if (e.key.toLowerCase() === 'n' && world.map.turns.order.length) {
 				e.preventDefault();
 				if (!e.repeat) turnOrder?.next();
 				return;
@@ -789,8 +900,9 @@
 		if (e.key !== 'Escape') return;
 		if (placing || drawing || measuring || battleTool !== 'pan') {
 			putAway();
-		} else if (filterOpen) {
+		} else if (filterOpen || sharingRegion) {
 			filterOpen = false;
+			sharingRegion = false;
 		} else {
 			selectedMarkerId = null;
 			selectedRegionId = null;
@@ -805,7 +917,14 @@
 		drawing = false;
 		measuring = false;
 		battleTool = 'pan';
+		alignBox = null;
 	}
+
+	// The choosing of who sees a region is for the region it was started on.
+	$effect(() => {
+		void selectedRegionId;
+		sharingRegion = false;
+	});
 
 	// Looks shared by more than one element below.
 	const crumbLink = 'text-muted no-underline hover:text-accent touch:py-2';
@@ -868,7 +987,13 @@
 				>
 					<option value="">Step into…</option>
 					{#each world.regions as region (region.id)}
-						<option value={region.id}>{region.name}{region.hidden ? ' (hidden)' : ''}</option>
+						{#if isGm || !region.closed}
+							<option value={region.id}>
+								{region.name}{region.hidden ? (isGm ? ' (hidden)' : ' (a secret)') : ''}{region.closed
+									? ' (closed)'
+									: ''}
+							</option>
+						{/if}
 					{/each}
 				</select>
 			{/if}
@@ -910,10 +1035,16 @@
 					<!-- A picture is up for the whole table. This is how it comes down. -->
 					<button
 						class="btn btn-sm btn-active max-w-56"
-						title="The table is looking at this picture. Click to put it away."
+						title="{live.shown.to?.length
+							? 'Some of the players are'
+							: 'The table is'} looking at this picture. Click to put it away."
 						onclick={() => showPicture(null)}
 					>
-						<span class="truncate">Showing “{live.shown.name}”</span>
+						<span class="truncate">
+							Showing “{live.shown.name}”{live.shown.to?.length
+								? ` to ${live.shown.to.length} ${live.shown.to.length > 1 ? 'players' : 'player'}`
+								: ''}
+						</span>
 						<span aria-hidden="true">×</span>
 					</button>
 				{/if}
@@ -960,6 +1091,9 @@
 				{pings}
 				role={data.role}
 				userId={data.me.id}
+				{players}
+				gridPreview={alignGrid}
+				aligned={alignBox}
 				passive={display}
 				{tool}
 				{ink}
@@ -987,12 +1121,15 @@
 				}}
 				onenter={enter}
 				onreshape={(region, points) => run({ t: 'region.update', id: region.id, points })}
-				onparty={(x, y) => run({ t: 'party.move', mapId: world.map.id, x, y })}
+				onparty={(x, y) => run({ t: 'party.move', mapId: world.map.id, x, y, along: true })}
 				onpartyremove={removeParty}
 				onedit={(marker) => (form = { mode: 'edit', marker })}
 				onmove={(marker) => startPlacing({ move: marker })}
 				ondelete={deleteMarker}
 				onhide={(marker, hidden) => run({ t: 'marker.update', id: marker.id, changes: { hidden } })}
+				onshare={(marker, seenBy) =>
+					run({ t: 'marker.update', id: marker.id, changes: { hidden: true, seenBy } })}
+				onalign={(box) => (alignBox = box)}
 				onedittoken={(token) => (tokenForm = token)}
 				onhand={(at) => {
 					// A display is nobody at the table: it holds nothing.
@@ -1046,6 +1183,7 @@
 							selectedIds = [id];
 						}}
 						onchange={setTurns}
+						onnext={passTurn}
 					/>
 				</div>
 			{/if}
@@ -1183,6 +1321,7 @@
 									tip="left"
 									icon="grid"
 									label="Set up the grid"
+									active={battleTool === 'align'}
 									onclick={() => (setup = true)}
 								/>
 								<ToolButton
@@ -1238,7 +1377,35 @@
 					</div>
 				{/if}
 
-				{#if battle}
+				{#if battle && battleTool === 'align'}
+					<!-- The grid is being lined up: once a box has been dragged over the
+					     squares of the map's picture, how many of them it covers, and
+					     the grid that makes, which is on the map to be looked at. -->
+					{#if alignGrid}
+						<div
+							class="pointer-events-auto flex max-w-[calc(100%-24px)] flex-wrap items-center justify-center gap-2 p-2 {floating}"
+							role="group"
+							aria-label="Line up the grid"
+						>
+							<label class="flex items-center gap-2 text-sm">
+								Squares across the box
+								<input
+									class="input min-h-8 w-16 py-0 text-center tabular-nums"
+									type="number"
+									min="1"
+									max="500"
+									step="1"
+									bind:value={alignCount}
+								/>
+							</label>
+							<span class="text-xs text-muted tabular-nums">
+								One cell is {alignGrid.size} pixels
+							</span>
+							<button class="btn btn-sm btn-primary" onclick={keepAlignment}>Use this grid</button>
+							<button class="btn btn-sm btn-ghost" onclick={putAway}>Cancel</button>
+						</div>
+					{/if}
+				{:else if battle}
 					<!-- A battle map is played on: under it is the dock of tokens to put
 					     on it, for everyone at the table. Its tools are in the corner. -->
 					<TokenDock
@@ -1251,6 +1418,27 @@
 						onerror={(text) => say(text, 'failure')}
 					/>
 				{:else}
+				{#if sharingRegion && selectedRegion && tool === 'pan'}
+					<!-- Who a hidden region is there for all the same: they see it, and
+					     can step inside. Choosing someone hides it from the rest. -->
+					<div
+						class="pointer-events-auto grid w-[min(440px,calc(100%-24px))] gap-2 p-2.5 {floating}"
+						role="group"
+						aria-label="Players who see {selectedRegion.name}"
+					>
+						<span class="text-xs text-muted">
+							Only these players see “{selectedRegion.name}”, and can step inside:
+						</span>
+						<PlayerPicker
+							{players}
+							value={selectedRegion.seenBy}
+							label="Players who see {selectedRegion.name}"
+							onchange={(seenBy) =>
+								selectedRegion &&
+								run({ t: 'region.update', id: selectedRegion.id, hidden: true, seenBy })}
+						/>
+					</div>
+				{/if}
 				{#if filterOpen && tool === 'pan'}
 					<!-- Which types of marker to see: a pill for each, lit while its type
 					     is shown, with how many of them this map holds. -->
@@ -1387,6 +1575,17 @@
 									hint="Shows the table where it is"
 									onclick={() => startPlacing({ party: true })}
 								/>
+								<!-- Each world map has its own: under it, players see only
+								     where the party has been. -->
+								<ToolButton
+									icon="fog"
+									label={world.map.fog.on ? 'Lift the fog from this map' : 'Cover this map with fog'}
+									hint={world.map.fog.on
+										? 'On: players see only where the party has been'
+										: 'It lifts wherever the party goes'}
+									active={world.map.fog.on}
+									onclick={fogWorld}
+								/>
 								<ToolButton
 									icon="gather"
 									label="Bring everyone here"
@@ -1419,15 +1618,42 @@
 									}}
 								/>
 								<ToolButton
+									icon={selectedRegion?.closed ? 'unlock' : 'lock'}
+									label={selectedRegion?.closed
+										? 'Open the region to players'
+										: 'Close the region to players'}
+									hint={regionHint ?? (selectedRegion?.closed
+										? 'They can step inside again'
+										: "They still see it, and can't step inside")}
+									disabled={!selectedRegion}
+									active={selectedRegion?.closed}
+									onclick={() =>
+										selectedRegion &&
+										run({ t: 'region.update', id: selectedRegion.id, closed: !selectedRegion.closed })}
+								/>
+								<ToolButton
 									icon={selectedRegion?.hidden ? 'reveal' : 'hide'}
 									label={selectedRegion?.hidden
-										? 'Reveal the region to players'
+										? 'Reveal the region to all players'
 										: 'Hide the region from players'}
 									hint={regionHint}
 									disabled={!selectedRegion}
+									active={selectedRegion?.hidden}
 									onclick={() =>
 										selectedRegion &&
 										run({ t: 'region.update', id: selectedRegion.id, hidden: !selectedRegion.hidden })}
+								/>
+								<ToolButton
+									icon="people"
+									label="Show the region to some players only"
+									hint={regionHint ?? 'A secret between them and you'}
+									disabled={!selectedRegion}
+									active={!!selectedRegion?.seenBy.length}
+									expanded={sharingRegion}
+									onclick={() => {
+										filterOpen = false;
+										sharingRegion = !sharingRegion;
+									}}
 								/>
 								<ToolButton
 									icon="rename"
@@ -1488,6 +1714,7 @@
 	<MapSetup
 		map={world.map}
 		onsubmit={(grid, cellFeet) => run({ t: 'map.update', id: world.map.id, grid, cellFeet })}
+		onalign={startAligning}
 		onclose={() => (setup = false)}
 	/>
 {/if}
@@ -1505,6 +1732,7 @@
 		{campaignId}
 		onshow={showPicture}
 		shownFile={live.shown?.file ?? null}
+		{players}
 		onclose={() => {
 			gallery = null;
 			// What was added, revealed or taken out shows in the dock of tokens.

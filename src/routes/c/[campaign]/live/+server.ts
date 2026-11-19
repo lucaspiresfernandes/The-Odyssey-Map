@@ -10,12 +10,14 @@ import type { LiveIdentity } from '#lib/shared/types.ts';
 
 export const GET: RequestHandler = (event) => {
 	const { user, campaign } = requireMemberApi(event, event.params.campaign!);
+	// A table display is shown what a player is, whoever opened it: one who
+	// is let in on nobody's secret.
+	const display = event.url.searchParams.has('display');
 	const identity: LiveIdentity = {
 		user: { id: user.id, name: user.name },
-		// A table display is shown what a player is, whoever opened it.
-		role: event.url.searchParams.has('display') ? 'player' : campaign.role,
+		role: display ? 'player' : campaign.role,
 		seq: latestSeq(getDb(), campaign.id),
-		shown: shownTo(getDb(), campaign.id)
+		shown: shownTo(getDb(), campaign.id, display ? 'player' : { role: campaign.role, userId: user.id })
 	};
 	return Response.json(identity, { headers: { 'cache-control': 'no-store' } });
 };

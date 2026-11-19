@@ -31,6 +31,20 @@ function open(input: string | Uint8Array) {
 	return sharp(input, { limitInputPixels: LIMITS.imageSide ** 2 }).autoOrient();
 }
 
+/** The kinds of picture that are kept, by the extension their files are given. */
+export type ImageFormat = 'png' | 'jpg' | 'gif' | 'webp' | 'avif';
+
+/** What kind of picture some bytes are, going by the bytes themselves and not by what they are called. */
+export function sniffImage(bytes: Uint8Array): ImageFormat | null {
+	const ascii = (from: number, to: number) => String.fromCharCode(...bytes.subarray(from, to));
+	if (bytes[0] === 0x89 && ascii(1, 4) === 'PNG') return 'png';
+	if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'jpg';
+	if (ascii(0, 4) === 'GIF8') return 'gif';
+	if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP') return 'webp';
+	if (ascii(4, 8) === 'ftyp' && ['avif', 'avis'].includes(ascii(8, 12))) return 'avif';
+	return null;
+}
+
 /** The size of an image in pixels, or null if it can't be read as one. */
 export async function imageSize(
 	input: string | Uint8Array

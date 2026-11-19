@@ -1,8 +1,8 @@
 // The GM bringing everyone to the part of a map they are looking at.
 //
 // Nothing about the world changes, so nothing is stored. The app's part is
-// to say who may follow: players are never sent to a map behind a hidden
-// region. The WebSocket server passes the call on to the rest.
+// to say who may follow: a player is never sent to a map they are kept out
+// of. The WebSocket server passes the call on to the rest.
 
 import { type RequestHandler } from '@sveltejs/kit';
 import { summon } from '#lib/server/bridge.ts';
@@ -41,7 +41,11 @@ export const POST: RequestHandler = async (event) => {
 	if (!audience) return refuse(404, 'That map does not exist.');
 
 	const gather: Gather = { mapId, view, by: actor.name, from, at: Date.now() };
-	const players = audience === 'table';
-	await summon(actor.campaignId, { gm: gather, player: players ? gather : null });
+	const players = audience.table;
+	await summon(actor.campaignId, {
+		gm: gather,
+		player: players ? gather : null,
+		only: audience.only
+	});
 	return Response.json({ ok: true, players, at: gather.at } satisfies GatherResponse);
 };

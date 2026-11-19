@@ -41,3 +41,37 @@ export function reorderedTurns(order: string[], shown: string[]): string[] {
 export function joinedTurns(order: string[], ids: string[]): string[] {
 	return [...order, ...ids.filter((id) => !order.includes(id))];
 }
+
+/**
+ * The order sorted by what each token rolled, the highest first. Tokens
+ * that rolled the same keep the order they were in, and the ones with no
+ * roll come after all that have one, as they were.
+ */
+export function sortedByRolls(order: string[], rolls: Record<string, number>): string[] {
+	const rolled = order.filter((id) => rolls[id] !== undefined);
+	const rest = order.filter((id) => rolls[id] === undefined);
+	const place = new Map(order.map((id, i) => [id, i]));
+	rolled.sort((a, b) => rolls[b] - rolls[a] || place.get(a)! - place.get(b)!);
+	return [...rolled, ...rest];
+}
+
+/**
+ * The number a token comes to carry when this is typed for it: a number as
+ * it is, or with a sign in front, that much more or less than it had.
+ * `=-5` is five below nothing. Nothing typed takes the number off.
+ * Undefined when what was typed is no number at all.
+ */
+export function countFrom(
+	typed: string,
+	had: number | null,
+	limits: { min: number; max: number }
+): number | null | undefined {
+	const text = typed.replace(/\s+/g, '');
+	if (text === '') return null;
+	const match = /^(=?)([+-]?)(\d{1,6})$/.exec(text);
+	if (!match) return undefined;
+	const [, exact, sign, digits] = match;
+	const amount = Number(digits) * (sign === '-' ? -1 : 1);
+	const to = sign && !exact ? (had ?? 0) + amount : amount;
+	return Math.min(limits.max, Math.max(limits.min, to));
+}

@@ -4,8 +4,9 @@
 // tells it what to deliver, already filtered for each role by `toLiveEvent`,
 // so nothing hidden is ever handed over to be sent to a player.
 
-import type { Broadcast, Gather, Role, Shown, StoredEvent } from '../shared/types';
+import type { Broadcast, Shown, StoredEvent } from '../shared/types';
 import type { Db } from './db';
+import { playersOf } from './queries';
 import { toLiveEvent } from './visibility';
 
 const BRIDGE_URL = `http://127.0.0.1:${process.env.WS_PORT || 3001}`;
@@ -48,24 +49,43 @@ function send(message: Broadcast): Promise<void> {
  */
 export function announce(db: Db, events: StoredEvent[]): Promise<void> {
 	if (events.length === 0) return Promise.resolve();
+	const campaignId = events[0].campaignId;
+	const players = playersOf(db, campaignId);
 	return send({
-		campaignId: events[0].campaignId,
-		events: events.map((event) => ({
-			seq: event.seq,
-			to: { gm: toLiveEvent(db, event, 'gm'), player: toLiveEvent(db, event, 'player') }
-		}))
+		campaignId,
+		events: events.map((event) => {
+			const table = toLiveEvent(db, event, 'player');
+			const said = JSON.stringify(table);
+			// A player who is let in on a secret may be owed something else than
+			// the table is: more, or with a secret taken back, less. Only the
+			// ones for whom it differs are named.
+			const only: Record<string, ReturnType<typeof toLiveEvent>> = {};
+			for (const player of players) {
+				const theirs = toLiveEvent(db, event, { role: 'player', userId: player.id });
+				if (JSON.stringify(theirs) !== said) only[player.id] = theirs;
+			}
+			return {
+				seq: event.seq,
+				to: { gm: toLiveEvent(db, event, 'gm'), player: table },
+				...(Object.keys(only).length ? { only } : {})
+			};
+		})
 	});
 }
 
 /**
  * Has the GM's call to gather delivered, to each role that may follow it:
- * a null keeps a role where it is.
+ * a null keeps a role where it is. `only` names the players who may follow
+ * although the table may not.
  */
-export function summon(campaignId: string, gather: Record<Role, Gather | null>): Promise<void> {
+export function summon(campaignId: string, gather: NonNullable<Broadcast['gather']>): Promise<void> {
 	return send({ campaignId, events: [], gather });
 }
 
-/** Tells the whole table which picture the GM is holding up for it, or with null that it is put away. */
-export function holdUp(campaignId: string, shown: Shown | null): Promise<void> {
-	return send({ campaignId, events: [], show: { shown } });
+/**
+ * Tells the table which picture the GM is holding up, or with null that it
+ * is put away. `to` names the players it is for: empty for all of them.
+ */
+export function holdUp(campaignId: string, shown: Shown | null, to: string[] = []): Promise<void> {
+	return send({ campaignId, events: [], show: { shown, to } });
 }

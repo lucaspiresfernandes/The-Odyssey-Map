@@ -15,8 +15,10 @@ import {
 	deletedMaps,
 	perform,
 	undoable,
+	viewerOf,
 	type ErrorCode
 } from '#lib/server/world.ts';
+import { canSeeEvent } from '#lib/shared/rules.ts';
 import type { CommandResponse } from '#lib/shared/types.ts';
 
 const STATUS: Record<ErrorCode, number> = {
@@ -48,10 +50,13 @@ export const POST: RequestHandler = async (event) => {
 		// A deleted map may have been the last thing showing a picture that
 		// was taken out of the gallery. Nothing holds that one any more.
 		if (deletedMaps(events).length) await dropImages(sweepGallery(db, actor.campaignId));
+		// Only what is theirs to take back: a player who ends a turn has
+		// changed the map, and that is the GM's to undo.
+		const mine = events.filter((e) => canSeeEvent(actor.role, actor.userId, e));
 		return Response.json({
 			ok: true,
-			events: events.map((e) => toLiveEvent(db, e, actor.role)).filter((e) => e !== null),
-			undo: undoable(events)
+			events: events.map((e) => toLiveEvent(db, e, viewerOf(actor))).filter((e) => e !== null),
+			undo: undoable(mine)
 		} satisfies CommandResponse);
 	} catch (err) {
 		if (err instanceof ActionError) {

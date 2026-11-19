@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { canEditMarkerKind, canRemoveMarker } from '#lib/shared/rules.ts';
-	import { markerType, type Marker, type Role } from '#lib/shared/types.ts';
+	import { canEditMarkerKind, canEditWorld, canRemoveMarker } from '#lib/shared/rules.ts';
+	import { markerType, type Marker, type Player, type Role } from '#lib/shared/types.ts';
 	import MarkerGlyph from './MarkerGlyph.svelte';
+	import PlayerPicker from './PlayerPicker.svelte';
 	import ToolButton from './ToolButton.svelte';
 
 	interface Props {
@@ -16,14 +17,44 @@
 		onmove: (marker: Marker) => void;
 		ondelete: (marker: Marker) => void;
 		onhide: (marker: Marker, hidden: boolean) => void;
+		/** The players of the campaign, for the GM to choose who a hidden marker is a secret with. */
+		players?: Player[];
+		/** The GM chose who sees a hidden marker: these players, and nobody else at the table. */
+		onshare?: (marker: Marker, seenBy: string[]) => void;
 	}
 
-	let { marker, role, userId, pinned, onclose, onedit, onmove, ondelete, onhide }: Props =
-		$props();
+	let {
+		marker,
+		role,
+		userId,
+		pinned,
+		onclose,
+		onedit,
+		onmove,
+		ondelete,
+		onhide,
+		players = [],
+		onshare
+	}: Props = $props();
 
 	const type = $derived(markerType(marker.type));
+	const gm = $derived(canEditWorld(role));
 	const editable = $derived(canEditMarkerKind(role, marker.kind));
 	const removable = $derived(canRemoveMarker(role, userId, marker));
+	/** The players this marker is a secret with, by name. */
+	const inOnIt = $derived(
+		players.filter((player) => marker.seenBy.includes(player.id)).map((player) => player.name)
+	);
+	/** The GM is choosing who sees it. */
+	let sharing = $state(false);
+
+	// The choosing is for the marker it was started on: it is put away when
+	// the card shows another, and stays out while this one changes under it.
+	const shownId = $derived(marker.id);
+	$effect(() => {
+		void shownId;
+		sharing = false;
+	});
 </script>
 
 <article
@@ -58,7 +89,17 @@
 		</p>
 	{/if}
 
-	{#if marker.hidden}<p class="text-xs text-[#e8b85a]">Hidden from players</p>{/if}
+	{#if marker.hidden}
+		<p class="text-xs text-[#e8b85a]">
+			{#if !gm}
+				A secret: not everyone at the table sees this
+			{:else if inOnIt.length}
+				A secret with {inOnIt.join(', ')}
+			{:else}
+				Hidden from players
+			{/if}
+		</p>
+	{/if}
 	{#if marker.kind === 'player'}
 		<p class="text-xs text-muted">
 			Added by {marker.authorId === userId ? 'you' : marker.authorName}
@@ -75,15 +116,39 @@
 					<ToolButton
 						small
 						icon={marker.hidden ? 'reveal' : 'hide'}
-						label={marker.hidden ? 'Reveal to players' : 'Hide from players'}
+						label={marker.hidden ? 'Reveal to all players' : 'Hide from players'}
 						active={marker.hidden}
 						onclick={() => onhide(marker, !marker.hidden)}
 					/>
+					{#if onshare}
+						<ToolButton
+							small
+							icon="people"
+							label="Show to some players only"
+							hint="A secret between them and you"
+							active={marker.seenBy.length > 0}
+							expanded={sharing}
+							onclick={() => (sharing = !sharing)}
+						/>
+					{/if}
 				{/if}
 				{#if removable}
 					<ToolButton small danger icon="delete" label="Delete" onclick={() => ondelete(marker)} />
 				{/if}
 			</footer>
+			{#if sharing && onshare}
+				<!-- Who a hidden marker is shown to all the same. Choosing someone
+				     hides it from the rest. -->
+				<div class="mt-1 grid gap-1.5 border-t pt-2">
+					<span class="text-xs text-muted">Only these players see it:</span>
+					<PlayerPicker
+						{players}
+						value={marker.seenBy}
+						label="Players who see this marker"
+						onchange={(ids) => onshare(marker, ids)}
+					/>
+				</div>
+			{/if}
 		{:else}
 			<p class="text-xs text-muted">Click the marker to edit</p>
 		{/if}

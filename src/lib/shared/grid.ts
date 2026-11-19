@@ -175,3 +175,27 @@ export function feetCount(feet: number): string {
 export function cellsAcross(map: Sheet, grid: Pick<Grid, 'size'> = map.grid): [number, number] {
 	return [Math.floor(map.width / grid.size), Math.floor(map.height / grid.size)];
 }
+
+/**
+ * The grid that fits a box dragged over the squares of a map's own picture:
+ * `box` in map space, covering `across` squares from its left edge to its
+ * right. A cell is as wide as the box says, weighed against how tall the
+ * box is, and the lines are shifted to run along its edges. `limits` are
+ * the smallest and the largest a cell may be.
+ */
+export function gridFromBox(
+	sheet: Pick<MapInfo, 'width' | 'height'>,
+	[x0, y0, x1, y1]: [number, number, number, number],
+	across: number,
+	limits: { min: number; max: number }
+): Pick<Grid, 'size' | 'x' | 'y'> {
+	const wide = (x1 - x0) * sheet.width;
+	const tall = (y1 - y0) * sheet.height;
+	let size = wide / Math.max(1, across);
+	// The box is about a whole number of squares down as well: both say how big one is.
+	const down = Math.max(1, Math.round(tall / size));
+	size = (wide + tall) / (Math.max(1, across) + down);
+	size = Math.min(limits.max, Math.max(limits.min, Math.round(size * 100) / 100));
+	const shift = (edge: number) => Math.round(wrapOffset(edge, size) * 100) / 100;
+	return { size, x: shift(x0 * sheet.width), y: shift(y0 * sheet.height) };
+}

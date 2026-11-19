@@ -18,16 +18,10 @@
 import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { Db } from './db';
 import { newId } from './ids';
-import { campaigns, gallery, maps, tokens } from './schema';
+import { campaigns, gallery, maps, members, tokens } from './schema';
 import { ActionError, asOutline, asText, asTokenSize, isConcealed, type Actor } from './world';
-import { canEditWorld } from '../shared/rules';
-import {
-	LIMITS,
-	type GalleryItem,
-	type GalleryKind,
-	type Role,
-	type Shown
-} from '../shared/types';
+import { canEditWorld, canSeeToken, roleOf, type Who } from '../shared/rules';
+import { LIMITS, type GalleryItem, type GalleryKind, type Shown } from '../shared/types';
 
 const itemColumns = {
 	id: gallery.id,
@@ -172,36 +166,73 @@ export function presetInGallery(
 
 // ------------------------------------------------- a picture for the table
 
-/** The picture the GM is holding up for the whole table, if any. */
-export function shownTo(db: Db, campaignId: string): Shown | null {
+/**
+ * The picture the GM is holding up, as someone is shown it, if they are.
+ * It is up for the whole table, or for the players it is meant for: to the
+ * others, nothing is up. The GM is told who it is up for.
+ */
+export function shownTo(db: Db, campaignId: string, who: Who = 'gm'): Shown | null {
 	const row = db
 		.select({
 			file: gallery.file,
 			name: gallery.name,
 			width: gallery.width,
-			height: gallery.height
+			height: gallery.height,
+			to: campaigns.shownTo
 		})
 		.from(campaigns)
 		.innerJoin(gallery, eq(gallery.file, campaigns.shownFile))
 		.where(and(eq(campaigns.id, campaignId), eq(gallery.campaignId, campaignId)))
 		.get();
-	return row ?? null;
+	if (!row) return null;
+	if (roleOf(who) === 'gm') return row;
+	const { to, ...shown } = row;
+	const id = typeof who === 'string' ? null : who.userId;
+	return to.length === 0 || (id !== null && to.includes(id)) ? shown : null;
 }
 
 /**
- * Holds a picture of the gallery up for the whole table, by its id, or with
- * null puts away the one that is up. Showing a picture does not reveal it
- * in the gallery: players see it for as long as it is held up, and can't
- * pick it for a token.
+ * Holds a picture of the gallery up, by its id, or with null puts away the
+ * one that is up. `to` names the players it is for, by user id: with none,
+ * it is for the whole table. Showing a picture does not reveal it in the
+ * gallery: players see it for as long as it is held up, and can't pick it
+ * for a token.
  */
-export function showToTable(db: Db, actor: Actor, id: string | null): Shown | null {
+export function showToTable(
+	db: Db,
+	actor: Actor,
+	id: string | null,
+	to: unknown = []
+): Shown | null {
 	requireGm(actor);
 	const item = id === null ? null : findItem(db, actor, id);
+	if (!Array.isArray(to) || to.length > LIMITS.seenBy || to.some((each) => typeof each !== 'string')) {
+		throw new ActionError('invalid', 'Malformed request.');
+	}
+	const players = db
+		.select({ id: members.userId })
+		.from(members)
+		.where(and(eq(members.campaignId, actor.campaignId), eq(members.role, 'player')))
+		.orderBy(members.joinedAt, sql`${members}.rowid`)
+		.all()
+		.map((member) => member.id);
+	if (to.some((each) => !players.includes(each))) {
+		throw new ActionError('not_found', 'That player is not in this campaign.');
+	}
+	const shownTo = item ? players.filter((each) => to.includes(each)) : [];
 	db.update(campaigns)
-		.set({ shownFile: item?.file ?? null })
+		.set({ shownFile: item?.file ?? null, shownTo })
 		.where(eq(campaigns.id, actor.campaignId))
 		.run();
-	return item && { file: item.file, name: item.name, width: item.width, height: item.height };
+	return (
+		item && {
+			file: item.file,
+			name: item.name,
+			width: item.width,
+			height: item.height,
+			to: shownTo
+		}
+	);
 }
 
 /** True while a map shows this picture, or a token wears it: one that was deleted may come back. */
@@ -243,7 +274,7 @@ export function removeFromGallery(db: Db, actor: Actor, id: string): string[] {
 	db.update(gallery).set({ deletedAt: Date.now() }).where(eq(gallery.id, item.id)).run();
 	// A picture taken out is no longer held up for the table either.
 	db.update(campaigns)
-		.set({ shownFile: null })
+		.set({ shownFile: null, shownTo: [] })
 		.where(and(eq(campaigns.id, actor.campaignId), eq(campaigns.shownFile, item.file)))
 		.run();
 	return sweepGallery(db, actor.campaignId);
@@ -253,45 +284,39 @@ export function removeFromGallery(db: Db, actor: Actor, id: string): string[] {
  * Whether someone may load a picture of this campaign's. The GM may load
  * any of them. A player may load the ones the GM has revealed in the
  * gallery, and whatever is in front of them: the picture the GM is holding
- * up for the table, the image of a map they can open, and the picture on a
+ * up for them, the image of a map they can open, and the picture on a
  * token they can see.
  */
-export function canLoadImage(db: Db, campaignId: string, role: Role, file: string): boolean {
+export function canLoadImage(db: Db, campaignId: string, who: Who, file: string): boolean {
 	const kept = db
 		.select({ hidden: gallery.hidden, deletedAt: gallery.deletedAt })
 		.from(gallery)
 		.where(and(eq(gallery.file, file), eq(gallery.campaignId, campaignId)))
 		.get();
 	if (!kept) return false;
-	if (role === 'gm') return true;
+	if (roleOf(who) === 'gm') return true;
 	// One taken out of the gallery is no longer on show there, revealed or not.
 	if (!kept.hidden && kept.deletedAt === null) return true;
-	// The one the GM is holding up for the table is in front of everyone.
-	const held = db
-		.select({ file: campaigns.shownFile })
-		.from(campaigns)
-		.where(eq(campaigns.id, campaignId))
-		.get();
-	if (held?.file === file && kept.deletedAt === null) return true;
+	// The one the GM is holding up is in front of whoever it is held up for.
+	if (kept.deletedAt === null && shownTo(db, campaignId, who)?.file === file) return true;
 
 	const shown = db
 		.select({ id: maps.id })
 		.from(maps)
 		.where(and(eq(maps.campaignId, campaignId), eq(maps.imageFile, file)))
 		.all();
+	// The fog hides a token, not the picture it wears: that is weighed as if there were none.
 	const worn = db
-		.selectDistinct({ id: tokens.mapId })
+		.select({ id: tokens.mapId, hidden: tokens.hidden, seenBy: tokens.seenBy })
 		.from(tokens)
 		.innerJoin(maps, eq(maps.id, tokens.mapId))
-		.where(
-			and(
-				eq(maps.campaignId, campaignId),
-				eq(tokens.image, file),
-				eq(tokens.hidden, false),
-				isNull(tokens.deletedAt)
-			)
-		)
-		.all();
-	// A map behind a hidden region keeps its picture, and its tokens', from players.
-	return [...shown, ...worn].some((map) => !isConcealed(db, map.id));
+		.where(and(eq(maps.campaignId, campaignId), eq(tokens.image, file), isNull(tokens.deletedAt)))
+		.all()
+		.filter((token) => canSeeToken(who, { ...token, x: 0, y: 0 }));
+	// A map someone is kept out of keeps its picture, and its tokens', from them.
+	const open = new Map<string, boolean>();
+	return [...shown, ...worn].some((map) => {
+		if (!open.has(map.id)) open.set(map.id, !isConcealed(db, map.id, who));
+		return open.get(map.id);
+	});
 }

@@ -95,8 +95,11 @@ export class MapState {
 				const { map } = patch;
 				if (map.id === here) {
 					this.map = map;
-					// Fog that moved comes with the tokens that can be seen now.
+					// Fog that moved comes with what can be seen now: the tokens of
+					// a battle map, the markers and regions of a world map.
 					if (patch.tokens) this.tokens = patch.tokens;
+					if (patch.markers) this.markers = patch.markers;
+					if (patch.regions) this.regions = patch.regions;
 				}
 				this.trail = this.trail.map((c) => (c.id === map.id ? { ...c, name: map.name } : c));
 				this.regions = this.regions.map((r) =>

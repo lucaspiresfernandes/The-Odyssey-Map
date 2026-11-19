@@ -1,5 +1,6 @@
 import { getInviteToken } from '#lib/server/campaigns.ts';
 import { getDb } from '#lib/server/db.ts';
+import { playersOf } from '#lib/server/queries.ts';
 import { requireMember } from '#lib/server/session.ts';
 import type { LayoutServerLoad } from './$types';
 
@@ -17,6 +18,8 @@ export const load: LayoutServerLoad = (event) => {
 		me: { id: user.id, name: user.name },
 		// Only the GM hands out invites.
 		invitePath: role === 'gm' ? `/join/${getInviteToken(getDb(), campaign.id)}` : null,
+		// And only the GM chooses who is let in on a secret.
+		players: role === 'gm' ? playersOf(getDb(), campaign.id) : [],
 		ws: {
 			url: process.env.PUBLIC_WS_URL || null,
 			port: Number(process.env.WS_PORT || 3001)

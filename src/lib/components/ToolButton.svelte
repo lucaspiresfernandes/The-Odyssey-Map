@@ -52,6 +52,13 @@
 		next: 'M5 4l10 8-10 8Z M19 5v14',
 		// A token with a pip on its rim.
 		mark: 'M4 13a7.5 7.5 0 1 0 15 0a7.5 7.5 0 1 0-15 0 M15 6.5a3 3 0 1 0 6 0a3 3 0 1 0-6 0',
+		// A number sign: what a token counts.
+		count: 'M4 9h16 M4 15h16 M10 3 8 21 M16 3l-2 18',
+		// Two heads: the players something is a secret with.
+		people:
+			'M5 7a4 4 0 1 0 8 0a4 4 0 1 0-8 0 M2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1 M16 3.13a4 4 0 0 1 0 7.75 M22 21v-1a6 6 0 0 0-4-5.66',
+		// A die: what each token rolled for its place in the turn order.
+		dice: 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z M8.5 8.5h.01 M15.5 8.5h.01 M12 12h.01 M8.5 15.5h.01 M15.5 15.5h.01',
 		search: 'M4 11a7 7 0 1 0 14 0a7 7 0 1 0-14 0 M21 21l-4.3-4.3',
 		// A screen on a stand: something held up for the whole table.
 		show: 'M3 4h18v12H3Z M8 20h8 M12 16v4',

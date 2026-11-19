@@ -3,20 +3,22 @@
 	// token, one drawing, or a whole catch of them. Each button is there only
 	// for those it would do something for.
 	//
-	// A token is the whole table's: its label, its lock, its marks, its look,
-	// copying it, and taking it off the map. Hiding it is the GM's, and so is
-	// saying whether it takes turns. Turning and resizing it are not done from
+	// A token is the whole table's: its label, its lock, its marks, the number
+	// it carries, its look, copying it, and taking it off the map. Hiding it
+	// is the GM's, and so are saying who it is a secret with, and whether it
+	// takes turns. Turning and resizing it are not done from
 	// here: the map has handles for those on the token itself. A drawing is
 	// changed and rubbed out by whoever made it, and by the GM.
 
 	import { canChangeDrawing, canHideToken } from '#lib/shared/rules.ts';
-	import { joinedTurns } from '#lib/shared/turns.ts';
+	import { countFrom, joinedTurns } from '#lib/shared/turns.ts';
 	import {
 		LIMITS,
 		MARK_LOOKS,
 		isTemplate,
 		type Command,
 		type Drawing,
+		type Player,
 		type Role,
 		type Token,
 		type TokenInput,
@@ -24,6 +26,7 @@
 		type Turns
 	} from '#lib/shared/types.ts';
 	import MarkIcon from './MarkIcon.svelte';
+	import PlayerPicker from './PlayerPicker.svelte';
 	import ToolButton from './ToolButton.svelte';
 
 	interface Props {
@@ -33,6 +36,8 @@
 		turns: Turns;
 		role: Role;
 		userId: string;
+		/** The players of the campaign, for the GM to choose who a hidden token is a secret with. */
+		players: Player[];
 		/** Which side the buttons' tooltips come out on: away from what is selected. */
 		tip: 'top' | 'bottom';
 		/** Carries the commands out. `note` is said once they are, with a way to undo them. */
@@ -53,6 +58,7 @@
 		turns,
 		role,
 		userId,
+		players,
 		tip,
 		send,
 		oncopy,
@@ -81,6 +87,19 @@
 	let label = $state('');
 	/** The marks are out, to put on what is selected or take off it. */
 	let marking = $state(false);
+	/** The number the tokens carry is being typed. */
+	let counting = $state(false);
+	let count = $state('');
+	/** What was typed for it is no number. */
+	let miscounted = $state(false);
+	/** The GM is choosing which players see the tokens selected. */
+	let sharing = $state(false);
+	/** The players every token selected is a secret with. */
+	const sharedWith = $derived(
+		tokens.length
+			? tokens[0].seenBy.filter((id) => tokens.every((t) => t.hidden && t.seenBy.includes(id)))
+			: []
+	);
 
 	/**
 	 * Puts the caret in the label's box, with what is there selected to type
@@ -98,10 +117,36 @@
 		labelling = false;
 	});
 
-	// The marks are put away with the last token.
+	// The marks are put away with the last token, and so is the rest.
 	$effect(() => {
-		if (tokens.length === 0) marking = false;
+		if (tokens.length === 0) marking = counting = sharing = false;
 	});
+
+	/**
+	 * Says which players see the tokens selected, and nobody else at the
+	 * table: each is hidden, and a secret with those.
+	 */
+	function share(seenBy: string[]) {
+		send(tokens.map((t) => update(t, { hidden: true, seenBy })));
+	}
+
+	/**
+	 * The number typed goes on every token selected: as it is, or with a sign
+	 * in front, that much more or less than each had. Nothing typed takes it
+	 * off them.
+	 */
+	function saveCount(event: SubmitEvent) {
+		event.preventDefault();
+		const limits = { min: LIMITS.countMin, max: LIMITS.countMax };
+		const changes: Command[] = [];
+		for (const token of tokens) {
+			const to = countFrom(count, token.count, limits);
+			if (to === undefined) return void (miscounted = true);
+			if (to !== token.count) changes.push(update(token, { count: to }));
+		}
+		send(changes);
+		counting = false;
+	}
 
 	const update = (token: Token, changes: Partial<TokenInput>): Command => ({
 		t: 'token.update',
@@ -204,6 +249,45 @@
 				/>
 				<button class="btn btn-sm btn-primary">Save</button>
 			</form>
+		{:else if counting && tokens.length}
+			<form class="flex items-center gap-1" onsubmit={saveCount}>
+				<input
+					class={[
+						'input min-h-7 w-28 py-0 text-[13px] touch:min-h-9 touch:text-base',
+						miscounted && 'border-danger'
+					]}
+					bind:value={count}
+					maxlength="8"
+					inputmode="text"
+					placeholder="12, +3, -5"
+					aria-label="Number: a number, or + or - and how much to change it by. Empty takes it off."
+					aria-invalid={miscounted}
+					title="A number, or + or - and how much to change it by. Empty takes it off."
+					use:takeFocus
+					oninput={() => (miscounted = false)}
+					onkeydown={(e) => {
+						if (e.key !== 'Escape') return;
+						// Only the number is put away, not the selection with it.
+						e.stopPropagation();
+						counting = false;
+					}}
+				/>
+				<button class="btn btn-sm btn-primary">Save</button>
+			</form>
+		{:else if sharing && tokens.length}
+			<!-- Who the tokens selected are shown to, and nobody else at the table. -->
+			<div class="grid max-w-72 gap-1.5 p-1">
+				<span class="text-xs text-muted">
+					Only these players see {several ? 'them' : 'it'}:
+				</span>
+				<PlayerPicker
+					{players}
+					value={sharedWith}
+					label="Players who see what is selected"
+					onchange={share}
+				/>
+				<button class="btn btn-sm justify-self-end" onclick={() => (sharing = false)}>Done</button>
+			</div>
 		{:else if marking && tokens.length}
 			<!-- The marks, seven to a row: lit while every token selected wears it.
 			     The first crosses a token out. Then the plain ones, each a disc of
@@ -282,6 +366,19 @@
 				<ToolButton
 					small
 					{tip}
+					icon="count"
+					label="Number"
+					hint="Hit points, charges, rounds left: type +3 or -5 to change it"
+					active={tokens.some((t) => t.count !== null)}
+					onclick={() => {
+						count = one?.count != null ? String(one.count) : '';
+						miscounted = false;
+						counting = true;
+					}}
+				/>
+				<ToolButton
+					small
+					{tip}
 					icon="duplicate"
 					label={several ? 'Duplicate them' : 'Duplicate'}
 					onclick={() => oncopy(tokens.map((t) => ({ t: 'token.duplicate', id: t.id })))}
@@ -313,9 +410,18 @@
 					small
 					{tip}
 					icon={allHidden ? 'reveal' : 'hide'}
-					label={allHidden ? 'Reveal to players' : 'Hide from players'}
+					label={allHidden ? 'Reveal to all players' : 'Hide from players'}
 					active={allHidden}
 					onclick={hide}
+				/>
+				<ToolButton
+					small
+					{tip}
+					icon="people"
+					label="Show to some players only"
+					hint="A secret between them and you"
+					active={sharedWith.length > 0}
+					onclick={() => (sharing = true)}
 				/>
 			{/if}
 			{#if removable}

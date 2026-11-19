@@ -790,6 +790,138 @@ async function run() {
 	lateGm.ws.close();
 	displaySocket.ws.close();
 
+	// What some players are let in on and the rest are not: the app says what
+	// each of them is owed, and the WebSocket server sends each socket its own.
+	const friend = new Visitor();
+	await friend.form(invite, { name: 'Friend' });
+	const friendSocket = friend.connect(campaign);
+	const screen = gm.connect(campaign, app, true);
+	await Promise.all([friendSocket.opened, screen.opened]);
+	await pause(300);
+	const friendId: string = friendSocket.messages[0]?.user.id;
+	const whisper = crypto.randomUUID();
+	const told = (socket: { messages: any[] }) => JSON.stringify(socket.messages).includes(whisper);
+	const shared = await gm.command(campaign, {
+		t: 'marker.create',
+		mapId,
+		kind: 'world',
+		title: `WHISPER ${whisper}`,
+		x: 0.2,
+		y: 0.2,
+		hidden: true,
+		seenBy: [friendId]
+	});
+	await pause(500);
+	check('a secret reaches the player it is shared with, live', shared.status === 200 && told(friendSocket));
+	check('and not the other player, nor a table display', !told(playerSocket) && !told(screen));
+	check(
+		'their pages agree',
+		(await (await friend.request(mapPath)).text()).includes(whisper) &&
+			!(await (await player.request(mapPath)).text()).includes(whisper) &&
+			!(await (await gm.request(`${mapPath}?display`)).text()).includes(whisper)
+	);
+	const whisperId: string = shared.body.events?.[0]?.patch.marker.id;
+	await gm.command(campaign, { t: 'marker.update', id: whisperId, changes: { seenBy: [] } });
+	await pause(400);
+	check(
+		'taken back, it goes from their map like a marker deleted',
+		friendSocket.messages.at(-1)?.event?.patch.t === 'marker.remove' && friendSocket.messages.at(-1)?.event.patch.id === whisperId
+	);
+
+	// A picture held up for one player.
+	const holdFor = (to: string[]) =>
+		gm.request(`/c/${campaign}/show`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ id: lich?.id, to })
+		});
+	await holdFor([friendId]);
+	await pause(300);
+	check(
+		'a picture held up for one player is theirs to see, and the GM is told who for',
+		shows(friendSocket).at(-1)?.shown?.file === lich?.file &&
+			shows(friendSocket).at(-1)?.shown?.to === undefined &&
+			shows(gmSocket).at(-1)?.shown?.to?.[0] === friendId &&
+			(await friend.request(lichPath)).status === 200
+	);
+	check(
+		'to the others nothing is up',
+		shows(playerSocket).at(-1)?.shown === null && shows(screen).at(-1)?.shown === null && (await player.request(lichPath)).status === 404
+	);
+	const lateFriend = friend.connect(campaign);
+	await lateFriend.opened;
+	await pause(300);
+	check('whoever it is for is still shown it on connecting later', lateFriend.messages[0]?.shown?.file === lich?.file);
+	lateFriend.ws.close();
+	await hold(gm, null);
+
+	// A closed region: on the map for everyone, and nobody but the GM steps in.
+	const tomb = await gm.command(campaign, {
+		t: 'region.create',
+		mapId,
+		name: 'The Tomb',
+		closed: true,
+		points: [[0.6, 0.1], [0.8, 0.1], [0.8, 0.3]]
+	});
+	const tombRegion = tomb.body.events?.find((e: any) => e.patch.t === 'region.upsert')?.patch.region;
+	await pause(300);
+	check(
+		'a closed region is on the players’ map, and its map is not theirs to open',
+		(await (await player.request(mapPath)).text()).includes('The Tomb') &&
+			(await player.request(`/c/${campaign}/m/${tombRegion?.targetMapId}`)).status === 404 &&
+			(await gm.request(`/c/${campaign}/m/${tombRegion?.targetMapId}`)).status === 200
+	);
+	await gm.command(campaign, { t: 'region.update', id: tombRegion?.id, closed: false });
+	check('opened, it is', (await player.request(`/c/${campaign}/m/${tombRegion?.targetMapId}`)).status === 200);
+
+	// A region hidden from the table and shown to one player: the GM can bring them along.
+	await gm.command(campaign, { t: 'region.update', id: tombRegion?.id, hidden: true, seenBy: [friendId] });
+	const counts = [gathers(friendSocket).length, gathers(playerSocket).length];
+	const quietly = await call(gm, tombRegion?.targetMapId);
+	await pause(300);
+	check(
+		'a player who is let in follows a call the table does not',
+		(await quietly.json()).players === false &&
+			gathers(friendSocket).length === counts[0] + 1 &&
+			gathers(playerSocket).length === counts[1]
+	);
+	friendSocket.ws.close();
+	screen.ws.close();
+
+	// Ending a turn is the table's: a player does it over the socket.
+	const fighter = await gm.command(campaign, { t: 'token.create', mapId: bridgeId, name: 'Fighter', x: 0.5, y: 0.5, count: 12 });
+	const fighterId: string = fighter.body.events?.[0]?.patch.token.id;
+	await gm.command(campaign, { t: 'map.update', id: bridgeId, turns: { order: [fighterId], current: fighterId, round: 1, rolls: { [fighterId]: 15 } } });
+	playerSocket.ws.send(JSON.stringify({ t: 'cmd', id: 900, cmd: { t: 'turn.next', mapId: bridgeId, from: fighterId } }));
+	await pause(500);
+	const turned = playerSocket.messages.filter((m) => m.t === 'event' && m.event.patch.t === 'map.upsert' && m.event.patch.map.id === bridgeId).at(-1);
+	check(
+		'a player ends the turn of a token they can see, with nothing of it theirs to undo',
+		ack(900)?.ok === true && ack(900)?.undo.length === 0 && turned?.event.patch.map.turns.round === 2,
+		JSON.stringify([ack(900), turned?.event.patch.map.turns])
+	);
+	check('and is not sent what the tokens rolled', turned?.event.patch.map.turns.rolls === undefined);
+	check('a token carries its number to everyone', fighter.body.events?.[0]?.patch.token.count === 12);
+
+	// A whole campaign out to one file, and back in as a new one.
+	const exported = await gm.request(`/c/${campaign}/export`);
+	const archive = new Uint8Array(await exported.arrayBuffer());
+	check('the GM exports the campaign as one file', exported.status === 200 && archive.length > 1024);
+	check('a player cannot', (await player.request(`/c/${campaign}/export`)).status === 403);
+	const sendIn = (who: Visitor, bytes: Uint8Array) =>
+		who.request('/import', {
+			method: 'POST',
+			headers: { 'content-type': 'application/x-tar' },
+			body: new Blob([new Uint8Array(bytes)])
+		});
+	const imported = await sendIn(gm, archive);
+	const copy = await imported.json();
+	check('and imports it as a new campaign of their own', imported.status === 200 && copy.ok && copy.id !== campaign);
+	const copyPage = await (await gm.request((await gm.request(`/c/${copy.id}`)).headers.get('location') ?? '')).text();
+	check('with its maps and what is on them', copyPage.includes('End To End') && copyPage.includes('The Tomb'));
+	check('a guest imports nothing', (await sendIn(player, archive)).status === 403);
+	check('nor is a file that is not a campaign taken', (await sendIn(gm, new TextEncoder().encode('nothing of the kind'))).status === 400);
+
 	// The app checks the login on every forwarded command, so an open socket
 	// stops working the moment its session ends.
 	await player.form('/?/logout', {});

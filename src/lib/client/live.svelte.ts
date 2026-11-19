@@ -291,17 +291,18 @@ export class Live {
 	}
 
 	/**
-	 * Holds a picture of the gallery up for the whole table, by its id, or
-	 * with null puts away the one that is up: the GM's to do. Rejects with
-	 * the server's reason if it refuses.
+	 * Holds a picture of the gallery up, by its id, or with null puts away
+	 * the one that is up: the GM's to do. `to` names the players it is for,
+	 * by id: with none, it is for the whole table. Rejects with the server's
+	 * reason if it refuses.
 	 */
-	async show(id: string | null): Promise<void> {
+	async show(id: string | null, to: string[] = []): Promise<void> {
 		let body: ShowResponse;
 		try {
 			const response = await fetch(`/c/${this.#options.campaignId}/show`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ id })
+				body: JSON.stringify({ id, to })
 			});
 			body = await response.json();
 		} catch {

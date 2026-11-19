@@ -16,9 +16,11 @@
 		imageUrl,
 		type GalleryItem,
 		type GalleryKind,
-		type GalleryResponse
+		type GalleryResponse,
+		type Player
 	} from '#lib/shared/types.ts';
 	import Modal from './Modal.svelte';
+	import PlayerPicker from './PlayerPicker.svelte';
 
 	interface Props {
 		campaignId: string;
@@ -31,12 +33,15 @@
 		/** What to do with the picture that is picked, when there is a `kind` to pick from. */
 		onpick?: (item: GalleryItem) => void;
 		/**
-		 * For the GM's storeroom: holds a picture up for the whole table to look
-		 * at, or with null puts away the one that is up. `shownFile` is the file
-		 * of that one.
+		 * For the GM's storeroom: holds a picture up to be looked at, or with
+		 * null puts away the one that is up. `to` names the players it is for,
+		 * by id: with none, it is for the whole table. `shownFile` is the file
+		 * of the one that is up.
 		 */
-		onshow?: (item: GalleryItem | null) => void;
+		onshow?: (item: GalleryItem | null, to: string[]) => void;
 		shownFile?: string | null;
+		/** The players of the campaign, to choose who a picture is held up for. */
+		players?: Player[];
 		onclose: () => void;
 	}
 
@@ -48,8 +53,12 @@
 		onpick,
 		onshow,
 		shownFile = null,
+		players = [],
 		onclose
 	}: Props = $props();
+
+	/** The players the next picture is held up for. With none, it is for the whole table. */
+	let audience = $state<string[]>([]);
 
 	const ACCEPT = 'image/png,image/jpeg,image/webp,image/gif,image/avif';
 	const SHELVES: { kind: GalleryKind; title: string }[] = [
@@ -206,6 +215,23 @@
 				see none of it until you reveal a picture with its eye: those they can pick for their own tokens.
 			{/if}
 		</p>
+
+		{#if onshow && players.length}
+			<!-- Who a picture is held up for. Nobody picked, it is the whole table. -->
+			<div class="grid gap-1.5 rounded-[10px] border bg-panel-2 px-3 py-2.5">
+				<span class="text-[13px] text-muted">
+					{audience.length
+						? 'The screen on a picture holds it up for these players only:'
+						: 'The screen on a picture holds it up for the whole table. Pick players to show it to them only:'}
+				</span>
+				<PlayerPicker
+					{players}
+					value={audience}
+					label="Players a picture is held up for"
+					onchange={(ids) => (audience = ids)}
+				/>
+			</div>
+		{/if}
 
 		{#if error}
 			<p class="rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-sm" role="alert">
@@ -373,9 +399,11 @@
 									aria-label="Show {item.name} to the table"
 									aria-pressed={up}
 									title={up
-										? 'The table is looking at this. Click to put it away.'
-										: 'Show it to the table, full screen'}
-									onclick={() => onshow(up ? null : item)}
+										? 'This picture is up. Click to put it away.'
+										: audience.length
+											? 'Show it to the players picked above, full screen'
+											: 'Show it to the table, full screen'}
+									onclick={() => onshow(up ? null : item, audience)}
 								>
 									<svg
 										width="15"

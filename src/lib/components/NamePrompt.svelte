@@ -13,7 +13,7 @@
 		/** Asks what kind of map is being named: one to explore, or one to fight on. */
 		canPickKind?: boolean;
 		/** Resolves to true when the change went through and the prompt can close. */
-		onsubmit: (name: string, hidden: boolean, kind: MapKind) => Promise<boolean>;
+		onsubmit: (name: string, hidden: boolean, kind: MapKind, closed: boolean) => Promise<boolean>;
 		onclose: () => void;
 	}
 
@@ -37,6 +37,7 @@
 	// svelte-ignore state_referenced_locally
 	let name = $state(initial);
 	let hidden = $state(false);
+	let closed = $state(false);
 	let kind = $state<MapKind>('world');
 	let saving = $state(false);
 
@@ -44,7 +45,12 @@
 		event.preventDefault();
 		if (saving) return;
 		saving = true;
-		const done = await onsubmit(name, canHide && hidden, canPickKind ? kind : 'world');
+		const done = await onsubmit(
+			name,
+			canHide && hidden,
+			canPickKind ? kind : 'world',
+			canHide && closed
+		);
 		saving = false;
 		if (done) onclose();
 	}
@@ -95,6 +101,15 @@
 					Hidden from players
 					<small class="block text-muted">
 						They can't see it or step inside until you reveal it.
+					</small>
+				</span>
+			</label>
+			<label class="flex cursor-pointer items-start gap-2.5">
+				<input class="mt-0.75 accent-accent" type="checkbox" bind:checked={closed} />
+				<span>
+					Closed to players
+					<small class="block text-muted">
+						They see it on the map, and can't step inside until you open it.
 					</small>
 				</span>
 			</label>

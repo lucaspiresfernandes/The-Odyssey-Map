@@ -23,10 +23,11 @@ function refuse(status: number, error: string) {
 }
 
 export const GET: RequestHandler = async (event) => {
-	const { campaign } = requireMemberApi(event, event.params.campaign!);
+	const { user, campaign } = requireMemberApi(event, event.params.campaign!);
 	const file = event.params.file!;
+	const who = { role: campaign.role, userId: user.id };
 	// A picture that isn't this person's to see is, to them, not there.
-	if (!IMAGE_FILE_PATTERN.test(file) || !canLoadImage(getDb(), campaign.id, campaign.role, file)) {
+	if (!IMAGE_FILE_PATTERN.test(file) || !canLoadImage(getDb(), campaign.id, who, file)) {
 		return refuse(404, 'Image not found');
 	}
 

@@ -38,8 +38,9 @@ on port 3001.
    Each region gets a name and its own map: double-click it to step inside and build that
    one too. Until you give that map an image, it shows a closer look at the part of this
    one that the region covers, so one big image can carry several maps. See
-   [Maps without an image](#maps-without-an-image). Click a region to select it: the Region buttons in the bar then enter, hide,
-   rename or delete it, and its corners reshape it. Drag a corner to move it, drag the dot in the
+   [Maps without an image](#maps-without-an-image). Click a region to select it: the Region buttons in the bar then enter, close,
+   hide, share, rename or delete it, and its corners reshape it. See [Secrets](#secrets) for
+   what closing, hiding and sharing do. Drag a corner to move it, drag the dot in the
    middle of an edge to add a corner, double-click a corner to remove it. Deleting a region
    asks first: the map behind it goes too, with everything inside, and there is no undo.
 3. For a fight, make a battle map: pick **Battle map** when you name a new region. That
@@ -70,8 +71,13 @@ bun run start:lan
 ```
 
 That serves the app on port 3000 (set `PORT` to change it). Everything is stored in
-`data/`: the database and the pictures in the gallery. Before a session, copy what can't
-be made again into a folder of its own:
+`data/`: the database and the pictures in the gallery.
+
+One campaign can be taken out as a single file, and put back in: **Export** beside a
+campaign of yours on the first page downloads it, and **Import a campaign from a file**
+under them makes a new campaign out of such a file. See [A campaign in one file](#a-campaign-in-one-file).
+
+Before a session, copy what can't be made again into a folder of its own:
 
 ```bash
 bun run backup
@@ -108,12 +114,15 @@ are everyone's. The rest are the GM's.
   the party is inside. On a battle map, tokens stand for it. Click the banner and a delete
   button comes out over it, which takes the party off the maps for everyone. `Delete`
   does the same, and `Ctrl+Z` plants it back where it stood.
-- **The road behind it.** Every map the party has crossed keeps the road it took: a
-  dotted line from stop to stop, in the GM's gold, for everyone who can open that map.
-  Nothing has to be done for it, and nothing is stored: it is read from the moves the
-  party has made. Undo a move and its stop comes off the road. Leaving the map ends a
-  stretch, and coming back starts another. Each person can take it out of their own
-  view with the last pill of the marker filter.
+- **Fog that lifts where the party goes.** The cloud in the bar under a world map covers
+  that map with fog, and the same button lifts it again. Each world map has its own, so
+  the continent can be under fog while the city is not. Under it, players see the map
+  only where the party has been: a round patch around every spot it was planted on, and
+  drag the banner across the map and the fog lifts all the way along. On a map further
+  out, it lifts around the region the party is inside of. World markers and regions
+  under the fog are not sent to players at all, and a region they can't see is one they
+  can't step into. The table's own notes are never lost to it. You see through it,
+  dimly. `Ctrl+Z` takes a move back and the fog it lifted with it.
 - **A scale, and a ruler.** The ruler in the bar under a world map measures between two
   spots, in miles, and the table sees your ruler while you do. It needs to know how far
   across the map is: the first time, the GM is asked. Say it once, on the biggest map.
@@ -135,7 +144,9 @@ are everyone's. The rest are the GM's.
   from the pass. Your own screen stays on the map, with **Showing …** at the top: click
   that to put the picture away again, for everyone. A player can close it on their own
   screen. It works for any picture, hidden or not: holding one up does not reveal it in
-  the gallery, and players can load it only for as long as it is up.
+  the gallery, and players can load it only for as long as it is up. Pick players from
+  the row at the top of the gallery first, and the picture goes up for them alone: the
+  letter only one of them reads. The others, and the table display, are shown nothing.
 - **The table display.** **Display**, at the top, opens the map you are on in a window
   of its own, to drag onto a TV or a second screen and make full screen (`F11`). It is
   the players' view and nothing around it: no bars, no tools, and nothing a player
@@ -150,6 +161,48 @@ are everyone's. The rest are the GM's.
   screen to stay awake, which browsers allow on the machine the app runs on and over
   https. Any map's address with `?display` on the end is a display, so a player's tablet
   in the middle of the table can be one too.
+
+### Secrets
+
+Three things keep part of the world from the players, and they stack. All three are the
+GM's, and each is taken back with `Ctrl+Z`.
+
+- **Hidden.** A world marker, a region or a token that is hidden is, to the players,
+  not there. A hidden region takes its map with it, and every map further inside.
+- **A secret with some players.** The button with two heads, beside the one that hides:
+  on a pinned marker's card, among the Region buttons, and under a selected token. Pick
+  players and the thing is hidden from the table and shown to them: the cache only the
+  rogue spotted, the passage one of them was told of, the familiar its master alone can
+  see. A player who is let in sees it marked as a secret, and is not told who else is.
+  A region shared this way opens its map to them too, and **Bring everyone here** takes
+  them along there. Reveal it to all players and it is a secret with nobody.
+- **Closed.** The lock among the Region buttons. A closed region stays on the players'
+  map, with a lock before its name, and none of them can step into it: the keep on the
+  horizon, the door they have no key for. Nothing that happens inside reaches them
+  until you open it. Tick **Closed to players** when naming a new region to draw it
+  that way.
+
+The party stands where every player can go: not inside a region that is closed, nor one
+that is hidden, even when some players are let in on it.
+
+Who a player is, is their browser: see [Known limits](#known-limits).
+
+### A campaign in one file
+
+**Export**, beside a campaign you run on the first page, downloads all of it as one
+file: every map, region, marker, note, token and drawing, the turn orders and the fog,
+and the pictures in the gallery as they were uploaded. It is a `.tar` archive that any
+archive tool opens: `campaign.json`, and an `uploads` folder.
+
+**Import a campaign from a file** makes a new campaign out of one, with you as its GM.
+It never changes a campaign that is there, so the same file can be imported twice, and
+a file from another table is as good as your own. Use it to keep a copy before a
+session, to move a campaign to another machine, or to hand a prepared world to another
+GM.
+
+What stays behind is what belonged to the table and not to the world: who plays in it,
+which of them was let in on which secret, the picture being held up, and the history
+that undo works from. Hidden and closed things arrive hidden and closed.
 
 ### The gallery
 
@@ -254,6 +307,10 @@ What is on a battle map:
   cells that makes, to compare with the squares you count on the image. For an image that
   has its own grid drawn on, turn the lines off: tokens still snap to the cells. The same
   dialog says how many feet one cell stands for: 8 to begin with, and each map has its own.
+  Quicker, for such an image: **Line it up on the map** in that dialog, then drag a box
+  over a few of the image's squares, from corner to corner. Say how many squares the box
+  is across and the grid that makes is drawn over the map to look at, tokens and all,
+  before **Use this grid** keeps it. More squares in the box make a truer grid.
 - **Tokens.** A disc in its colour, or its picture, half a cell to six cells across, with
   its label written underneath. Anyone at the table drags any token that isn't locked.
   Everyone sees it move while it is being dragged, and it snaps to the grid when it is
@@ -268,9 +325,14 @@ What is on a battle map:
   drag a handle, the angle or the size it has come to, in feet, is written over the token. With
   several tokens selected there are no handles.
 - **The buttons on a selected token.** They float just under it, below its name. Anyone at the table labels
-  it, locks it, marks it, duplicates it, opens its picture, colour and outline, and deletes it: a
+  it, locks it, marks it, gives it a number, duplicates it, opens its picture, colour and outline, and deletes it: a
   locked token can't be moved, resized or turned until someone unlocks it. Only the GM
-  hides it and reveals it, and puts it in the turn order.
+  hides it and reveals it, shows it to some players only, and puts it in the turn order.
+- **A number.** The `#` button gives a token a number to carry, on its rim at the upper
+  left: hit points, charges, rounds left. Type a number to set it, `+3` or `-5` to
+  change it by that much, or nothing to take it off. With several tokens selected it
+  goes on all of them, so `-8` is the fireball. Everyone at the table sees it and
+  anyone changes it.
 - **Marks.** The marks button brings them out. **Down** greys the token and crosses it
   out. The rest are pips on the token's rim: six plain colours, and fourteen small
   icons, each in a colour of its own on a dark pip: a skull, a flame, a bolt, a drop, a
@@ -283,10 +345,14 @@ What is on a battle map:
   turn order, and a strip appears down the left side of the map for everyone: each
   token in the order it acts, the one whose turn it is ringed in gold, there and on the
   map. **Next turn**, or `N`, moves on, and coming round to the top again starts the
-  next round. The GM sorts the order by dragging a token up or down the strip, and the
-  others make room as it goes. With the focus on one, `Alt` and the up or down arrow
-  key does the same. A click on a token in the strip selects it on the map. **End the
-  fight** empties the order,
+  next round. Ending a turn is the table's: a player has the same button and the same
+  key, for the turn of any token they can see, which is how they say they are done.
+  Starting the fight is the GM's. The GM sorts the order by dragging a token up or down
+  the strip, and the others make room as it goes. With the focus on one, `Alt` and the
+  up or down arrow key does the same. Or by what they rolled: the die opens a box
+  beside each token, `Enter` goes from one to the next, and **Sort** puts the highest
+  first. Tokens that rolled the same keep the order they were in. A click on a token in
+  the strip selects it on the map. **End the fight** empties the order,
   and `Ctrl+Z` takes back any of it. A token taken off the map is passed over and keeps
   its place, in case it comes back. Players see only the tokens they can see: a hidden
   one is not in their strip, and its turn is nobody's.
@@ -346,7 +412,7 @@ always a world map.
 | Click a marker | Pin its card, with edit, move and delete if it's yours to change |
 | The funnel in the bar under a world map | Choose which types of marker you see. It changes your view only |
 | Double-click a region | Step into its map |
-| Click a region, as the GM | Open its menu: enter, hide or reveal, rename, delete |
+| Click a region, as the GM | Select it: the Region buttons in the bar enter, close or open, hide or reveal, share, rename and delete it |
 | Double-click a bare spot | Start a note there, on a world map |
 | Drag the party's banner, as the GM | Move the party across the map it is on |
 | Click the party's banner, as the GM | Select it, with a button over it to take it off the maps |
@@ -355,7 +421,7 @@ always a world map.
 | `Alt`-click, or a finger held on a spot | Ping: point the spot out to everyone looking at that map |
 | `Ctrl+K` | Find a map or a marker by name, and go there |
 | `Q` `W` `E` `R` | On a battle map: select and move, select several, measure, draw lines, shapes and text |
-| `N`, as the GM | On a battle map: on to the next turn |
+| `N` | On a battle map: end the turn and go on to the next. The GM always can, a player for a token they can see |
 | Click a token, a drawing or a text | Select it: its buttons float under it. `Shift`-click selects several |
 | Double-click a text | Reword it, if it's yours |
 | `Delete` | Take what is selected off a battle map, if it's yours to take off |
@@ -376,20 +442,22 @@ tokens, and the tools are in the corner.
 
 | | GM | Player |
 |---|---|---|
-| World markers, on world maps | create, edit, hide, reveal, delete | read (never the hidden ones) |
+| World markers, on world maps | create, edit, hide, reveal, show to some players, delete | read (never the hidden ones they are not let in on, nor the ones under the fog) |
 | Table notes, on world maps | create, edit, delete, anyone's | create, edit anyone's, delete their own |
-| Maps, regions | create, edit, hide, reveal, delete | read (never the hidden ones) |
+| Maps, regions | create, edit, hide, reveal, show to some players, close, open, delete | read (never the hidden ones they are not let in on), step into the ones that are open |
 | The gallery | add, rename, reveal, hide, take out, lay an image under a map | look through what the GM has revealed, pick one of those for a token |
 | Battle maps and grids | make one behind a new region, set up the grid | read |
 | The party | put on a world map, move, take off the maps | see where it is, and the road it took |
 | The scale of a world map | say how many miles across it is | measure, once a map on the way has one |
 | A ping, and the finder | point a spot out, go to anything | point a spot out, go to anything not hidden |
-| A picture for the table | hold any picture up, put it away | look, and close it on their own screen |
-| The turn order, on battle maps | add tokens, sort by dragging, next turn, end the fight | see whose turn it is, among the tokens they can see |
+| A picture for the table | hold any picture up, for everyone or for some players, put it away | look, if it is held up for them, and close it on their own screen |
+| The turn order, on battle maps | add tokens, sort by dragging or by rolls, start the fight, next turn, end the fight | see whose turn it is, among the tokens they can see, and end the turn of one of those |
 | Fog of war, on battle maps | cover, clear, lift, see through | see what has been cleared |
+| Fog on a world map | cover the map, lift it, see through | see where the party has been |
+| A campaign in one file | export the ones they run, import one as a new campaign | |
 | Bring everyone here | call everyone to a map and a view of it | follow |
-| Tokens | create anywhere, give any picture, hide, reveal | create where there is no fog, give a revealed picture |
-| Any token they can see | move, resize, turn, recolour, outline, label, mark, lock, unlock, duplicate, delete | move, resize, turn, recolour, outline, label, mark, lock, unlock, duplicate, delete |
+| Tokens | create anywhere, give any picture, hide, reveal, show to some players | create where there is no fog, give a revealed picture |
+| Any token they can see | move, resize, turn, recolour, outline, label, mark, number, lock, unlock, duplicate, delete | move, resize, turn, recolour, outline, label, mark, number, lock, unlock, duplicate, delete |
 | Drawings, text and shapes, on battle maps | create, move, change, rub out, anyone's | create, and move, change, rub out their own |
 | Undo and redo | their own changes | their own changes to table notes, tokens and drawings |
 
@@ -412,7 +480,14 @@ them. A table display is sent what a player is, whoever opened it.
 
 A hidden region works the same way, and takes its map with it: players can't open the map
 behind it or any map further inside, can't load its image, and hear nothing of what happens
-in there. A player who is inside when the GM hides it is walked back out.
+in there. A player who is inside when the GM hides it is walked back out. A closed region
+keeps its map from them the same way, and so does a region that the fog of a world map
+still covers. Only the region itself, and its name, stay in sight.
+
+What is hidden from the table and shown to some players is filtered per person, not per
+role: the page a player loads, the events their browser receives and what they can act
+on by its id are all worked out for that one player. A table display is nobody in
+particular, and is sent only what every player may see.
 
 ## How it's put together
 
@@ -423,7 +498,8 @@ src/lib/server/     database, sessions, and the modules that matter most:
   schema.ts           the tables, as a Drizzle schema
   world.ts            every change: validate, check permission, write, log an event
   gallery.ts          the campaign's pictures, and who may load which
-  visibility.ts       the only path from the event log to a client, filtered by role
+  visibility.ts       the only path from the event log to a client, filtered by who it is
+  archive.ts, tar.ts  a campaign out to one file and back in, as a stream
   db.ts, drivers/     where the database is kept: one driver per kind of place
   storage.ts          where the pictures are kept, behind one small interface
 drizzle/            SQL migrations generated from schema.ts
@@ -457,6 +533,29 @@ scripts/            run both servers, seed a demo, back up, end-to-end check
   arithmetic in `shared/backdrop.ts`. The browser draws that part with the same preview
   and tiles as the whole image, and loads only the tiles the part touches. It asks for
   the map again when a region or a map on the way up changes.
+- **What someone is sent hangs on who they are.** Everything on the read side takes a
+  viewer: a role, and for a player, their user id. A bare `'player'` is nobody in
+  particular, which is what a table display is. After a change the app works out what
+  the GM is owed, what the table is, and for each player of the campaign what they
+  are. Only where a player's differs from the table's is it handed over by name, and
+  the WebSocket server then sends each of that campaign's sockets its own. So a secret
+  shared with one player reaches their socket and no other, and a secret taken back
+  reaches them as a deletion.
+- **The fog of a world map is the party's.** It is the same value as a battle map's
+  fog, with round patches beside the boxes. Moving the party is one command that makes
+  two changes, the move and the fog it lifted, which undo takes back together. Only a
+  move made by dragging the banner lifts the fog along the way: planting it with the
+  tool is arriving. The fog is drawn through a mask, since round holes overlap.
+- **Ending a turn is a command of its own.** Changing a map is the GM's, and the turn
+  order is part of its map. `turn.next` is the one thing about it that a player may
+  ask for: the server works out whose turn comes next, and the command names the turn
+  it ends, so two people pressing at once move on once.
+- **A campaign in one file is read as it arrives.** Export and import are streams: a
+  tar archive is written a picture at a time and read the same way, so a campaign with
+  big map images never has to fit in memory whole. An imported file is not trusted:
+  every value in it is checked like a command's would be, every picture is read as a
+  picture, and a file that fails leaves nothing behind. Only the import endpoint takes
+  a body bigger than a map image: see `src/hooks.server.ts`.
 - **Pings skip the app.** A ping goes from browser to browser through the WebSocket
   server alone. It isn't a change to the world, so it is never stored. Where a mouse is
   otherwise is not sent to anyone.
@@ -578,8 +677,12 @@ Unit tests for the rules: permissions, hidden markers and regions, battle maps, 
 and drawings, the party, the fog of war and what it keeps from players, maps that
 borrow their picture, the grid's arithmetic, undo and restore, campaign isolation, and the storage, on disk and off.
 And for what a session is run with: marks, the turn order and what a player sees of it,
-shapes, the scale of a world map, the party's road, the finder, a picture held
+shapes, the scale of a world map, the finder, a picture held
 up for the table, and what a token picture starts its tokens out as.
+And for what is kept from some and not from others: closed regions, secrets shared with
+some players and what each of them is sent, the fog of a world map and how the party
+lifts it. And the number on a token, initiative rolls, ending a turn, lining up a grid,
+and a campaign going out to a file and coming back.
 
 ```bash
 bun run test:e2e
@@ -609,18 +712,36 @@ Type-checks everything.
 - Events are numbered in one sequence. A player who inspects their network traffic can
   see the numbers skip when the GM makes a hidden change, though never what the change was.
 - A player is a browser cookie. Clearing it means joining again as a new player, who can
-  no longer delete the notes the old one added. The GM still can.
+  no longer delete the notes the old one added. The GM still can. That new player is
+  let in on none of the old one's secrets either: the GM shares them again. A player on
+  two devices has joined twice, and is two players.
+- A secret is shared with players one thing at a time: there are no groups of players,
+  and no list of everything one player has been let in on.
+- A closed region shows its name. For one the players should not be able to name yet,
+  call it something else until it opens.
+- The party can't stand inside a region that is hidden, even from only some players.
+- The fog of a world map lifts in patches of one size: about a twelfth of the map's longer
+  side in every direction. The GM can't clear or cover a part of it by hand: drag the
+  party there, and undo to cover it again. Turning the fog off forgets where the party
+  has been, though undo brings that back.
+- On a world map the fog keeps markers and regions from the players, not the picture of
+  the map, which their browser still loads and draws the fog over. A region is under
+  the fog or not by its middle.
+- The number on a token is for everyone at the table to see: there is none that only
+  the GM sees.
+- A campaign's file leaves out who plays in it, their secrets and the history that undo
+  works from. Importing always makes a new campaign: it can't be merged into one that
+  is there.
 - Undo remembers what you did since you opened the map. It is forgotten when you step
   into another map or reload the page.
 - Undo can't put back a map image, or a token's picture, that has since been taken out
   of the gallery and removed from disk.
 - A player can't add a picture of their own to the gallery. They send it to the GM,
   who adds it and reveals it.
-- Pictures are revealed one at a time, and to the whole table: not to one player only.
+- Pictures are revealed in the gallery one at a time, and to the whole table: not to one player only.
 - A token picture remembers a size and an outline for its tokens, and nothing else: not
   a colour, a name of its own for them, or marks.
-- One picture is held up for the table at a time, and for everyone: not for one player
-  only. It is shown whole, and can't be zoomed into.
+- One picture is held up at a time. It is shown whole, and can't be zoomed into.
 - Undoing the drawing of a region only works while the map behind it is still empty.
   After that the region has to be deleted from the bar, which asks first.
 - A ping shows where it lands on the map. Someone looking at another part of that map
@@ -629,8 +750,9 @@ Type-checks everything.
   campaign, each of which shows only what is on the map it is on. A player who inspects
   their network traffic can see that the GM pinged or measured on a map they can't
   open, though nothing of what is there.
-- The turn order is the GM's to run: a player can't end their own turn. It keeps no
-  initiative rolls, so the order is sorted by hand. It tracks no hit points.
+- A token belongs to nobody, so the turn order can't tell whose turn a player may end:
+  any player ends the turn of any token they can see. Rolls are typed in by the GM, and
+  only the GM sees them.
 - A mark is a colour or an icon from a fixed set. It has no name of its own, no number
   on it, and no timer that takes it off again. Icons are small: on a token that is
   small on screen they are told apart by their colours until the map is zoomed in.
@@ -639,11 +761,9 @@ Type-checks everything.
   shapes: a thin box does for one along the grid.
 - A world map is measured in miles, as the crow flies. It knows nothing of roads, or of
   how long a day's travel is.
-- The party's road is where the banner was planted, joined up with straight lines. It
-  can't be edited: a stop that was a slip of the hand stays, unless the move is undone.
 - The finder searches names: not the descriptions of markers, and not tokens.
-- The fog of war is cleared and covered by hand, in boxes. It doesn't follow the tokens,
-  and knows nothing of walls or of what a token could see.
+- The fog of war on a battle map is cleared and covered by hand, in boxes. It doesn't
+  follow the tokens, and knows nothing of walls or of what a token could see.
 - The fog keeps tokens from the players, not the picture of the map: their browser
   still loads the whole image, and draws the fog over it. Drawings and text under the
   fog are sent to players as well, and covered the same way.
@@ -662,7 +782,8 @@ Type-checks everything.
 - A token is half a cell to six cells across, and turns in steps of 15 degrees.
 - A player sees a newly revealed token picture in the dock the next time they reach for
   it, not the moment the GM reveals it.
-- The grid is square, and is lined up by typing numbers, not by dragging it over the image.
+- The grid is square. Lining it up by a box is as true as the box: over one small
+  square it can be a pixel or two out, which adds up across a big map.
 - The ruler counts a diagonal step as one cell, and tells distances in feet: there are no
   metres.
 - The way into a battle map is a region. A marker can't lead to one.
