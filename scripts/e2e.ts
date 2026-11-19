@@ -258,30 +258,35 @@ async function run() {
 		`status ${givenBack.status}`
 	);
 
-	// Pointers go from browser to browser through the WebSocket server alone.
-	const cursorsSeen = (socket: { messages: any[] }) => socket.messages.filter((m) => m.t === 'cursor');
-	playerSocket.ws.send(JSON.stringify({ t: 'cursor', at: { mapId, x: 0.25, y: 0.75 } }));
+	// A ping goes from browser to browser through the WebSocket server alone.
+	const pingsSeen = (socket: { messages: any[] }) => socket.messages.filter((m) => m.t === 'ping');
+	const handsSeen = (socket: { messages: any[] }) => socket.messages.filter((m) => m.t === 'hand');
+	playerSocket.ws.send(JSON.stringify({ t: 'ping', at: { mapId, x: 0.25, y: 0.75 } }));
 	await pause(300);
-	const pointer = cursorsSeen(gmSocket)[0]?.cursor;
+	const pinged = pingsSeen(gmSocket)[0]?.ping;
 	check(
-		'the GM sees where the player is pointing',
-		pointer?.name === 'Tester' && pointer.role === 'player' && pointer.mapId === mapId && pointer.x === 0.25 && pointer.y === 0.75
+		'the GM sees the spot a player points out',
+		pinged?.name === 'Tester' && pinged.role === 'player' && pinged.mapId === mapId && pinged.x === 0.25 && pinged.y === 0.75
 	);
-	check('the player is not sent their own pointer', cursorsSeen(playerSocket).length === 0);
-	const latecomer = gm.connect(campaign);
-	await latecomer.opened;
-	await pause(300);
-	check(
-		'someone who connects later is told where everyone already is',
-		latecomer.messages[0]?.cursors?.some((c: any) => c.id === pointer?.id && c.x === 0.25)
-	);
-	latecomer.ws.close();
-	for (const at of [{ mapId, x: 'left', y: 0.5 }, { mapId: '../x', x: 0.5, y: 0.5 }, { mapId, x: 1e9, y: 0.5 }, 'here']) {
-		playerSocket.ws.send(JSON.stringify({ t: 'cursor', at }));
+	check('the player is not sent their own ping', pingsSeen(playerSocket).length === 0);
+	for (const at of [{ mapId, x: 'left', y: 0.5 }, { mapId: '../x', x: 0.5, y: 0.5 }, { mapId, x: 1e9, y: 0.5 }, 'here', null]) {
+		playerSocket.ws.send(JSON.stringify({ t: 'ping', at }));
 		await pause(40);
 	}
-	await pause(200);
-	check('a malformed pointer goes nowhere', cursorsSeen(gmSocket).length === 1, `${cursorsSeen(gmSocket).length} delivered`);
+	await pause(300);
+	check('a malformed ping goes nowhere', pingsSeen(gmSocket).length === 1, `${pingsSeen(gmSocket).length} delivered`);
+	for (let i = 0; i < 5; i++) playerSocket.ws.send(JSON.stringify({ t: 'ping', at: { mapId, x: 0.5, y: 0.5 } }));
+	await pause(300);
+	check('a flurry of pings is thinned to one', pingsSeen(gmSocket).length === 2, `${pingsSeen(gmSocket).length} delivered`);
+
+	// Where a mouse is, is nobody else's business: nothing passes it on.
+	playerSocket.ws.send(JSON.stringify({ t: 'cursor', at: { mapId, x: 0.25, y: 0.75 } }));
+	playerSocket.ws.send(JSON.stringify({ t: 'hand', at: { mapId } }));
+	await pause(300);
+	check(
+		'a mouse that holds nothing is passed on to nobody',
+		handsSeen(gmSocket).length === 0 && !gmSocket.messages.some((m) => m.t === 'cursor')
+	);
 
 	// Only the app may tell the WebSocket server what to deliver.
 	const forgedEvent = {
@@ -620,26 +625,35 @@ async function run() {
 		return page.includes('Mind the gap') && !page.includes(scrawl?.id);
 	})());
 
-	// A token in someone's hand, and a ruler, ride along with their pointer.
+	// A token in someone's hand, and a ruler, are shown to the table.
 	playerSocket.ws.send(
 		JSON.stringify({
-			t: 'cursor',
-			at: { mapId: bridgeId, x: 0.4, y: 0.4, drag: { id: ogreId, x: 0.45, y: 0.4 }, ruler: [[0.3, 0.3], [0.45, 0.4]] }
+			t: 'hand',
+			at: { mapId: bridgeId, drag: { id: ogreId, x: 0.45, y: 0.4 }, ruler: [[0.3, 0.3], [0.45, 0.4]] }
 		})
 	);
 	await pause(300);
-	const inHand = cursorsSeen(gmSocket).at(-1)?.cursor;
+	const inHand = handsSeen(gmSocket).at(-1)?.hand;
 	check(
 		'a token being dragged is shown to the table, with how far it has come',
-		inHand?.mapId === bridgeId && inHand.drag?.id === ogreId && inHand.drag.x === 0.45 && inHand.ruler?.[1]?.[0] === 0.45
+		inHand?.name === 'Tester' && inHand.mapId === bridgeId && inHand.drag?.id === ogreId && inHand.drag.x === 0.45 && inHand.ruler?.[1]?.[0] === 0.45
 	);
-	const shownSoFar = cursorsSeen(gmSocket).length;
+	check('the player is not sent their own hand', handsSeen(playerSocket).length === 0);
+	const latecomer = gm.connect(campaign);
+	await latecomer.opened;
+	await pause(300);
+	check(
+		'someone who connects later is told what everyone already has in hand',
+		latecomer.messages[0]?.hands?.some((h: any) => h.id === inHand?.id && h.drag?.id === ogreId)
+	);
+	latecomer.ws.close();
+	const shownSoFar = handsSeen(gmSocket).length;
 	for (const extra of [{ drag: { id: '../x', x: 0.4, y: 0.4 } }, { drag: { id: ogreId, x: 'far', y: 0.4 } }, { drag: 'ogre' }, { ruler: [[0.3, 0.3]] }, { ruler: [[0.3, 0.3], [0.4, 1e9]] }]) {
-		playerSocket.ws.send(JSON.stringify({ t: 'cursor', at: { mapId: bridgeId, x: 0.4, y: 0.4, ...extra } }));
+		playerSocket.ws.send(JSON.stringify({ t: 'hand', at: { mapId: bridgeId, ...extra } }));
 		await pause(40);
 	}
 	await pause(200);
-	check('a malformed drag or ruler goes nowhere', cursorsSeen(gmSocket).length === shownSoFar, `${cursorsSeen(gmSocket).length - shownSoFar} delivered`);
+	check('a malformed drag or ruler goes nowhere', handsSeen(gmSocket).length === shownSoFar, `${handsSeen(gmSocket).length - shownSoFar} delivered`);
 
 	// The party: the GM's to move, and news for the whole table.
 	const marched = await gm.command(campaign, { t: 'party.move', mapId, x: 0.4, y: 0.6 });
@@ -694,6 +708,44 @@ async function run() {
 		`${strayed.status} ${strayed.headers.get('location')}`
 	);
 
+	// The finder is told of every map and marker a person may go to, and no others.
+	const found = async (who: Visitor): Promise<any[]> => (await (await who.request(`/c/${campaign}/find`)).json()).entries;
+	const [gmFinds, playerFinds] = [await found(gm), await found(player)];
+	check(
+		'the finder knows the maps, and keeps the one behind a hidden region from the player',
+		gmFinds.some((e) => e.mapId === cryptId && e.hidden) && playerFinds.some((e) => e.mapId === bridgeId) && !playerFinds.some((e) => e.mapId === cryptId)
+	);
+
+	// A picture held up for the table: everyone is shown it, and a player
+	// can load it for as long as it is up.
+	const lich = (await add('map', pixels, 'The Lich.png', 'The Lich')).item;
+	const lichPath = `/c/${campaign}/image/${lich?.file}`;
+	const hold = (who: Visitor, id: unknown) =>
+		who.request(`/c/${campaign}/show`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+	const shows = (socket: { messages: any[] }) => socket.messages.filter((m) => m.t === 'show');
+	check('a player cannot load a picture nobody has shown them', (await player.request(lichPath)).status === 404);
+	check('nor hold one up for the table', (await hold(player, lich?.id)).status === 403);
+	const held = await hold(gm, lich?.id);
+	await pause(300);
+	check(
+		'the GM holds a picture up, and the whole table is told',
+		held.status === 200 && [playerSocket, displaySocket, gmSocket].every((socket) => shows(socket).at(-1)?.shown?.file === lich?.file),
+		`status ${held.status}`
+	);
+	check('for as long as it is up, the player can load it', (await player.request(lichPath)).status === 200);
+	const arriving = player.connect(campaign);
+	await arriving.opened;
+	await pause(300);
+	check('someone who connects later is told what is up', arriving.messages[0]?.shown?.name === 'The Lich');
+	arriving.ws.close();
+	check('a picture that is not there cannot be held up', (await hold(gm, 'nosuchpicture')).status === 404);
+	await hold(gm, null);
+	await pause(300);
+	check(
+		'put away, it is gone for everyone',
+		shows(playerSocket).at(-1)?.shown === null && (await player.request(lichPath)).status === 404
+	);
+
 	// Bringing everyone here: the app says who may follow, and the WebSocket
 	// server passes the call on.
 	const gathers = (socket: { messages: any[] }) => socket.messages.filter((m) => m.t === 'gather');
@@ -724,6 +776,18 @@ async function run() {
 		'and only the GM\'s own windows follow',
 		gathers(playerSocket).length === before[0] && gathers(displaySocket).length === before[1] && gathers(gmSocket).length === before[2] + 1
 	);
+	// Whoever connects later is brought to where their kind was last called.
+	const [lateDisplay, lateGm] = [gm.connect(campaign, app, true), gm.connect(campaign)];
+	await Promise.all([lateDisplay.opened, lateGm.opened]);
+	await pause(300);
+	const lateCall = (socket: { messages: any[] }) => socket.messages.find((m) => m.t === 'gather');
+	check(
+		'a screen that connects later is brought to where the table was last called',
+		lateCall(lateDisplay)?.late === true && lateCall(lateDisplay)?.gather.mapId === bridgeId && typeof lateCall(lateDisplay)?.gather.at === 'number'
+	);
+	check('and never to where only the GM went', lateCall(lateGm)?.late === true && lateCall(lateGm)?.gather.mapId === cryptId);
+	lateDisplay.ws.close();
+	lateGm.ws.close();
 	displaySocket.ws.close();
 
 	// The app checks the login on every forwarded command, so an open socket
@@ -740,8 +804,8 @@ async function run() {
 	check('logging out ends the live connection', ack(9)?.ok === false && code === 4401, `close code ${code}`);
 	check('and nothing was written', !(await (await gm.request(mapPath)).text()).includes('After logout'));
 	check(
-		'their pointer leaves with them',
-		gmSocket.messages.some((m) => m.t === 'cursor.left' && m.id === pointer?.id)
+		'what they had in hand leaves with them',
+		gmSocket.messages.some((m) => m.t === 'hand.left' && m.id === inHand?.id)
 	);
 
 	gmSocket.ws.close();

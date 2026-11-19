@@ -18,10 +18,16 @@
 import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { Db } from './db';
 import { newId } from './ids';
-import { gallery, maps, tokens } from './schema';
-import { ActionError, asText, isConcealed, type Actor } from './world';
+import { campaigns, gallery, maps, tokens } from './schema';
+import { ActionError, asOutline, asText, asTokenSize, isConcealed, type Actor } from './world';
 import { canEditWorld } from '../shared/rules';
-import { LIMITS, type GalleryItem, type GalleryKind, type Role } from '../shared/types';
+import {
+	LIMITS,
+	type GalleryItem,
+	type GalleryKind,
+	type Role,
+	type Shown
+} from '../shared/types';
 
 const itemColumns = {
 	id: gallery.id,
@@ -30,7 +36,9 @@ const itemColumns = {
 	file: gallery.file,
 	width: gallery.width,
 	height: gallery.height,
-	hidden: gallery.hidden
+	hidden: gallery.hidden,
+	tokenSize: gallery.tokenSize,
+	tokenOutline: gallery.tokenOutline
 };
 
 function requireGm(actor: Actor) {
@@ -95,7 +103,9 @@ export function addToGallery(
 		file: picture.file,
 		width: picture.width,
 		height: picture.height,
-		hidden: true
+		hidden: true,
+		tokenSize: null,
+		tokenOutline: null
 	};
 	db.insert(gallery)
 		.values({ ...item, campaignId: actor.campaignId, createdAt: Date.now() })
@@ -137,6 +147,63 @@ export function hideInGallery(db: Db, actor: Actor, id: string, hidden: unknown)
 	db.update(gallery).set({ hidden }).where(eq(gallery.id, item.id)).run();
 }
 
+/**
+ * Says what a token made from this picture starts out as: how many cells
+ * across, and the colour of its ring. Null for either goes back to the
+ * usual. The tokens already on the maps stay as they are.
+ */
+export function presetInGallery(
+	db: Db,
+	actor: Actor,
+	id: string,
+	preset: { size?: unknown; outline?: unknown }
+): void {
+	requireGm(actor);
+	const item = findItem(db, actor, id);
+	if (item.kind !== 'token') throw new ActionError('invalid', 'Only a token picture has a size.');
+	db.update(gallery)
+		.set({
+			tokenSize: preset.size == null ? null : asTokenSize(preset.size),
+			tokenOutline: preset.outline == null ? null : asOutline(preset.outline)
+		})
+		.where(eq(gallery.id, item.id))
+		.run();
+}
+
+// ------------------------------------------------- a picture for the table
+
+/** The picture the GM is holding up for the whole table, if any. */
+export function shownTo(db: Db, campaignId: string): Shown | null {
+	const row = db
+		.select({
+			file: gallery.file,
+			name: gallery.name,
+			width: gallery.width,
+			height: gallery.height
+		})
+		.from(campaigns)
+		.innerJoin(gallery, eq(gallery.file, campaigns.shownFile))
+		.where(and(eq(campaigns.id, campaignId), eq(gallery.campaignId, campaignId)))
+		.get();
+	return row ?? null;
+}
+
+/**
+ * Holds a picture of the gallery up for the whole table, by its id, or with
+ * null puts away the one that is up. Showing a picture does not reveal it
+ * in the gallery: players see it for as long as it is held up, and can't
+ * pick it for a token.
+ */
+export function showToTable(db: Db, actor: Actor, id: string | null): Shown | null {
+	requireGm(actor);
+	const item = id === null ? null : findItem(db, actor, id);
+	db.update(campaigns)
+		.set({ shownFile: item?.file ?? null })
+		.where(eq(campaigns.id, actor.campaignId))
+		.run();
+	return item && { file: item.file, name: item.name, width: item.width, height: item.height };
+}
+
 /** True while a map shows this picture, or a token wears it: one that was deleted may come back. */
 function inUse(db: Db, file: string): boolean {
 	const map = db.select({ id: maps.id }).from(maps).where(eq(maps.imageFile, file)).get();
@@ -174,14 +241,20 @@ export function removeFromGallery(db: Db, actor: Actor, id: string): string[] {
 	requireGm(actor);
 	const item = findItem(db, actor, id);
 	db.update(gallery).set({ deletedAt: Date.now() }).where(eq(gallery.id, item.id)).run();
+	// A picture taken out is no longer held up for the table either.
+	db.update(campaigns)
+		.set({ shownFile: null })
+		.where(and(eq(campaigns.id, actor.campaignId), eq(campaigns.shownFile, item.file)))
+		.run();
 	return sweepGallery(db, actor.campaignId);
 }
 
 /**
  * Whether someone may load a picture of this campaign's. The GM may load
  * any of them. A player may load the ones the GM has revealed in the
- * gallery, and whatever is in front of them: the image of a map they can
- * open, and the picture on a token they can see.
+ * gallery, and whatever is in front of them: the picture the GM is holding
+ * up for the table, the image of a map they can open, and the picture on a
+ * token they can see.
  */
 export function canLoadImage(db: Db, campaignId: string, role: Role, file: string): boolean {
 	const kept = db
@@ -193,6 +266,13 @@ export function canLoadImage(db: Db, campaignId: string, role: Role, file: strin
 	if (role === 'gm') return true;
 	// One taken out of the gallery is no longer on show there, revealed or not.
 	if (!kept.hidden && kept.deletedAt === null) return true;
+	// The one the GM is holding up for the table is in front of everyone.
+	const held = db
+		.select({ file: campaigns.shownFile })
+		.from(campaigns)
+		.where(eq(campaigns.id, campaignId))
+		.get();
+	if (held?.file === file && kept.deletedAt === null) return true;
 
 	const shown = db
 		.select({ id: maps.id })

@@ -10,24 +10,33 @@
 //     would have posted it, and the app's answer is sent back.
 //   - After every change the app tells this server what to deliver, already
 //     filtered for each role. The same goes for the GM bringing everyone to
-//     what they are looking at: the app says who may follow.
-//   - Where each browser's pointer is goes straight from one browser to the
-//     others, along with the token it is dragging or the distance it is
-//     measuring. None of that is a change to the world, so the app never
-//     hears of it, and nothing about it is kept once the browser disconnects.
-//     A token only moves for good when it is let go: that is a command.
+//     what they are looking at: the app says who may follow. The last call
+//     is kept for as long as this server runs, for whoever connects later.
+//     So is the picture the GM is holding up for the table, which the app
+//     also tells of whenever a browser connects.
+//   - What a browser has in hand goes straight from one browser to the
+//     others: the token it is dragging, the distance it is measuring. So
+//     does a ping, which points a spot out to the table. None of that is a
+//     change to the world, so the app never hears of it, and nothing about
+//     it is kept once the browser disconnects. A token only moves for good
+//     when it is let go: that is a command. Where a mouse is otherwise is
+//     never sent at all.
 
 import type { ServerWebSocket } from 'bun';
 import type {
 	Broadcast,
 	ClientMessage,
 	CommandResponse,
-	Cursor,
-	CursorSpot,
+	Gather,
+	Hand,
+	HandSpot,
 	LiveIdentity,
+	Ping,
+	PingSpot,
 	Presence,
 	Role,
-	ServerMessage
+	ServerMessage,
+	Shown
 } from '#lib/shared/types.ts';
 
 const PORT = Number(process.env.WS_PORT || 3001);
@@ -62,14 +71,14 @@ const TRUSTED_ORIGINS = new Set(
 const ID_SHAPE = /^[A-Za-z0-9]{1,64}$/;
 
 interface Connection {
-	/** Made up here, one per socket. It names this browser's pointer to the others. */
+	/** Made up here, one per socket. It names this browser's hand to the others. */
 	id: string;
 	campaignId: string;
 	user: { id: string; name: string };
 	role: Role;
 	/**
 	 * A table display: a screen that shows the players' view and takes no
-	 * part. It is nobody at the table, and has no pointer of its own.
+	 * part. It is nobody at the table, and has no hand of its own.
 	 */
 	display: boolean;
 	/** The browser's cookies. They go to the app with every command, and the app decides who is asking. */
@@ -80,10 +89,15 @@ interface Connection {
 	recent: number[];
 	/** Commands from one socket are forwarded one at a time, in the order they came. */
 	queue: Promise<void>;
-	/** Where this browser last said its pointer was, for people who connect later. */
-	cursor: Cursor | null;
+	/** The picture the app said was held up for the table when this browser was identified, and when that was. */
+	shown: Shown | null;
+	identifiedAt: number;
+	/** What this browser last said it had in hand, for people who connect later. */
+	hand: Hand | null;
 	/** When that was, to keep one browser from flooding the others. */
-	pointedAt: number;
+	handAt: number;
+	/** When this browser last pinged, for the same reason. */
+	pingedAt: number;
 }
 
 let connections = 0;
@@ -94,6 +108,18 @@ const rooms = new Map<string, Set<Socket>>();
 
 /** The newest event delivered per campaign since this server started. */
 const delivered = new Map<string, number>();
+
+/**
+ * The last time the GM brought everyone somewhere, per campaign and for
+ * each role as the app allowed it. Whoever connects later is sent it, so
+ * that arriving late doesn't mean looking at the wrong map.
+ */
+const lastGather = new Map<string, Record<Role, Gather | null>>();
+/** A call that old is no longer where the table is. */
+const GATHER_KEPT = 6 * 60 * 60 * 1000;
+
+/** The picture held up for the table per campaign, and when the app last said so through here. */
+const heldUp = new Map<string, { shown: Shown | null; at: number }>();
 
 // Players and the GM listen on separate topics, because the same event can
 // mean different things to each (or nothing at all to a player).
@@ -209,7 +235,7 @@ async function forward(ws: Socket, message: Extract<ClientMessage, { t: 'cmd' }>
 	refuse(typeof body?.error === 'string' ? body.error : 'Something went wrong.');
 }
 
-// ----------------------------------------------------------------- pointers
+// ----------------------------------------------------------- hands and pings
 
 /** Sends to everyone in the campaign except the socket it came from. */
 function relay(from: Socket, message: ServerMessage) {
@@ -219,37 +245,68 @@ function relay(from: Socket, message: ServerMessage) {
 	}
 }
 
-/** Where everyone but `ws` is pointing. */
-function cursors(ws: Socket): Cursor[] {
-	const others: Cursor[] = [];
+/** What everyone but `ws` has in hand. */
+function hands(ws: Socket): Hand[] {
+	const others: Hand[] = [];
 	for (const other of rooms.get(ws.data.campaignId) ?? []) {
-		if (other !== ws && other.data.cursor) others.push(other.data.cursor);
+		if (other !== ws && other.data.hand) others.push(other.data.hand);
 	}
 	return others;
 }
 
-// The pointer can be over the margin around a map, so a little outside 0..1 is fine.
+// A hand can be over the margin around a map, so a little outside 0..1 is fine.
 const nearMap = (n: unknown): n is number => typeof n === 'number' && Math.abs(n) <= 16;
 
-/** A browser saying where its pointer is, or (with null) that it has left the map. */
-function point(ws: Socket, at: unknown) {
+/**
+ * A browser pointing a spot out to the table. Everyone else in the campaign
+ * is told, and the ones looking at that map show it. The browser that sent
+ * it shows its own.
+ */
+function ping(ws: Socket, at: unknown) {
+	if (ws.data.display) return;
+	const spot = at as Partial<PingSpot> | null | undefined;
+	if (typeof spot !== 'object' || spot === null) return;
+	if (typeof spot.mapId !== 'string' || !ID_SHAPE.test(spot.mapId)) return;
+	if (!nearMap(spot.x) || !nearMap(spot.y)) return;
+
+	// A few a second is plenty to point with.
+	const now = Date.now();
+	if (now - ws.data.pingedAt < 250) return;
+	ws.data.pingedAt = now;
+
+	// Who is pointing comes from the connection, never from the message.
+	const { user, role } = ws.data;
+	const sent: Ping = {
+		userId: user.id,
+		name: user.name,
+		role,
+		mapId: spot.mapId,
+		x: spot.x,
+		y: spot.y
+	};
+	relay(ws, { t: 'ping', ping: sent });
+}
+
+/** A browser saying what it has in hand, or (with null) that it has let go. */
+function hold(ws: Socket, at: unknown) {
 	if (ws.data.display) return;
 	if (at === null) {
-		if (!ws.data.cursor) return;
-		ws.data.cursor = null;
-		return relay(ws, { t: 'cursor.left', id: ws.data.id });
+		if (!ws.data.hand) return;
+		ws.data.hand = null;
+		return relay(ws, { t: 'hand.left', id: ws.data.id });
 	}
 
-	const spot = at as Partial<CursorSpot> | undefined;
+	const spot = at as Partial<HandSpot> | undefined;
 	if (typeof spot !== 'object' || typeof spot.mapId !== 'string' || !ID_SHAPE.test(spot.mapId)) {
 		return;
 	}
-	if (!nearMap(spot.x) || !nearMap(spot.y)) return;
 
-	// What they have in hand comes along: a token being dragged, a distance
-	// being measured. Whether that token is theirs to move is not known
-	// here. The browsers that are shown this know the token, and decide.
+	// A token being dragged, a distance being measured. Whether that token
+	// is theirs to move is not known here. The browsers that are shown this
+	// know the token, and decide.
 	const { drag, ruler } = spot;
+	// An empty hand is said with null.
+	if (drag === undefined && ruler === undefined) return;
 	if (drag !== undefined) {
 		if (typeof drag !== 'object' || drag === null) return;
 		if (typeof drag.id !== 'string' || !ID_SHAPE.test(drag.id)) return;
@@ -264,24 +321,16 @@ function point(ws: Socket, at: unknown) {
 
 	// A browser sends about twenty of these a second. Much faster is dropped.
 	const now = Date.now();
-	if (now - ws.data.pointedAt < 15) return;
-	ws.data.pointedAt = now;
+	if (now - ws.data.handAt < 15) return;
+	ws.data.handAt = now;
 
-	// Who is pointing comes from the connection, never from the message.
+	// Whose hand it is comes from the connection, never from the message.
 	const { id, user, role } = ws.data;
-	const cursor: Cursor = {
-		id,
-		userId: user.id,
-		name: user.name,
-		role,
-		mapId: spot.mapId,
-		x: spot.x,
-		y: spot.y
-	};
-	if (drag) cursor.drag = { id: drag.id, x: drag.x, y: drag.y };
-	if (ruler) cursor.ruler = [[ruler[0][0], ruler[0][1]], [ruler[1][0], ruler[1][1]]];
-	ws.data.cursor = cursor;
-	relay(ws, { t: 'cursor', cursor });
+	const hand: Hand = { id, userId: user.id, name: user.name, role, mapId: spot.mapId };
+	if (drag) hand.drag = { id: drag.id, x: drag.x, y: drag.y };
+	if (ruler) hand.ruler = [[ruler[0][0], ruler[0][1]], [ruler[1][0], ruler[1][1]]];
+	ws.data.hand = hand;
+	relay(ws, { t: 'hand', hand });
 }
 
 /** The app handing over events to deliver. Nobody else may call this. */
@@ -289,13 +338,26 @@ async function publish(request: Request): Promise<Response> {
 	if (request.method !== 'POST' || request.headers.get('authorization') !== `Bearer ${SECRET}`) {
 		return new Response('Forbidden', { status: 403 });
 	}
-	const { campaignId, events, gather } = (await request.json()) as Broadcast;
+	const { campaignId, events, gather, show } = (await request.json()) as Broadcast;
 	// The GM bringing everyone along: the app has said which roles may follow.
+	// Each role keeps the last call it was let follow: one the players were
+	// left out of doesn't take theirs away.
+	if (gather) {
+		const kept = lastGather.get(campaignId) ?? { gm: null, player: null };
+		for (const role of ROLES) kept[role] = gather[role] ?? kept[role];
+		lastGather.set(campaignId, kept);
+	}
 	for (const role of ROLES) {
 		const call = gather?.[role];
 		if (!call) continue;
 		const message: ServerMessage = { t: 'gather', gather: call };
 		server.publish(topic(campaignId, role), JSON.stringify(message));
+	}
+	// A picture held up for the table, or put away: the same news for everyone.
+	if (show) {
+		heldUp.set(campaignId, { shown: show.shown, at: Date.now() });
+		const message = JSON.stringify({ t: 'show', shown: show.shown } satisfies ServerMessage);
+		for (const role of ROLES) server.publish(topic(campaignId, role), message);
 	}
 	for (const event of events) {
 		delivered.set(campaignId, Math.max(delivered.get(campaignId) ?? 0, event.seq));
@@ -326,6 +388,7 @@ const server = Bun.serve({
 		const campaignId = url.searchParams.get('campaign') ?? '';
 		const cookie = request.headers.get('cookie') ?? '';
 		const display = url.searchParams.has('display');
+		const asked = Date.now();
 		const identity = await identify(campaignId, cookie, display);
 		if (identity instanceof Response) return identity;
 
@@ -339,8 +402,11 @@ const server = Bun.serve({
 			seq: identity.seq,
 			recent: [],
 			queue: Promise.resolve(),
-			cursor: null,
-			pointedAt: 0
+			shown: identity.shown ?? null,
+			identifiedAt: asked,
+			hand: null,
+			handAt: 0,
+			pingedAt: 0
 		};
 		if (server.upgrade(request, { data })) return;
 		return new Response('Expected a WebSocket', { status: 426 });
@@ -358,6 +424,7 @@ const server = Bun.serve({
 			if (!room) rooms.set(campaignId, (room = new Set()));
 			room.add(ws);
 
+			const held = heldUp.get(campaignId);
 			send(ws, {
 				t: 'hello',
 				user,
@@ -367,8 +434,16 @@ const server = Bun.serve({
 				// tells the browser its snapshot is behind, and it reloads.
 				seq: Math.max(ws.data.seq, delivered.get(campaignId) ?? 0),
 				online: presence(campaignId),
-				cursors: cursors(ws)
+				hands: hands(ws),
+				// What the app said when it identified this browser, unless the
+				// picture has been changed through here since it was asked.
+				shown: held && held.at >= ws.data.identifiedAt ? held.shown : ws.data.shown
 			});
+			// Where the GM last brought everyone, for someone arriving late.
+			const call = lastGather.get(campaignId)?.[role];
+			if (call && Date.now() - call.at < GATHER_KEPT) {
+				send(ws, { t: 'gather', gather: call, late: true });
+			}
 			if (!ws.data.display) announcePresence(campaignId);
 		},
 
@@ -379,7 +454,8 @@ const server = Bun.serve({
 			} catch {
 				return;
 			}
-			if (message?.t === 'cursor') return point(ws, message.at);
+			if (message?.t === 'hand') return hold(ws, message.at);
+			if (message?.t === 'ping') return ping(ws, message.at);
 			if (message?.t !== 'cmd' || typeof message.id !== 'number') return;
 
 			const now = Date.now();
@@ -402,7 +478,7 @@ const server = Bun.serve({
 			const { campaignId } = ws.data;
 			const room = rooms.get(campaignId);
 			room?.delete(ws);
-			if (ws.data.cursor) relay(ws, { t: 'cursor.left', id: ws.data.id });
+			if (ws.data.hand) relay(ws, { t: 'hand.left', id: ws.data.id });
 			if (room?.size === 0) rooms.delete(campaignId);
 			else if (!ws.data.display) announcePresence(campaignId);
 		}

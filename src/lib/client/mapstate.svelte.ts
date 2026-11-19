@@ -1,6 +1,7 @@
 // The browser's copy of one map: a snapshot from the server, kept current
 // by applying live events on top of it.
 
+import { walked } from '#lib/shared/journey.ts';
 import type {
 	Backdrop,
 	Crumb,
@@ -10,6 +11,7 @@ import type {
 	MapSnapshot,
 	Marker,
 	Party,
+	Point,
 	Region,
 	Token
 } from '#lib/shared/types.ts';
@@ -29,6 +31,14 @@ export class MapState {
 	drawings = $state<Drawing[]>([]);
 	/** Where the party is, on this map or any other. */
 	party = $state<Party | null>(null);
+	/** Where the party has been on this map: see src/lib/shared/journey.ts. */
+	journey = $state.raw<Point[][]>([]);
+	/**
+	 * How many miles across this map is, if anything on the way here says.
+	 * Like the backdrop, only the server can work it out, so it is as old
+	 * as the snapshot.
+	 */
+	readonly miles: number | null;
 
 	/** Events up to this sequence number are already part of the snapshot. */
 	readonly lastSeq: number;
@@ -42,6 +52,8 @@ export class MapState {
 		this.tokens = snapshot.tokens;
 		this.drawings = snapshot.drawings;
 		this.party = snapshot.party;
+		this.journey = snapshot.journey;
+		this.miles = snapshot.miles;
 		this.lastSeq = snapshot.lastSeq;
 	}
 
@@ -57,11 +69,17 @@ export class MapState {
 			case 'marker.remove':
 				if (patch.mapId === here) this.markers = this.markers.filter((m) => m.id !== patch.id);
 				break;
+			// A token coming into a player's sight, or leaving it, can change
+			// the turn order they are shown: it comes along then.
 			case 'token.upsert':
-				if (patch.token.mapId === here) this.tokens = upsert(this.tokens, patch.token);
+				if (patch.token.mapId !== here) break;
+				this.tokens = upsert(this.tokens, patch.token);
+				if (patch.turns) this.map = { ...this.map, turns: patch.turns };
 				break;
 			case 'token.remove':
-				if (patch.mapId === here) this.tokens = this.tokens.filter((t) => t.id !== patch.id);
+				if (patch.mapId !== here) break;
+				this.tokens = this.tokens.filter((t) => t.id !== patch.id);
+				if (patch.turns) this.map = { ...this.map, turns: patch.turns };
 				break;
 			case 'drawing.upsert':
 				if (patch.drawing.mapId === here) this.drawings = upsert(this.drawings, patch.drawing);
@@ -92,8 +110,16 @@ export class MapState {
 				break;
 			}
 			// The party is the campaign's, so it is news on whichever map this is.
-			case 'party.set':
-				this.party = patch.party;
+			// Where it went on this one is added to the road behind it.
+			case 'party.set': {
+				const to = patch.party;
+				this.journey = walked(
+					this.journey,
+					to?.mapId === here ? [to.x, to.y] : null,
+					this.party?.mapId === here
+				);
+				this.party = to;
+			}
 		}
 	}
 }

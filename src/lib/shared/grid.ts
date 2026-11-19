@@ -3,7 +3,7 @@
 // grid is in the map's pixels, distances are told in feet, and these
 // functions go between them.
 
-import type { Grid, MapInfo, Point } from './types';
+import type { Grid, MapInfo, Point, TemplateKind } from './types';
 
 type Sheet = Pick<MapInfo, 'width' | 'height' | 'grid'>;
 type Scale = Pick<MapInfo, 'cellFeet'>;
@@ -32,6 +32,95 @@ export function snapToGrid(map: Sheet, [x, y]: Point, size = 1): Point {
 		return Math.min(1, Math.max(0, snapped / span));
 	};
 	return [snap(x, grid.x, width), snap(y, grid.y, height)];
+}
+
+/**
+ * The nearest spot a template can start from: a corner of a cell, the
+ * middle of one, or the middle of one of its sides.
+ */
+export function snapToHalfCell(map: Sheet, [x, y]: Point): Point {
+	const { grid, width, height } = map;
+	const half = grid.size / 2;
+	const snap = (at: number, offset: number, span: number) => {
+		const snapped = Math.round((at * span - offset) / half) * half + offset;
+		return Math.min(1, Math.max(0, snapped / span));
+	};
+	return [snap(x, grid.x, width), snap(y, grid.y, height)];
+}
+
+/**
+ * The two points a template is kept as, for one dragged from `from` to
+ * `to`. It starts on the grid and is a whole number of cells long, and a
+ * box runs from one corner of a cell to another. `free` leaves it exactly
+ * as dragged. Either way both points stay on the map: a cone that would
+ * end beyond the edge is made shorter, and a circle is still a circle of
+ * the size dragged, with its second point put where there is room for it.
+ */
+export function templatePoints(
+	map: Sheet,
+	kind: TemplateKind,
+	from: Point,
+	to: Point,
+	free = false
+): [Point, Point] {
+	const { grid, width, height } = map;
+	const onMap = ([x, y]: Point): Point => [
+		Math.min(1, Math.max(0, x)),
+		Math.min(1, Math.max(0, y))
+	];
+	if (kind === 'rect') {
+		return free ? [onMap(from), onMap(to)] : [snapToGrid(map, from, 2), snapToGrid(map, to, 2)];
+	}
+
+	const a = free ? onMap(from) : snapToHalfCell(map, from);
+	const dx = (to[0] - a[0]) * width;
+	const dy = (to[1] - a[1]) * height;
+	const dragged = Math.hypot(dx, dy);
+	const length = free ? dragged : Math.max(1, Math.round(dragged / grid.size)) * grid.size;
+	const end = (ux: number, uy: number, long: number): Point => [
+		a[0] + (ux * long) / width,
+		a[1] + (uy * long) / height
+	];
+	const fits = ([x, y]: Point) => x >= 0 && x <= 1 && y >= 0 && y <= 1;
+
+	if (kind === 'circle') {
+		// Any spot on its rim will do to keep: one that is on the map.
+		const rim = [end(1, 0, length), end(-1, 0, length), end(0, 1, length), end(0, -1, length)];
+		return [a, rim.find(fits) ?? onMap(rim[0])];
+	}
+	// A cone points where it was dragged, as far as the map goes that way.
+	const [ux, uy] = dragged === 0 ? [1, 0] : [dx / dragged, dy / dragged];
+	for (let long = length; long > 0 && !free; long -= grid.size) {
+		if (fits(end(ux, uy, long))) return [a, end(ux, uy, long)];
+	}
+	return [a, onMap(end(ux, uy, length))];
+}
+
+/** How many feet that many of the map's pixels are, to one decimal place. */
+export function pixelsToFeet(map: Pick<Sheet, 'grid'> & Scale, pixels: number): number {
+	return Math.round((pixels / map.grid.size) * map.cellFeet * 10) / 10;
+}
+
+/**
+ * How many miles apart two spots of a world map are, as the crow flies, on
+ * a map that is `miles` across and `width` by `height` of anything: only
+ * its shape matters.
+ */
+export function milesBetween(
+	sheet: { width: number; height: number },
+	miles: number,
+	a: Point,
+	b: Point
+): number {
+	const dx = (a[0] - b[0]) * sheet.width;
+	const dy = (a[1] - b[1]) * sheet.height;
+	return (Math.hypot(dx, dy) / sheet.width) * miles;
+}
+
+/** "0.4 mi", "7.5 mi", "120 mi": as fine as a distance that size is worth telling. */
+export function milesCount(miles: number): string {
+	const shown = miles >= 100 ? Math.round(miles) : Math.round(miles * 10) / 10;
+	return `${shown.toLocaleString('en')} mi`;
 }
 
 /**

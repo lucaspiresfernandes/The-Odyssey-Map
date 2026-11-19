@@ -18,6 +18,7 @@ import {
 	DEFAULT_CELL_FEET,
 	DEFAULT_GRID,
 	NO_FOG,
+	NO_TURNS,
 	type Entity,
 	type EntityType,
 	type EventAction,
@@ -25,7 +26,9 @@ import {
 	type GalleryKind,
 	type Grid,
 	type MarkerType,
-	type Point
+	type Point,
+	type TokenMark,
+	type Turns
 } from '../shared/types';
 
 export const users = sqliteTable('users', {
@@ -55,6 +58,12 @@ export const campaigns = sqliteTable('campaigns', {
 	// Not a foreign key: maps already point at their campaign, and SQLite
 	// would need both rows to exist before either could be inserted.
 	rootMapId: text('root_map_id').notNull(),
+	/**
+	 * File name of the picture the GM is holding up for the whole table, out
+	 * of the gallery. Null while none is. Not a foreign key, for the same
+	 * reason, and because a picture may leave the gallery while it is shown.
+	 */
+	shownFile: text('shown_file'),
 	createdAt: integer('created_at').notNull()
 });
 
@@ -92,6 +101,10 @@ export const maps = sqliteTable(
 		cellFeet: real('cell_feet').notNull().default(DEFAULT_CELL_FEET),
 		/** The fog of war on a battle map: whether it is on, and where it has been cleared. */
 		fog: text('fog', { mode: 'json' }).$type<Fog>().notNull().default(NO_FOG),
+		/** Whose turn it is on a battle map, and who comes after. */
+		turns: text('turns', { mode: 'json' }).$type<Turns>().notNull().default(NO_TURNS),
+		/** How many miles a world map is across, when the GM has said so. */
+		miles: real('miles'),
 		imageFile: text('image_file'),
 		width: integer('width').notNull(),
 		height: integer('height').notNull(),
@@ -186,6 +199,8 @@ export const tokens = sqliteTable(
 		/** Degrees clockwise. */
 		rotation: integer('rotation').notNull().default(0),
 		locked: integer('locked', { mode: 'boolean' }).notNull().default(false),
+		/** What it is marked with: pips on its rim, or crossed out. */
+		marks: text('marks', { mode: 'json' }).$type<TokenMark[]>().notNull().default([]),
 		// From when a token belonged to one player. Nothing reads or writes
 		// these now: anyone moves any token that isn't locked.
 		ownerId: text('owner_id'),
@@ -198,8 +213,9 @@ export const tokens = sqliteTable(
 	(t) => [index('tokens_map').on(t.mapId)]
 );
 
-// What the table draws and writes on a battle map: freehand lines and lines
-// of text. Deleted like tokens are, so that undo brings the same one back.
+// What the table draws and writes on a battle map: freehand lines, lines of
+// text, and the templates that mark out the area of a spell. Deleted like
+// tokens are, so that undo brings the same one back.
 export const drawings = sqliteTable(
 	'drawings',
 	{
@@ -207,8 +223,8 @@ export const drawings = sqliteTable(
 		mapId: text('map_id')
 			.notNull()
 			.references(() => maps.id, { onDelete: 'cascade' }),
-		kind: text('kind', { enum: ['line', 'text'] }).notNull(),
-		/** In map space. A text has one. */
+		kind: text('kind', { enum: ['line', 'text', 'circle', 'cone', 'rect'] }).notNull(),
+		/** In map space. A text has one, a template two. */
 		points: text('points', { mode: 'json' }).$type<Point[]>().notNull(),
 		text: text('text').notNull().default(''),
 		color: text('color').notNull(),
@@ -244,6 +260,12 @@ export const gallery = sqliteTable(
 		 * starts hidden, so nothing spoils a surprise by being added.
 		 */
 		hidden: integer('hidden', { mode: 'boolean' }).notNull().default(true),
+		/**
+		 * What a token made from this picture starts out as: how many cells
+		 * across, and the colour of its ring. Null for the usual.
+		 */
+		tokenSize: real('token_size'),
+		tokenOutline: text('token_outline'),
 		createdAt: integer('created_at').notNull(),
 		/**
 		 * Set when the GM takes a picture out of the gallery while a map or a

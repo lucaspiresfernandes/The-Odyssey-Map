@@ -40,7 +40,9 @@ import {
 	MARKER_TYPE_IDS,
 	ROTATION_STEP,
 	TOKEN_COLORS,
+	TOKEN_MARK_IDS,
 	TOKEN_SIZE_STEP,
+	isTemplate,
 	type Drawing,
 	type DrawingKind,
 	type EntityType,
@@ -61,7 +63,9 @@ import {
 	type Role,
 	type StoredEvent,
 	type Token,
-	type TokenInput
+	type TokenInput,
+	type TokenMark,
+	type Turns
 } from '../shared/types';
 
 export interface Actor {
@@ -139,6 +143,8 @@ export const mapColumns = {
 	grid: maps.grid,
 	cellFeet: maps.cellFeet,
 	fog: maps.fog,
+	turns: maps.turns,
+	miles: maps.miles,
 	imageFile: maps.imageFile,
 	width: maps.width,
 	height: maps.height
@@ -156,6 +162,7 @@ export const tokenColumns = {
 	size: tokens.size,
 	rotation: tokens.rotation,
 	locked: tokens.locked,
+	marks: tokens.marks,
 	hidden: tokens.hidden,
 	updatedAt: tokens.updatedAt
 };
@@ -465,6 +472,38 @@ function asCellFeet(value: unknown): number {
 	return value;
 }
 
+/** How many cells across a token is: also what a picture in the gallery can start one out as. */
+export function asTokenSize(size: unknown): number {
+	if (
+		typeof size !== 'number' ||
+		!Number.isInteger(size / TOKEN_SIZE_STEP) ||
+		size < TOKEN_SIZE_STEP ||
+		size > LIMITS.tokenSize
+	) {
+		fail(
+			'invalid',
+			`A token is between ${TOKEN_SIZE_STEP} and ${LIMITS.tokenSize} cells across, in steps of ${TOKEN_SIZE_STEP}.`
+		);
+	}
+	return size;
+}
+
+/** A ring is in one of the token colours, or isn't there. */
+export function asOutline(value: unknown): string | null {
+	if (value !== null && !(TOKEN_COLORS as readonly unknown[]).includes(value)) {
+		fail('invalid', 'Unknown outline colour.');
+	}
+	return value as string | null;
+}
+
+/** What a token is marked with: each mark once, in the order they are listed in. */
+function asMarks(value: unknown): TokenMark[] {
+	if (!Array.isArray(value) || value.some((mark) => !TOKEN_MARK_IDS.includes(mark))) {
+		fail('invalid', 'Unknown mark.');
+	}
+	return TOKEN_MARK_IDS.filter((mark) => value.includes(mark)) as TokenMark[];
+}
+
 /** Validates whichever token fields are present and drops everything else. */
 function asTokenChanges(value: unknown): Partial<TokenInput> {
 	const raw = asRecord(value);
@@ -476,31 +515,12 @@ function asTokenChanges(value: unknown): Partial<TokenInput> {
 		}
 		out.color = raw.color as string;
 	}
-	if (raw.outline !== undefined) {
-		// A ring is in one of the token colours, or isn't there.
-		if (raw.outline !== null && !(TOKEN_COLORS as readonly unknown[]).includes(raw.outline)) {
-			fail('invalid', 'Unknown outline colour.');
-		}
-		out.outline = raw.outline as string | null;
-	}
+	if (raw.outline !== undefined) out.outline = asOutline(raw.outline);
 	if (raw.image !== undefined) out.image = raw.image === null ? null : asImageFile(raw.image);
 	if (raw.x !== undefined) out.x = asCoord(raw.x);
 	if (raw.y !== undefined) out.y = asCoord(raw.y);
-	if (raw.size !== undefined) {
-		const size = raw.size;
-		if (
-			typeof size !== 'number' ||
-			!Number.isInteger(size / TOKEN_SIZE_STEP) ||
-			size < TOKEN_SIZE_STEP ||
-			size > LIMITS.tokenSize
-		) {
-			fail(
-				'invalid',
-				`A token is between ${TOKEN_SIZE_STEP} and ${LIMITS.tokenSize} cells across, in steps of ${TOKEN_SIZE_STEP}.`
-			);
-		}
-		out.size = size;
-	}
+	if (raw.size !== undefined) out.size = asTokenSize(raw.size);
+	if (raw.marks !== undefined) out.marks = asMarks(raw.marks);
 	if (raw.rotation !== undefined) {
 		const turn = raw.rotation;
 		if (typeof turn !== 'number' || !Number.isInteger(turn) || turn % ROTATION_STEP !== 0) {
@@ -685,6 +705,7 @@ function createToken(db: Db, actor: Actor, raw: Record<string, unknown>): Stored
 			size: input.size ?? 1,
 			rotation: input.rotation ?? 0,
 			locked: input.locked === true,
+			marks: input.marks ?? [],
 			// Only the GM has anything to hide.
 			hidden: actor.role === 'gm' && input.hidden === true,
 			createdAt: now,
@@ -737,6 +758,7 @@ function duplicateToken(db: Db, actor: Actor, id: string): StoredEvent[] {
 			size: token.size,
 			rotation: token.rotation,
 			locked: false,
+			marks: token.marks,
 			hidden: token.hidden,
 			createdAt: now,
 			updatedAt: now
@@ -755,10 +777,21 @@ const TOKEN_FIELDS = [
 	'size',
 	'rotation',
 	'locked',
+	'marks',
 	'hidden'
 ] as const;
 /** What a lock holds in place. */
 const TOKEN_PLACING = ['x', 'y', 'size', 'rotation'] as const;
+
+/**
+ * Whether a field of a token is not what it was. Its marks are a list, so
+ * they are compared by what is in them. A token from before there were
+ * marks has none, which is the same as an empty list.
+ */
+function tokenDiffers(before: Token, after: Token, field: (typeof TOKEN_FIELDS)[number]): boolean {
+	if (field !== 'marks') return before[field] !== after[field];
+	return (before.marks ?? []).join() !== (after.marks ?? []).join();
+}
 
 /** `restoring` says this is undo, putting back what an earlier change took away. */
 function updateToken(
@@ -778,7 +811,7 @@ function updateToken(
 	}
 
 	const after: Token = { ...before, ...changes };
-	if (!TOKEN_FIELDS.some((field) => before[field] !== after[field])) return [];
+	if (!TOKEN_FIELDS.some((field) => tokenDiffers(before, after, field))) return [];
 	// A lock holds until it is taken off. The same change can do both.
 	if (before.locked && after.locked && TOKEN_PLACING.some((f) => before[f] !== after[f])) {
 		fail('conflict', 'That token is locked. Unlock it first.');
@@ -804,6 +837,7 @@ function updateToken(
 			size: after.size,
 			rotation: after.rotation,
 			locked: after.locked,
+			marks: after.marks,
 			hidden: after.hidden,
 			updatedAt: after.updatedAt
 		})
@@ -848,13 +882,25 @@ function asDrawingPoints(value: unknown, kind: DrawingKind): Point[] {
 	if (!Array.isArray(value) || value.length > LIMITS.drawingPoints) {
 		fail('invalid', 'That drawing could not be kept.');
 	}
-	if (kind === 'text' ? value.length !== 1 : value.length < 2) {
+	const template = isTemplate(kind);
+	if (kind === 'text' ? value.length !== 1 : template ? value.length !== 2 : value.length < 2) {
 		fail('invalid', 'That drawing could not be kept.');
 	}
-	return value.map((p) => {
+	const points = value.map((p) => {
 		if (!Array.isArray(p) || p.length !== 2) fail('invalid', 'That drawing could not be kept.');
 		return [rounded(asCoord(p[0])), rounded(asCoord(p[1]))] as Point;
 	});
+	// A template with both its points on one spot covers nothing.
+	if (template && points[0][0] === points[1][0] && points[0][1] === points[1][1]) {
+		fail('invalid', 'That template has no size.');
+	}
+	return points;
+}
+
+function asDrawingKind(value: unknown): DrawingKind {
+	if (value === 'line' || value === 'text') return value;
+	if (typeof value === 'string' && isTemplate(value)) return value;
+	fail('invalid', 'Unknown kind of drawing.');
 }
 
 function asInk(value: unknown): string {
@@ -882,8 +928,7 @@ function slid(points: Point[], by: unknown): Point[] {
 function createDrawing(db: Db, actor: Actor, raw: Record<string, unknown>): StoredEvent[] {
 	const map = findMap(db, actor, asId(raw.mapId));
 	if (map.kind !== 'battle') fail('invalid', 'Drawings go on battle maps.');
-	if (raw.kind !== 'line' && raw.kind !== 'text') fail('invalid', 'Unknown kind of drawing.');
-	const kind: DrawingKind = raw.kind;
+	const kind = asDrawingKind(raw.kind);
 
 	const points = asDrawingPoints(raw.points, kind);
 	const size = raw.size ?? DRAWING_SIZE[kind];
@@ -1135,6 +1180,50 @@ const sameGrid = (a: Grid, b: Grid) =>
 
 const sameFog = (a: Fog, b: Fog) => JSON.stringify(a) === JSON.stringify(b);
 
+const sameTurns = (a: Turns, b: Turns) => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * The turn order with whichever of its settings are present changed, and
+ * checked. Every token in it is one of this map's. One that has been taken
+ * off the map may stay: it keeps its place for when it comes back.
+ */
+function asTurns(db: Db, mapId: string, value: unknown, current: Turns): Turns {
+	const raw = asRecord(value);
+	let order = current.order;
+	if (raw.order !== undefined) {
+		if (!Array.isArray(raw.order) || raw.order.length > LIMITS.turns) {
+			fail('invalid', `At most ${LIMITS.turns} tokens take turns on one map.`);
+		}
+		order = [...new Set(raw.order.map(asId))];
+		const here = db.select({ id: tokens.id }).from(tokens).where(eq(tokens.mapId, mapId)).all();
+		const known = new Set(here.map((token) => token.id));
+		if (order.some((id) => !known.has(id))) fail('not_found', 'That token does not exist.');
+	}
+	let whose = current.current;
+	if (raw.current !== undefined) whose = raw.current === null ? null : asId(raw.current);
+	// The turn of a token that left the order is nobody's.
+	if (whose !== null && !order.includes(whose)) whose = null;
+	const round = raw.round === undefined ? current.round : raw.round;
+	if (typeof round !== 'number' || !Number.isInteger(round) || round < 1 || round > 9999) {
+		fail('invalid', 'Malformed turn order.');
+	}
+	return { order, current: whose, round };
+}
+
+/** How many miles across a world map is, or null for no scale of its own. */
+function asMiles(value: unknown): number | null {
+	if (value === null) return null;
+	if (
+		typeof value !== 'number' ||
+		!Number.isFinite(value) ||
+		value < LIMITS.milesMin ||
+		value > LIMITS.milesMax
+	) {
+		fail('invalid', `A map is between ${LIMITS.milesMin} and ${LIMITS.milesMax} miles across.`);
+	}
+	return value;
+}
+
 /** Fog with whichever of its settings are present changed, and checked. */
 function asFog(value: unknown, current: Fog): Fog {
 	const raw = asRecord(value);
@@ -1160,6 +1249,8 @@ function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): Stored
 		sameGrid(before.grid, after.grid) &&
 		before.cellFeet === after.cellFeet &&
 		sameFog(before.fog, after.fog) &&
+		sameTurns(before.turns, after.turns) &&
+		before.miles === after.miles &&
 		before.imageFile === after.imageFile &&
 		before.width === after.width &&
 		before.height === after.height
@@ -1178,6 +1269,8 @@ function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): Stored
 			grid: after.grid,
 			cellFeet: after.cellFeet,
 			fog: after.fog,
+			turns: after.turns,
+			miles: after.miles,
 			imageFile: after.imageFile,
 			width: after.width,
 			height: after.height
@@ -1190,8 +1283,9 @@ function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): Stored
 /**
  * Renames a map, sets up its grid, says how many feet a cell stands for,
  * lays an image from the gallery under it, covers it with fog or clears
- * some: whichever are asked for. What kind of map it is was settled when
- * its region was drawn, and stays so.
+ * some, says whose turn it is, or how many miles across it is: whichever
+ * are asked for. What kind of map it is was settled when its region was
+ * drawn, and stays so.
  */
 function updateMap(
 	db: Db,
@@ -1204,15 +1298,17 @@ function updateMap(
 		cellFeet?: unknown;
 		image?: unknown;
 		fog?: unknown;
+		turns?: unknown;
+		miles?: unknown;
 	}
 ): StoredEvent[] {
 	requireWorldEdit(actor);
 	const before = findMap(db, actor, id);
-	const { name, kind, grid, cellFeet, image, fog } = changes;
+	const { name, kind, grid, cellFeet, image, fog, turns, miles } = changes;
 	if (kind !== undefined) {
 		fail('invalid', 'A map stays the kind it was made as. Draw a region for the other kind.');
 	}
-	if ([name, grid, cellFeet, image, fog].every((change) => change === undefined)) {
+	if ([name, grid, cellFeet, image, fog, turns, miles].every((change) => change === undefined)) {
 		fail('invalid', 'Malformed request.');
 	}
 
@@ -1223,6 +1319,14 @@ function updateMap(
 	if (fog !== undefined) {
 		if (before.kind !== 'battle') fail('invalid', 'Fog of war goes on battle maps.');
 		after.fog = asFog(fog, before.fog);
+	}
+	if (turns !== undefined) {
+		if (before.kind !== 'battle') fail('invalid', 'Turns are taken on battle maps.');
+		after.turns = asTurns(db, before.id, turns, before.turns);
+	}
+	if (miles !== undefined) {
+		if (before.kind !== 'world') fail('invalid', 'A battle map is measured in feet.');
+		after.miles = asMiles(miles);
 	}
 	if (image !== undefined) {
 		// The map takes the size of its picture. Everything on it is placed
@@ -1378,7 +1482,8 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 		const after = event.after as Token;
 		const changes: Record<string, unknown> = {};
 		for (const field of TOKEN_FIELDS) {
-			if (before[field] !== after[field]) changes[field] = before[field];
+			if (!tokenDiffers(before, after, field)) continue;
+			changes[field] = field === 'marks' ? (before.marks ?? []) : before[field];
 		}
 		return updateToken(db, actor, id, changes, true);
 	}
@@ -1424,8 +1529,13 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 	// The fog goes back only if this change was to the fog: it is changed
 	// often, between other things, and those should not take it along.
 	const fogged = old.fog && made.fog && !sameFog(old.fog, made.fog);
+	// The same goes for whose turn it is, and for the scale of a world map.
+	const turned = old.turns && made.turns && !sameTurns(old.turns, made.turns);
+	const scaled = old.miles !== undefined && old.miles !== made.miles;
 	return writeMap(db, actor, current, {
 		...current,
+		turns: turned ? old.turns : current.turns,
+		miles: scaled ? old.miles : current.miles,
 		name: old.name,
 		// Changes from before there were battle maps have no grid, and ones
 		// from before distances were told in feet have no scale. The kind of

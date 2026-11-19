@@ -4,7 +4,7 @@
 // tells it what to deliver, already filtered for each role by `toLiveEvent`,
 // so nothing hidden is ever handed over to be sent to a player.
 
-import type { Broadcast, Gather, Role, StoredEvent } from '../shared/types';
+import type { Broadcast, Gather, Role, Shown, StoredEvent } from '../shared/types';
 import type { Db } from './db';
 import { toLiveEvent } from './visibility';
 
@@ -63,4 +63,9 @@ export function announce(db: Db, events: StoredEvent[]): Promise<void> {
  */
 export function summon(campaignId: string, gather: Record<Role, Gather | null>): Promise<void> {
 	return send({ campaignId, events: [], gather });
+}
+
+/** Tells the whole table which picture the GM is holding up for it, or with null that it is put away. */
+export function holdUp(campaignId: string, shown: Shown | null): Promise<void> {
+	return send({ campaignId, events: [], show: { shown } });
 }

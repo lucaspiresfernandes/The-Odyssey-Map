@@ -3,26 +3,33 @@
 	// token, one drawing, or a whole catch of them. Each button is there only
 	// for those it would do something for.
 	//
-	// A token is the whole table's: its label, its lock, its look, copying it,
-	// and taking it off the map. Hiding it is the GM's. Turning and resizing
-	// it are not done from here: the map has handles for those on the token
-	// itself. A drawing is changed and rubbed out by whoever made it, and by
-	// the GM.
+	// A token is the whole table's: its label, its lock, its marks, its look,
+	// copying it, and taking it off the map. Hiding it is the GM's, and so is
+	// saying whether it takes turns. Turning and resizing it are not done from
+	// here: the map has handles for those on the token itself. A drawing is
+	// changed and rubbed out by whoever made it, and by the GM.
 
 	import { canChangeDrawing, canHideToken } from '#lib/shared/rules.ts';
+	import { joinedTurns } from '#lib/shared/turns.ts';
 	import {
 		LIMITS,
+		TOKEN_MARKS,
+		isTemplate,
 		type Command,
 		type Drawing,
 		type Role,
 		type Token,
-		type TokenInput
+		type TokenInput,
+		type TokenMark,
+		type Turns
 	} from '#lib/shared/types.ts';
 	import ToolButton from './ToolButton.svelte';
 
 	interface Props {
 		tokens: Token[];
 		drawings: Drawing[];
+		/** Who takes turns on this map, for the button that puts a token among them. */
+		turns: Turns;
 		role: Role;
 		userId: string;
 		/** Which side the buttons' tooltips come out on: away from what is selected. */
@@ -39,8 +46,19 @@
 		onclear: () => void;
 	}
 
-	let { tokens, drawings, role, userId, tip, send, oncopy, onedit, onwrite, onclear }: Props =
-		$props();
+	let {
+		tokens,
+		drawings,
+		turns,
+		role,
+		userId,
+		tip,
+		send,
+		oncopy,
+		onedit,
+		onwrite,
+		onclear
+	}: Props = $props();
 
 	const gm = $derived(canHideToken(role));
 	const erasable = $derived(drawings.filter((d) => canChangeDrawing(role, userId, d)));
@@ -52,11 +70,16 @@
 	);
 	const allLocked = $derived(tokens.length > 0 && tokens.every((t) => t.locked));
 	const allHidden = $derived(tokens.length > 0 && tokens.every((t) => t.hidden));
+	const allTakeTurns = $derived(
+		tokens.length > 0 && tokens.every((t) => turns.order.includes(t.id))
+	);
 	const several = $derived(tokens.length > 1);
 	const removable = $derived(tokens.length + erasable.length);
 
 	let labelling = $state(false);
 	let label = $state('');
+	/** The marks are out, to put on what is selected or take off it. */
+	let marking = $state(false);
 
 	/**
 	 * Puts the caret in the label's box, with what is there selected to type
@@ -74,6 +97,11 @@
 		labelling = false;
 	});
 
+	// The marks are put away with the last token.
+	$effect(() => {
+		if (tokens.length === 0) marking = false;
+	});
+
 	const update = (token: Token, changes: Partial<TokenInput>): Command => ({
 		t: 'token.update',
 		id: token.id,
@@ -88,6 +116,41 @@
 	function hide() {
 		const hidden = !allHidden;
 		send(tokens.filter((t) => t.hidden !== hidden).map((t) => update(t, { hidden })));
+	}
+
+	/** Whether every token selected wears this mark. */
+	const marked = (mark: TokenMark) => tokens.every((t) => t.marks.includes(mark));
+
+	/** Marks are changed one at a time, in the order they were clicked. */
+	let marksTurn: Promise<unknown> = Promise.resolve();
+
+	/**
+	 * Puts a mark on every token selected, or when they all wear it, takes it
+	 * off them. A token's marks are sent whole, so each change waits for the
+	 * one before it: two marks clicked in a hurry would otherwise each be
+	 * added to the marks as they were before either, and the second would
+	 * undo the first.
+	 */
+	function mark(mark: TokenMark) {
+		marksTurn = marksTurn.then(() => {
+			const off = marked(mark);
+			return send(
+				tokens
+					.filter((t) => t.marks.includes(mark) === off)
+					.map((t) =>
+						update(t, { marks: off ? t.marks.filter((m) => m !== mark) : [...t.marks, mark] })
+					)
+			);
+		});
+	}
+
+	/** Puts the tokens selected at the end of the turn order, or when they are all in it, takes them out. */
+	function takeTurns() {
+		const ids = tokens.map((t) => t.id);
+		const order = allTakeTurns
+			? turns.order.filter((id) => !ids.includes(id))
+			: joinedTurns(turns.order, ids);
+		send([{ t: 'map.update', id: tokens[0].mapId, turns: { order } }]);
 	}
 
 	function saveLabel(event: SubmitEvent) {
@@ -109,7 +172,7 @@
 			note =
 				tokens.length
 					? `Deleted “${tokens[0].name}”.`
-					: `Rubbed out the ${erasable[0].kind === 'text' ? 'text' : 'drawing'}.`;
+					: `Rubbed out the ${erasable[0].kind === 'text' ? 'text' : isTemplate(erasable[0].kind) ? 'template' : 'drawing'}.`;
 		}
 		onclear();
 		send(commands, note);
@@ -140,6 +203,45 @@
 				/>
 				<button class="btn btn-sm btn-primary">Save</button>
 			</form>
+		{:else if marking && tokens.length}
+			<!-- The marks, each a disc of its own colour (--c): lit while every
+			     token selected wears it. The first crosses a token out. -->
+			<div class="flex items-center gap-1.5 px-1" role="group" aria-label="Marks">
+				{#each TOKEN_MARKS as option (option.id)}
+					{@const on = marked(option.id)}
+					<button
+						class={[
+							'grid size-6 cursor-pointer place-items-center rounded-full border-2 bg-(--c) touch:size-8',
+							on ? 'border-white token-selected' : 'border-[#55607a]'
+						]}
+						style:--c={option.color}
+						style:font-size="24px"
+						aria-pressed={on}
+						aria-label={option.id === 'down' ? 'Down' : `${option.label} mark`}
+						title={option.id === 'down' ? 'Down: crosses the token out' : `${option.label} mark`}
+						onclick={() => mark(option.id)}
+						onkeydown={(e) => {
+							if (e.key !== 'Escape') return;
+							// Only the marks are put away, not the selection with them.
+							e.stopPropagation();
+							marking = false;
+						}}
+					>
+						{#if option.id === 'down'}
+							<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+								<path
+									d="M5 5 19 19M19 5 5 19"
+									fill="none"
+									stroke="#e5544b"
+									stroke-width="4"
+									stroke-linecap="round"
+								/>
+							</svg>
+						{/if}
+					</button>
+				{/each}
+				<button class="btn btn-sm" onclick={() => (marking = false)}>Done</button>
+			</div>
 		{:else}
 			{#if tokens.length}
 				{#if one}
@@ -165,6 +267,15 @@
 				<ToolButton
 					small
 					{tip}
+					icon="mark"
+					label="Marks"
+					hint="Pips on its rim, or crossed out"
+					active={tokens.some((t) => t.marks.length > 0)}
+					onclick={() => (marking = true)}
+				/>
+				<ToolButton
+					small
+					{tip}
 					icon="duplicate"
 					label={several ? 'Duplicate them' : 'Duplicate'}
 					onclick={() => oncopy(tokens.map((t) => ({ t: 'token.duplicate', id: t.id })))}
@@ -184,6 +295,14 @@
 			{/if}
 			{#if gm && tokens.length}
 				<span class="w-px self-stretch bg-line"></span>
+				<ToolButton
+					small
+					{tip}
+					icon="turns"
+					label={allTakeTurns ? 'Take out of the turn order' : 'Add to the turn order'}
+					active={allTakeTurns}
+					onclick={takeTurns}
+				/>
 				<ToolButton
 					small
 					{tip}

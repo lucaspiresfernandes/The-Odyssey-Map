@@ -102,6 +102,37 @@ export interface Fog {
 export const NO_FOG: Fog = { on: false, clear: [] };
 
 /**
+ * Whose turn it is on a battle map: the tokens that take turns, in the
+ * order they take them, and the one whose turn it is now. A token that has
+ * been taken off the map keeps its place, in case it comes back.
+ *
+ * A player is only ever sent the tokens in it that they can see.
+ */
+export interface Turns {
+	/** Token ids, the first to act first. */
+	order: string[];
+	/** The token whose turn it is, or null before the first turn. */
+	current: string | null;
+	/** Which time round the order this is, from 1. */
+	round: number;
+}
+
+export const NO_TURNS: Turns = { order: [], current: null, round: 1 };
+
+/**
+ * The turn order as someone who sees only these tokens is shown it. A turn
+ * that belongs to a token they can't see is, to them, nobody's.
+ */
+export function turnsAmong(turns: Turns, seen: Iterable<string>): Turns {
+	const ids = new Set(seen);
+	return {
+		order: turns.order.filter((id) => ids.has(id)),
+		current: turns.current !== null && ids.has(turns.current) ? turns.current : null,
+		round: turns.round
+	};
+}
+
+/**
  * Where the party is: one spot, on one world map of the campaign. Every
  * map on the way down to that one shows the party in the region that leads
  * there. It never stands where players can't go.
@@ -130,6 +161,25 @@ export const TOKEN_COLORS = [
 ] as const;
 
 /**
+ * What a token can be marked with: a small pip in one of these colours on
+ * its rim, for whatever the table says each one means, or `down`, which
+ * crosses the token out.
+ */
+export const TOKEN_MARKS = [
+	{ id: 'down', label: 'Down', color: '#12151c' },
+	{ id: 'red', label: 'Red', color: '#e5544b' },
+	{ id: 'yellow', label: 'Yellow', color: '#e0a526' },
+	{ id: 'green', label: 'Green', color: '#3fae7c' },
+	{ id: 'blue', label: 'Blue', color: '#5b8def' },
+	{ id: 'purple', label: 'Purple', color: '#b072e0' },
+	{ id: 'white', label: 'White', color: '#fff8e4' }
+] as const;
+
+export type TokenMark = (typeof TOKEN_MARKS)[number]['id'];
+
+export const TOKEN_MARK_IDS: readonly string[] = TOKEN_MARKS.map((mark) => mark.id);
+
+/**
  * A piece on a battle map: a character, a monster, anything that moves.
  * `x` and `y` are its middle.
  */
@@ -154,6 +204,8 @@ export interface Token {
 	rotation: number;
 	/** A locked token stays as it is put until someone unlocks it: not moved, resized or turned. */
 	locked: boolean;
+	/** What it is marked with, in the order of TOKEN_MARKS. Anyone's to set. */
+	marks: TokenMark[];
 	/** Only ever sent to the GM as true. */
 	hidden: boolean;
 	updatedAt: number;
@@ -176,11 +228,27 @@ export const INK_COLORS = [
 	'#b072e0'
 ] as const;
 
-/** A drawing is a line drawn freehand, or a line of text. */
-export type DrawingKind = 'line' | 'text';
+/**
+ * A drawing is a line drawn freehand, a line of text, or a template: the
+ * area a spell or a breath covers, as a circle, a cone or a box.
+ */
+export type DrawingKind = 'line' | 'text' | 'circle' | 'cone' | 'rect';
+
+/** The templates among them. Each is kept as two points: see `Drawing.points`. */
+export const TEMPLATE_KINDS = ['circle', 'cone', 'rect'] as const;
+export type TemplateKind = (typeof TEMPLATE_KINDS)[number];
+
+export const isTemplate = (kind: string): kind is TemplateKind =>
+	(TEMPLATE_KINDS as readonly string[]).includes(kind);
 
 /** How big a drawing is unless it says otherwise, in cells: see `Drawing.size`. */
-export const DRAWING_SIZE: Record<DrawingKind, number> = { line: 0.1, text: 0.5 };
+export const DRAWING_SIZE: Record<DrawingKind, number> = {
+	line: 0.1,
+	text: 0.5,
+	circle: 0.06,
+	cone: 0.06,
+	rect: 0.06
+};
 
 /**
  * Something the table drew or wrote on a battle map. Anyone can add one.
@@ -190,9 +258,13 @@ export interface Drawing {
 	id: string;
 	mapId: string;
 	kind: DrawingKind;
-	/** The path of a line. A text has one point: the middle of its left edge. */
+	/**
+	 * The path of a line. A text has one point: the middle of its left edge.
+	 * A template has two: a circle its middle and a spot on its rim, a cone
+	 * its tip and the middle of its far end, a box two opposite corners.
+	 */
 	points: Point[];
-	/** What a text says. Empty for a line. */
+	/** What a text says. Empty for anything else. */
 	text: string;
 	color: string;
 	/** In cells, like a token's: how thick a line is, how tall a text's letters are. */
@@ -214,6 +286,14 @@ export interface MapInfo {
 	cellFeet: number;
 	/** What of a battle map is under the fog of war. A world map has none. */
 	fog: Fog;
+	/** Whose turn it is on a battle map, and who comes after. A world map has none. */
+	turns: Turns;
+	/**
+	 * How many miles a world map is from its left edge to its right, when the
+	 * GM has said so. Null leaves it to the maps further out: see
+	 * `MapSnapshot.miles`.
+	 */
+	miles: number | null;
 	/** File name of the map image, out of the gallery, or null for a blank map. */
 	imageFile: string | null;
 	width: number;
@@ -237,6 +317,48 @@ export interface GalleryItem {
 	 * the GM as true: to a player a hidden picture is not in the gallery.
 	 */
 	hidden: boolean;
+	/**
+	 * What a token made from this picture starts out as, when the GM has said
+	 * so: how many cells across, and the colour of its ring. Null for the
+	 * usual: one cell, no ring. A map image has neither.
+	 */
+	tokenSize: number | null;
+	tokenOutline: string | null;
+}
+
+/** A picture the GM is holding up for the whole table to look at. */
+export interface Shown {
+	file: string;
+	name: string;
+	width: number;
+	height: number;
+}
+
+/** What the endpoint that holds a picture up for the table answers with. */
+export interface ShowResponse {
+	ok: boolean;
+	error?: string;
+}
+
+/** One thing the finder can take someone to: a map, or a marker on one. */
+export interface FindEntry {
+	kind: 'map' | 'marker';
+	/** The map's id, or the marker's. */
+	id: string;
+	/** The map to go to: itself, or the one the marker is on. */
+	mapId: string;
+	name: string;
+	/** The maps on the way there, by name, the first map of the campaign first. */
+	path: string[];
+	/** What kind of map it is, or what type of marker. */
+	type: MapKind | MarkerType;
+	/** Only ever true for the GM. */
+	hidden: boolean;
+}
+
+export interface FindResponse {
+	ok: boolean;
+	entries: FindEntry[];
 }
 
 /** What the gallery endpoints answer with. */
@@ -298,6 +420,17 @@ export interface MapSnapshot {
 	drawings: Drawing[];
 	/** Where the party is, on this map or any other, or null while it is nowhere. */
 	party: Party | null;
+	/**
+	 * Where the party has been on this map: each stretch of road it took
+	 * without leaving, the oldest first. See src/lib/shared/journey.ts.
+	 */
+	journey: Point[][];
+	/**
+	 * How many miles this map is across: what the GM said of it, or worked
+	 * out from the nearest map further out that has a scale, by how much of
+	 * that map the way here covers. Null when no map on the way has one.
+	 */
+	miles: number | null;
 	/** Sequence number of the newest event already reflected in this snapshot. */
 	lastSeq: number;
 }
@@ -326,6 +459,8 @@ export interface TokenInput {
 	rotation: number;
 	/** Anyone's to set, like the name: the two things the whole table shares about a token. */
 	locked: boolean;
+	/** Anyone's to set. */
+	marks: TokenMark[];
 	/** The GM's to set. */
 	hidden: boolean;
 }
@@ -378,9 +513,11 @@ export type Command =
 	| { t: 'region.delete'; id: string }
 	/**
 	 * Renames a map, sets up its grid, says how many feet a cell stands for,
-	 * lays an image under it, covers it with fog or clears some: whichever are
-	 * given. `image` is the file name of a map image in the gallery. A map's
-	 * kind is not here: it is chosen when its region is drawn, and stays.
+	 * lays an image under it, covers it with fog or clears some, says whose
+	 * turn it is, or how many miles across it is (null for no scale of its
+	 * own): whichever are given. `image` is the file name of a map image in
+	 * the gallery. A map's kind is not here: it is chosen when its region is
+	 * drawn, and stays.
 	 */
 	| {
 			t: 'map.update';
@@ -390,6 +527,8 @@ export type Command =
 			cellFeet?: number;
 			image?: string;
 			fog?: Partial<Fog>;
+			turns?: Partial<Turns>;
+			miles?: number | null;
 	  }
 	/** Puts the party at a spot of a world map, wherever it was before. */
 	| { t: 'party.move'; mapId: string; x: number; y: number }
@@ -444,8 +583,12 @@ export type Patch =
 	| { t: 'map.upsert'; map: MapInfo; tokens?: Token[] }
 	/** Where the party is now, or null once it is nowhere. */
 	| { t: 'party.set'; party: Party | null }
-	| { t: 'token.upsert'; token: Token }
-	| { t: 'token.remove'; id: string; mapId: string }
+	/**
+	 * `turns` comes along when a token that takes turns came into a player's
+	 * sight or went out of it: the turn order as they may see it now.
+	 */
+	| { t: 'token.upsert'; token: Token; turns?: Turns }
+	| { t: 'token.remove'; id: string; mapId: string; turns?: Turns }
 	| { t: 'drawing.upsert'; drawing: Drawing }
 	| { t: 'drawing.remove'; id: string; mapId: string };
 
@@ -464,11 +607,13 @@ export interface Presence {
 	role: Role;
 }
 
-/** A spot on one map, in map space. A little outside 0..1 is the margin around the map. */
-export interface CursorSpot {
+/**
+ * What someone has in hand on a map: a token they are dragging, a distance
+ * they are measuring. Where their mouse is otherwise is nobody's business,
+ * and is not sent.
+ */
+export interface HandSpot {
 	mapId: string;
-	x: number;
-	y: number;
 	/**
 	 * A token this person has in hand, and where they are holding it. It
 	 * only moves for good once they let go: that is a `token.update`.
@@ -479,12 +624,29 @@ export interface CursorSpot {
 }
 
 /**
- * Where someone at the table is pointing right now. Passed from browser to
+ * What someone at the table has in hand right now. Passed from browser to
  * browser by the WebSocket server and never stored.
  */
-export interface Cursor extends CursorSpot {
-	/** One per connection, so the same person in two windows is two pointers. */
+export interface Hand extends HandSpot {
+	/** One per connection, so the same person in two windows is two hands. */
 	id: string;
+	userId: string;
+	name: string;
+	role: Role;
+}
+
+/** A spot of a map someone wants looked at. A little outside 0..1 is the margin around the map. */
+export interface PingSpot {
+	mapId: string;
+	x: number;
+	y: number;
+}
+
+/**
+ * Someone pointing a spot out to the table: it pulses there for a moment,
+ * for everyone looking at that map. Passed on like a hand, and never stored.
+ */
+export interface Ping extends PingSpot {
 	userId: string;
 	name: string;
 	role: Role;
@@ -514,6 +676,11 @@ export interface Gather {
 	by: string;
 	/** Names the browser it came from, which is there already and stays put. */
 	from: string;
+	/**
+	 * When the call was made. Someone who joins later is sent the last call,
+	 * and a browser that has answered one doesn't answer it again.
+	 */
+	at: number;
 }
 
 /** What the gather endpoint answers with. */
@@ -522,12 +689,16 @@ export interface GatherResponse {
 	error?: string;
 	/** False when the map is one players are kept out of: only the GM's own screens follow. */
 	players?: boolean;
+	/** When the call was made: see `Gather.at`. */
+	at?: number;
 }
 
 export type ClientMessage =
 	| { t: 'cmd'; id: number; cmd: Command }
-	/** Where this browser's pointer is, or null once it has left the map. */
-	| { t: 'cursor'; at: CursorSpot | null };
+	/** What this browser has in hand, or null once it has let go. */
+	| { t: 'hand'; at: HandSpot | null }
+	/** A spot this person wants the table to look at. */
+	| { t: 'ping'; at: PingSpot };
 
 export type ServerMessage =
 	| {
@@ -536,13 +707,19 @@ export type ServerMessage =
 			role: Role;
 			seq: number;
 			online: Presence[];
-			cursors: Cursor[];
+			hands: Hand[];
+			/** The picture the GM is holding up for the table, if any. */
+			shown: Shown | null;
 	  }
 	| { t: 'presence'; online: Presence[] }
 	| { t: 'event'; event: LiveEvent }
-	| { t: 'cursor'; cursor: Cursor }
-	| { t: 'cursor.left'; id: string }
-	| { t: 'gather'; gather: Gather }
+	| { t: 'hand'; hand: Hand }
+	| { t: 'hand.left'; id: string }
+	| { t: 'ping'; ping: Ping }
+	/** `late` marks the last call, sent again to a browser that has just connected. */
+	| { t: 'gather'; gather: Gather; late?: boolean }
+	/** The GM holds a picture up for the table, or with null puts it away. */
+	| { t: 'show'; shown: Shown | null }
 	| { t: 'ack'; id: number; ok: true; undo: number[] }
 	| { t: 'ack'; id: number; ok: false; error: string };
 
@@ -568,6 +745,8 @@ export interface LiveIdentity {
 	user: { id: string; name: string };
 	role: Role;
 	seq: number;
+	/** The picture the GM is holding up for the table, if any. */
+	shown: Shown | null;
 }
 
 /**
@@ -579,6 +758,8 @@ export interface Broadcast {
 	campaignId: string;
 	events: { seq: number; to: Record<Role, LiveEvent | null> }[];
 	gather?: Record<Role, Gather | null>;
+	/** A picture held up for the whole table, or null once it is put away. */
+	show?: { shown: Shown | null };
 }
 
 export const LIMITS = {
@@ -604,6 +785,11 @@ export const LIMITS = {
 	/** The fewest and the most feet a cell can stand for. */
 	cellFeetMin: 0.5,
 	cellFeetMax: 1000,
+	/** The fewest and the most miles a world map can be across. */
+	milesMin: 0.01,
+	milesMax: 1000000,
+	/** The most tokens that take turns on one map. */
+	turns: 100,
 	/** The most boxes the fog on one map is cleared by. */
 	fogRects: 400,
 	regionPoints: 200,

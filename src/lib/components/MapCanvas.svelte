@@ -7,20 +7,37 @@
 	//
 	// A battle map is the same sheet used as a table: a grid drawn over it,
 	// tokens to drag from cell to cell, a ruler that counts the cells
-	// between, and lines and words the table draws on it. It holds no
-	// markers and no regions.
+	// between, and lines, words and spell templates the table draws on it.
+	// It holds no markers and no regions.
+	//
+	// Nobody's mouse is shown to anyone else. What the table sees of the
+	// others is what they have in hand, a token or a ruler, and the spots
+	// they point out with a ping.
 
 	import { untrack } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
 	import { frameOf } from '#lib/shared/backdrop.ts';
-	import { boxOf, capped, linePath, thinOut, touchesBox } from '#lib/shared/drawing.ts';
+	import {
+		boxOf,
+		capped,
+		linePath,
+		templateBox,
+		templatePath,
+		templateSpan,
+		thinOut,
+		touchesBox
+	} from '#lib/shared/drawing.ts';
 	import { cellBox, cleared, covered, fogPath } from '#lib/shared/fog.ts';
 	import {
 		cellsToFeet,
 		feetBetween,
 		feetCount,
+		milesBetween,
+		milesCount,
+		pixelsToFeet,
 		sitsOnCorner,
-		snapToGrid
+		snapToGrid,
+		templatePoints
 	} from '#lib/shared/grid.ts';
 	import {
 		canChangeDrawing,
@@ -33,21 +50,25 @@
 		DRAWING_SIZE,
 		LIMITS,
 		ROTATION_STEP,
+		TOKEN_MARKS,
 		TOKEN_SIZE_STEP,
 		imageUrl,
+		isTemplate,
 		markerType,
 		type Backdrop,
 		type Command,
-		type Cursor,
-		type CursorSpot,
 		type Drawing,
+		type Hand,
+		type HandSpot,
 		type MapInfo,
 		type Marker,
 		type Party,
+		type Ping,
 		type Point,
 		type Region,
 		type Role,
 		type Sight,
+		type TemplateKind,
 		type Token,
 		type TokenInput
 	} from '#lib/shared/types.ts';
@@ -56,8 +77,8 @@
 	import SelectionBar from './SelectionBar.svelte';
 	import ToolButton from './ToolButton.svelte';
 
-	/** Where this browser is pointing on the map in front of it, and what it has in hand. */
-	type Pointing = Omit<CursorSpot, 'mapId'>;
+	/** What this browser has in hand on the map in front of it. */
+	type Holding = Omit<HandSpot, 'mapId'>;
 
 	interface Props {
 		map: MapInfo;
@@ -71,8 +92,15 @@
 		drawings: Drawing[];
 		/** Where the party is, on this map or on another. */
 		party: Party | null;
-		/** Where the other people looking at this map are pointing. */
-		cursors: Cursor[];
+		/** Where the party has been on this map, and whether this person wants that drawn. */
+		journey: Point[][];
+		showJourney: boolean;
+		/** How many miles across a world map is, or null when nothing says. */
+		miles: number | null;
+		/** What the other people looking at this map have in hand. */
+		hands: Hand[];
+		/** The spots of this map being pointed out right now. `key` tells one from the next. */
+		pings: (Ping & { key: number })[];
 		role: Role;
 		userId: string;
 		/**
@@ -84,10 +112,11 @@
 		 * `pan` is the hand: it moves the map, and on a battle map selects and
 		 * drags what is on it. `place` waits for a click that positions a
 		 * marker, `draw` outlines a region. The rest are a battle map's:
-		 * `select` drags a box around several things, `measure` a ruler across
-		 * the map, `sketch` draws a line freehand, `text` waits for a click to
-		 * start writing at. `reveal` and `cover` are the GM's: each drags a
-		 * box that the fog of war is cleared from, or put back over.
+		 * `select` drags a box around several things, `sketch` draws a line
+		 * freehand, `text` waits for a click to start writing at, `template`
+		 * drags out the area of a spell. `reveal` and `cover` are the GM's:
+		 * each drags a box that the fog of war is cleared from, or put back
+		 * over. `measure` drags a ruler across either kind of map.
 		 */
 		tool:
 			| 'pan'
@@ -97,10 +126,13 @@
 			| 'select'
 			| 'sketch'
 			| 'text'
+			| 'template'
 			| 'reveal'
 			| 'cover';
-		/** The colour `sketch` draws in and `text` writes in. */
+		/** The colour `sketch` draws in, `text` writes in and a template is laid down in. */
 		ink: string;
+		/** Which template the `template` tool lays down. */
+		shape: TemplateKind;
 		/** How many maps deep this one is. Decides which way the arrival animation zooms. */
 		depth: number;
 		selectedMarkerId: string | null;
@@ -133,8 +165,10 @@
 		onhide: (marker: Marker, hidden: boolean) => void;
 		/** The rest of what a token is, is to be changed: its picture, its colour, its outline. */
 		onedittoken: (token: Token) => void;
-		/** Where this browser is pointing on the map, or null when it is not over it. */
-		oncursor: (at: Pointing | null) => void;
+		/** What this browser has in hand on the map, or null when it holds nothing. */
+		onhand: (at: Holding | null) => void;
+		/** This person is pointing a spot of the map out to the table. */
+		onping: (x: number, y: number) => void;
 	}
 
 	let {
@@ -145,12 +179,17 @@
 		tokens,
 		drawings,
 		party,
-		cursors,
+		journey,
+		showJourney,
+		miles,
+		hands,
+		pings,
 		role,
 		userId,
 		passive = false,
 		tool,
 		ink,
+		shape,
 		depth,
 		selectedMarkerId = $bindable(),
 		selectedRegionId = $bindable(),
@@ -170,7 +209,8 @@
 		ondelete,
 		onhide,
 		onedittoken,
-		oncursor
+		onhand,
+		onping
 	}: Props = $props();
 
 	interface View {
@@ -239,6 +279,13 @@
 	/** A line being drawn, in map space, and the ones let go that the server hasn't answered for yet. */
 	let stroke = $state.raw<Point[] | null>(null);
 	let inked = $state.raw<{ points: Point[]; color: string }[]>([]);
+	/**
+	 * A template being dragged out: where the press began, where the pointer
+	 * is, and whether Alt is keeping it off the grid.
+	 */
+	let casting = $state.raw<{ from: Point; to: Point; free: boolean } | null>(null);
+	/** The templates let go that the server hasn't answered for yet. */
+	let cast = $state.raw<{ kind: TemplateKind; points: [Point, Point]; color: string }[]>([]);
 	/** The box being dragged around things to select them: one corner, and the other. */
 	let marquee = $state.raw<[Point, Point] | null>(null);
 	/**
@@ -409,7 +456,7 @@
 	/** Tokens someone else has in hand right now, and where they are holding them. */
 	const heldByOthers = $derived.by(() => {
 		const spots = new Map<string, Point>();
-		for (const other of cursors) {
+		for (const other of hands) {
 			const { drag } = other;
 			const token = drag && tokens.find((t) => t.id === drag.id);
 			// Only one that can really be moved. A drag is one browser's word,
@@ -450,6 +497,40 @@
 
 	const lines = $derived(battle ? drawings.filter((d) => d.kind === 'line') : []);
 	const texts = $derived(battle ? drawings.filter((d) => d.kind === 'text') : []);
+	/** The templates laid on the map, each with the two points it is kept as, in the map's pixels. */
+	const templates = $derived(
+		battle
+			? drawings.flatMap((drawing) => {
+					const { kind, points } = drawing;
+					if (!isTemplate(kind) || points.length !== 2) return [];
+					const [a, b] = inPixels(points);
+					return [{ drawing, kind, a, b }];
+				})
+			: []
+	);
+	/** The template being dragged out, as it will be kept: on the grid, unless Alt is held. */
+	const casted = $derived(
+		casting && templatePoints(map, shape, casting.from, casting.to, casting.free)
+	);
+
+	/** How big a template is, in words: "20 ft radius", "30 ft cone", "10 × 20 ft". */
+	function templateSize(kind: TemplateKind, a: Point, b: Point): string {
+		const feet = templateSpan(kind, a, b).map((pixels) => pixelsToFeet(map, pixels));
+		if (kind === 'rect') return `${feet[0]} × ${feetCount(feet[1])}`;
+		return `${feetCount(feet[0])} ${kind === 'circle' ? 'radius' : 'cone'}`;
+	}
+
+	/** Where the size of a template is written: its middle, or for a cone, half way along it. */
+	function templateMiddle(kind: TemplateKind, a: Point, b: Point): Point {
+		return kind === 'circle' ? a : [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+	}
+
+	/** The token whose turn it is, if it is one this person can see. */
+	const turnId = $derived(battle ? map.turns.current : null);
+	/** The colour of each mark, by its id. */
+	const MARK_COLOR: Record<string, string> = Object.fromEntries(
+		TOKEN_MARKS.map((mark) => [mark.id, mark.color])
+	);
 
 	/** Map space to the map's own pixels, where a line is drawn. */
 	const inPixels = (points: Point[]): Point[] => points.map(([x, y]) => [x * W, y * H]);
@@ -512,7 +593,12 @@
 		for (const drawing of selectedDrawings) {
 			const [sx, sy] = shiftOf(drawing);
 			const half = (drawing.size * cell) / 2;
-			if (drawing.kind === 'line') {
+			if (isTemplate(drawing.kind) && drawing.points.length === 2) {
+				const [a, b] = inPixels(drawing.points);
+				const box = templateBox(drawing.kind, a, b);
+				take(box.x0 / W + sx, box.y0 / H + sy, 0, 0);
+				take(box.x1 / W + sx, box.y1 / H + sy, 0, 0);
+			} else if (drawing.kind === 'line') {
 				const b = boxOf(drawing.points);
 				take(b.x0 + sx, b.y0 + sy, half / W, half / H);
 				take(b.x1 + sx, b.y1 + sy, half / W, half / H);
@@ -546,14 +632,20 @@
 		key: string;
 		from: Point;
 		to: Point;
-		/** "6 cells". */
+		/** "30 ft" on a battle map, "12 mi" on a world map. Empty where the map has no scale. */
 		length: string;
 		tint: string;
 	}
 
+	/** How far apart two spots are, in words: feet on a battle map, miles on a world map. */
+	function distance(from: Point, to: Point): string {
+		if (battle) return feetCount(feetBetween(map, from, to));
+		if (miles === null) return '';
+		return milesCount(milesBetween({ width: W, height: H }, miles, from, to));
+	}
+
 	/** Every distance being measured on this map right now: this person's, then everyone else's. */
 	const rulers = $derived.by(() => {
-		if (!battle) return [];
 		const drawn: Omit<Ruler, 'length'>[] = [];
 		// Carrying a token measures how far it has come.
 		if (carry?.held && carry.measured) {
@@ -561,14 +653,12 @@
 			const to: Point = [from[0] + carry.rest[0], from[1] + carry.rest[1]];
 			drawn.push({ key: 'mine', from, to, tint: '#fff' });
 		} else if (measure) drawn.push({ key: 'mine', from: measure[0], to: measure[1], tint: '#fff' });
-		for (const other of cursors) {
+		for (const other of hands) {
 			if (!other.ruler) continue;
 			const [from, to] = other.ruler;
 			drawn.push({ key: other.id, from: clamped(from), to: clamped(to), tint: tintOf(other) });
 		}
-		return drawn.map(
-			(ruler): Ruler => ({ ...ruler, length: feetCount(feetBetween(map, ruler.from, ruler.to)) })
-		);
+		return drawn.map((ruler): Ruler => ({ ...ruler, length: distance(ruler.from, ruler.to) }));
 	});
 
 	/** The first letters of a token's name, to write on it. */
@@ -590,10 +680,13 @@
 		return drawings.find((d) => d.id === id) ?? null;
 	}
 
-	/** Where a press is aiming: the middle of the cell under it, or with Alt held, the exact spot. */
+	/**
+	 * Where a press is aiming: the middle of the cell under it, or with Alt
+	 * held, the exact spot. A world map has no cells to aim at.
+	 */
 	function aim(e: PointerEvent): Point {
 		const at = clamped(toMap(e.clientX, e.clientY));
-		return e.altKey ? at : snapToGrid(map, at);
+		return e.altKey || !battle ? at : snapToGrid(map, at);
 	}
 
 	// ---------------------------------------------------- turning and resizing
@@ -661,6 +754,7 @@
 		if (tool !== 'measure') measure = null;
 		if (tool !== 'sketch') stroke = null;
 		if (tool !== 'select') marquee = null;
+		if (tool !== 'template') casting = null;
 		if (tool !== 'reveal' && tool !== 'cover') veil = null;
 	});
 
@@ -680,6 +774,21 @@
 		send([{ t: 'drawing.create', mapId: map.id, kind: 'line', points, color: ink }]).then(() => {
 			inked = inked.filter((line) => line !== pending);
 		});
+	}
+
+	/** A template was dragged out: it is kept as it came to rest, unless it has no size. */
+	function keepTemplate(points: [Point, Point]) {
+		const [a, b] = inPixels(points);
+		const kind = shape;
+		// Less than a few pixels of it on screen was a click, not a template.
+		if (templateSpan(kind, a, b).some((span) => span * view.k < 4)) return;
+		// It stays on the map as dragged until the server sends it back for good.
+		const pending = { kind, points, color: ink };
+		cast = [...cast, pending];
+		send([{ t: 'drawing.create', mapId: map.id, kind, points, color: ink }]).then(() => {
+			cast = cast.filter((each) => each !== pending);
+		});
+		ondone();
 	}
 
 	/** Starts a new text at `at`, or opens one that is there to be reworded. */
@@ -728,6 +837,18 @@
 			if (away <= (token.size * cell) / 2) caught.push(token.id);
 		}
 		for (const drawing of drawings) {
+			if (isTemplate(drawing.kind) && drawing.points.length === 2) {
+				// A template is caught by the box around it.
+				const [a, b] = inPixels(drawing.points);
+				const around = templateBox(drawing.kind, a, b);
+				const apart =
+					around.x0 / W > box.x1 ||
+					around.x1 / W < box.x0 ||
+					around.y0 / H > box.y1 ||
+					around.y1 / H < box.y0;
+				if (!apart) caught.push(drawing.id);
+				continue;
+			}
 			if (drawing.kind === 'line') {
 				if (touchesBox(drawing.points, box)) caught.push(drawing.id);
 				continue;
@@ -969,6 +1090,8 @@
 				measure = null;
 				stroke = null;
 				inked = [];
+				casting = null;
+				cast = [];
 				marquee = null;
 				veil = null;
 				leading = null;
@@ -1082,6 +1205,8 @@
 				vx: number;
 				vy: number;
 				moved: boolean;
+				/** Held still long enough to ping: letting go is then not a tap. */
+				pinged?: boolean;
 				target: Element;
 		  }
 		| { type: 'pinch'; distance: number; k: number; wx: number; wy: number }
@@ -1106,6 +1231,7 @@
 				sx: number;
 				sy: number;
 				moved: boolean;
+				pinged?: boolean;
 				target: Element;
 		  }
 		| {
@@ -1123,6 +1249,8 @@
 		  }
 		| { type: 'measure' }
 		| { type: 'sketch' }
+		/** The area of a spell, dragged out from where the press began. */
+		| { type: 'template' }
 		/** `add` keeps what was already selected. */
 		| { type: 'marquee'; add: boolean }
 		/** A box over the fog of war, to clear it there or to put it back. */
@@ -1196,26 +1324,17 @@
 		hoveredRegionId = null;
 	}
 
-	// ------------------------------------------------------------- pointers
+	// ------------------------------------------------------ hands and pings
 
-	/** Where this browser's mouse is over the map, in client pixels. */
-	let mouse: { x: number; y: number } | null = null;
-
-	function followMouse(e: PointerEvent) {
-		if (e.pointerType === 'touch') return;
-		mouse = { x: e.clientX, y: e.clientY };
-		reportCursor();
-	}
-
-	function reportCursor() {
-		if (!viewport || !ready) return oncursor(null);
-		// A finger leaves no pointer behind, but what it is dragging has a place.
+	/**
+	 * Tells the table what this person has in hand: a token being dragged,
+	 * a distance being measured. With neither there is nothing to tell, and
+	 * where the mouse is stays here.
+	 */
+	function reportHand() {
+		if (!viewport || !ready) return onhand(null);
 		const held = carry && inHandAt(carry.lead);
-		const hand: Point | null = held ?? measure?.[1] ?? null;
-		const at = mouse ? toMap(mouse.x, mouse.y) : hand;
-		if (!at) return oncursor(null);
-
-		const pointing: Pointing = { x: at[0], y: at[1] };
+		const holding: Holding = {};
 		if (carry && held) {
 			// The table is shown the token under the pointer in this hand. The
 			// rest of a selection arrives when it is put down. A hidden token is
@@ -1223,26 +1342,49 @@
 			const { lead, origins, rest } = carry;
 			const token = carry.measured ? tokens.find((t) => t.id === lead) : null;
 			if (token && !token.hidden) {
-				pointing.drag = { id: lead, x: held[0], y: held[1] };
+				holding.drag = { id: lead, x: held[0], y: held[1] };
 				const from = origins[lead];
-				if (carry.held) pointing.ruler = [from, [from[0] + rest[0], from[1] + rest[1]]];
+				if (carry.held) holding.ruler = [from, [from[0] + rest[0], from[1] + rest[1]]];
 			}
 		} else if (measure) {
-			pointing.ruler = measure;
+			holding.ruler = measure;
 		}
-		oncursor(pointing);
+		onhand(holding.drag || holding.ruler ? holding : null);
 	}
 
-	// The map can move under a mouse that is holding still: a zoom, an
-	// arrival, stepping into another map. The mouse is then over a different
-	// spot, and the table should see that too. So should it when a token is
-	// picked up or put down, or the ruler moves.
+	// Whenever a token is picked up, carried or put down, or the ruler moves.
 	$effect(() => {
-		void [view, W, H, map.id, ready, carry, measure];
-		untrack(reportCursor);
+		void [map.id, ready, carry, measure];
+		untrack(reportHand);
 	});
 
-	$effect(() => () => oncursor(null));
+	$effect(() => () => onhand(null));
+
+	/** How long a finger rests on one spot before that is a ping, in milliseconds. */
+	const PING_PRESS = 550;
+
+	/** Points a spot out to the table, if it is a spot of the map and there is a table to tell. */
+	function pingAt(clientX: number, clientY: number): boolean {
+		if (passive) return false;
+		const at = toMap(clientX, clientY);
+		if (!inside(at)) return false;
+		onping(at[0], at[1]);
+		return true;
+	}
+
+	/**
+	 * A finger has no Alt key, so resting it on the map pings instead. If
+	 * this press is still down after a moment and hasn't gone anywhere, it
+	 * was that, and letting go does nothing more.
+	 */
+	function awaitPing(e: PointerEvent, g: Extract<Gesture, { type: 'pan' | 'grab' }>) {
+		if (e.pointerType === 'mouse' || tool !== 'pan' || passive) return;
+		const { clientX, clientY } = e;
+		setTimeout(() => {
+			if (gesture !== g || g.moved) return;
+			g.pinged = pingAt(clientX, clientY);
+		}, PING_PRESS);
+	}
 
 	// Each person keeps one colour for as long as this page is open. The GM's
 	// is the gold of everything else that is the GM's.
@@ -1258,7 +1400,7 @@
 	];
 	const tints = new Map<string, string>();
 
-	function tintOf(other: Cursor): string {
+	function tintOf(other: { role: Role; userId: string }): string {
 		if (other.role === 'gm') return 'var(--color-accent)';
 		let tint = tints.get(other.userId);
 		if (!tint) tints.set(other.userId, (tint = TINTS[tints.size % TINTS.length]));
@@ -1267,7 +1409,6 @@
 
 	function onpointerdown(e: PointerEvent) {
 		trackHover(e);
-		followMouse(e);
 		if (e.pointerType === 'mouse') {
 			if (e.button !== 0) return;
 			pointers.clear();
@@ -1281,6 +1422,7 @@
 			if (shaping?.held) shaping = null;
 			measure = null;
 			stroke = null;
+			casting = null;
 			marquee = null;
 			veil = null;
 			if (leading?.held) leading = null;
@@ -1367,6 +1509,14 @@
 			return;
 		}
 
+		if (tool === 'template') {
+			const at = toMap(e.clientX, e.clientY);
+			casting = { from: at, to: at, free: e.altKey };
+			gesture = { type: 'template' };
+			capture(e.pointerId);
+			return;
+		}
+
 		if (tool === 'select') {
 			const at = toMap(e.clientX, e.clientY);
 			marquee = [at, at];
@@ -1395,11 +1545,13 @@
 		// nothing is picked up then either.
 		const thing = selecting ? (tokenAt(target) ?? drawingAt(target)) : null;
 		if (thing && canGrab(thing) && !e.shiftKey) {
-			gesture = pickUp(thing, e, target);
+			const grab = pickUp(thing, e, target);
+			gesture = grab;
+			awaitPing(e, grab);
 			return;
 		}
 
-		gesture = {
+		const pan: Extract<Gesture, { type: 'pan' }> = {
 			type: 'pan',
 			sx: e.clientX,
 			sy: e.clientY,
@@ -1408,13 +1560,19 @@
 			moved: false,
 			target
 		};
+		gesture = pan;
+		awaitPing(e, pan);
 	}
 
 	/**
 	 * Picks up what was pressed. When it is part of the selection, the rest
 	 * of the selection that is this person's to move comes along.
 	 */
-	function pickUp(lead: Token | Drawing, e: PointerEvent, target: Element): Gesture {
+	function pickUp(
+		lead: Token | Drawing,
+		e: PointerEvent,
+		target: Element
+	): Extract<Gesture, { type: 'grab' }> {
 		const together = selectedIds.includes(lead.id);
 		const along = (thing: Token | Drawing) =>
 			thing.id === lead.id || (together && selectedIds.includes(thing.id) && canGrab(thing));
@@ -1458,7 +1616,6 @@
 	function onpointermove(e: PointerEvent) {
 		if (tool === 'draw' && e.pointerType === 'mouse') cursor = toMap(e.clientX, e.clientY);
 		trackHover(e);
-		followMouse(e);
 
 		const pointer = pointers.get(e.pointerId);
 		if (!pointer) return;
@@ -1555,6 +1712,8 @@
 			const at = clamped(toMap(e.clientX, e.clientY));
 			const [lx, ly] = stroke[stroke.length - 1];
 			if (Math.hypot((at[0] - lx) * W, (at[1] - ly) * H) * view.k >= 2) stroke = [...stroke, at];
+		} else if (g?.type === 'template' && casting) {
+			casting = { from: casting.from, to: toMap(e.clientX, e.clientY), free: e.altKey };
 		} else if (g?.type === 'marquee' && marquee) {
 			marquee = [marquee[0], toMap(e.clientX, e.clientY)];
 		} else if (g?.type === 'veil' && veil) {
@@ -1593,8 +1752,13 @@
 
 		gesture = null;
 		dragging = false;
-		if (g?.type === 'pan' && !g.moved && completed) tap(e, g.target);
+		if (g?.type === 'pan' && !g.moved && !g.pinged && completed) tap(e, g.target);
 		if (g?.type === 'measure') measure = null;
+		if (g?.type === 'template') {
+			const laid = casted;
+			casting = null;
+			if (laid && completed) keepTemplate(laid);
+		}
 		if (g?.type === 'sketch') {
 			const drawn = stroke;
 			stroke = null;
@@ -1633,7 +1797,7 @@
 		if (g?.type === 'grab') {
 			const held = carry;
 			if (!g.moved) {
-				if (completed) tap(e, g.target);
+				if (completed && !g.pinged) tap(e, g.target);
 			} else if (held && completed && (held.rest[0] !== 0 || held.rest[1] !== 0)) {
 				// Put down where it comes to rest, and kept there until the
 				// server has moved it. The table sees it in this hand until then,
@@ -1709,6 +1873,13 @@
 		const now = performance.now();
 		const double =
 			now - lastTap.at < 400 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 28;
+
+		// With Alt held, a click points the spot out to the table and does
+		// nothing else, whatever is under it.
+		if (e.altKey && tool === 'pan' && !passive) {
+			pingAt(e.clientX, e.clientY);
+			return;
+		}
 
 		if (tool === 'place') {
 			if (inside(point)) onplace(point[0], point[1]);
@@ -1984,11 +2155,7 @@
 		{onpointermove}
 		onpointerup={(e) => release(e, true)}
 		onpointercancel={(e) => release(e, false)}
-		onpointerleave={() => {
-			clearHover();
-			mouse = null;
-			reportCursor();
-		}}
+		onpointerleave={clearHover}
 	>
 		<!-- Everything inside scales with the map. --inv undoes that scale, for
 		     the things that should stay the same size on screen: scale-(--inv). -->
@@ -2067,6 +2234,62 @@
 					<path class="fill-none stroke-[#fff8e4]/45 stroke-1 stroke-steady" d={gridLines} />
 				{/if}
 
+				<!-- The templates laid on a battle map, under everything else drawn on
+				     it: the area of a spell, tinted in its colour so the map and the
+				     tokens in it still show through. It is caught by its edge, so that
+				     pressing inside one still pans the map and picks up tokens. -->
+				<g class="[stroke-linejoin:round]">
+					{#each templates as { drawing, kind, a, b } (drawing.id)}
+						{@const d = templatePath(kind, a, b)}
+						{@const [sx, sy] = shiftOf(drawing)}
+						{@const thick = drawing.size * cell}
+						<g transform="translate({sx * W} {sy * H})">
+							{#if selecting && selectedIds.includes(drawing.id)}
+								<path class="fill-none stroke-accent" {d} stroke-width={thick + 6 / view.k} />
+							{/if}
+							<path
+								{d}
+								fill={drawing.color}
+								fill-opacity="0.2"
+								stroke={drawing.color}
+								stroke-width={thick}
+							/>
+							{#if selecting}
+								<path
+									class={[
+										'fill-none stroke-transparent [pointer-events:stroke]',
+										canGrabDrawing(drawing) ? 'cursor-move' : 'cursor-pointer'
+									]}
+									data-drawing-id={drawing.id}
+									{d}
+									stroke-width={Math.max(thick, (14 * grip) / view.k)}
+								/>
+							{/if}
+						</g>
+					{/each}
+					<!-- Templates this person has just laid down, and the one being dragged out. -->
+					{#each cast as pending (pending)}
+						{@const [a, b] = inPixels(pending.points)}
+						<path
+							d={templatePath(pending.kind, a, b)}
+							fill={pending.color}
+							fill-opacity="0.2"
+							stroke={pending.color}
+							stroke-width={DRAWING_SIZE[pending.kind] * cell}
+						/>
+					{/each}
+					{#if casted}
+						{@const [a, b] = inPixels(casted)}
+						<path
+							d={templatePath(shape, a, b)}
+							fill={ink}
+							fill-opacity="0.2"
+							stroke={ink}
+							stroke-width={DRAWING_SIZE[shape] * cell}
+						/>
+					{/if}
+				</g>
+
 				<!-- What the table has drawn on a battle map, under the pieces. A line is
 				     as thick as it says in cells, so it grows and shrinks with the map. -->
 				<g class="fill-none [stroke-linecap:round] [stroke-linejoin:round]">
@@ -2109,6 +2332,32 @@
 						/>
 					{/if}
 				</g>
+
+				<!-- Where the party has been on this map: a dotted road from stop to
+				     stop, like a route inked onto a chart. Under the regions and the
+				     pins, and never in the way of the pointer. -->
+				{#if showJourney}
+					{#each journey as stretch, i (i)}
+						{#if stretch.length >= 2}
+							<polyline
+								class="fill-none stroke-[#0c0e14]/55 stroke-[5] stroke-steady [stroke-linecap:round]"
+								points={svgPoints(stretch)}
+							/>
+							<polyline
+								class="fill-none stroke-accent stroke-[2.5] stroke-steady [stroke-dasharray:1_7] [stroke-linecap:round]"
+								points={svgPoints(stretch)}
+							/>
+							{#each stretch as [x, y], stop (stop)}
+								<circle
+									class="fill-accent stroke-[#12151c] stroke-[1.5] stroke-steady"
+									cx={x * W}
+									cy={y * H}
+									r={3.5 / view.k}
+								/>
+							{/each}
+						{/if}
+					{/each}
+				{/if}
 
 				{#each orderedRegions as region (region.id)}
 					<!-- A dark line under the outline, so it reads on a pale map too. -->
@@ -2255,6 +2504,38 @@
 				{/if}
 			{/each}
 
+			<!-- How big a template is, written on it while it is selected or being
+			     dragged out: the one thing about it the map can't show. -->
+			{#each templates as { drawing, kind, a, b } (drawing.id)}
+				{#if selecting && selectedIds.includes(drawing.id) && !carry?.held}
+					{@const [mx, my] = templateMiddle(kind, a, b)}
+					<div
+						class="pointer-events-none absolute top-0 left-0 z-3 size-0 scale-(--inv)"
+						style:translate="{mx}px {my}px"
+					>
+						<span
+							class="absolute -translate-1/2 rounded-full border border-accent bg-night/90 px-2 py-0.5 text-xs font-semibold whitespace-nowrap"
+						>
+							{templateSize(kind, a, b)}
+						</span>
+					</div>
+				{/if}
+			{/each}
+			{#if casted}
+				{@const [a, b] = inPixels(casted)}
+				{@const [mx, my] = templateMiddle(shape, a, b)}
+				<div
+					class="pointer-events-none absolute top-0 left-0 z-3 size-0 scale-(--inv)"
+					style:translate="{mx}px {my}px"
+				>
+					<span
+						class="absolute -translate-1/2 rounded-full border border-accent bg-night/90 px-2 py-0.5 text-xs font-semibold whitespace-nowrap"
+					>
+						{templateSize(shape, a, b)}
+					</span>
+				</div>
+			{/if}
+
 			<!-- Every region wears its name, lettered straight onto the map like a place
 			     name in an atlas: quiet until the region is hovered, and never boxed in.
 			     It comes before the markers, so it is never drawn over one, and it never
@@ -2264,13 +2545,17 @@
 				{@const lit = litRegionId === region.id}
 				{@const camped = partyRegionId === region.id}
 				<div
-					class="pointer-events-none absolute w-max max-w-[300px] -translate-1/2 scale-(--inv) text-center text-shadow-map"
+					class={[
+						'pointer-events-none absolute w-max -translate-1/2 scale-(--inv) text-center text-shadow-map',
+						// A table display is read from across the room.
+						passive ? 'max-w-[420px] text-[25px]' : 'max-w-[300px] text-[17px]'
+					]}
 					style:left="{x * W}px"
 					style:top="{y * H}px"
 				>
 					<strong
 						class={[
-							'block font-serif text-[17px] leading-[1.2] font-semibold tracking-[0.02em] wrap-anywhere transition-[opacity,color] duration-150',
+							'block font-serif leading-[1.2] font-semibold tracking-[0.02em] wrap-anywhere transition-[opacity,color] duration-150',
 							lit ? 'text-white' : camped ? 'text-[#fff8e4]' : 'text-[#fff8e4] opacity-55'
 						]}
 						>{#if camped}<!-- The party's banner, before the name of the region it is
@@ -2311,7 +2596,9 @@
 			     colour (--c) with its initials on it, or its picture. Either can wear
 			     a ring in its outline colour (--o), to tell it from the next one. Its
 			     name is lettered underneath once it is big enough on screen to tell
-			     from its neighbours. -->
+			     from its neighbours. The one whose turn it is stands in a ring of
+			     gold. What a token is marked with shows on its rim, a pip for each
+			     mark, and one that is down is crossed out. -->
 			{#if battle}
 				{#each tokens as token (token.id)}
 					{@const [x, y] = spotOf(token)}
@@ -2320,6 +2607,8 @@
 					{@const selected = selecting && selectedIds.includes(token.id)}
 					{@const across = sizeOf(token) * cell}
 					{@const turn = turnOf(token)}
+					{@const down = token.marks.includes('down')}
+					{@const pips = token.marks.filter((mark) => mark !== 'down')}
 					<!-- Only the position glides, from one report of a drag to the next and
 					     onto the grid when it is let go. Never in the hand that holds it. -->
 					<div
@@ -2332,6 +2621,17 @@
 						]}
 						style:translate="{x * W}px {y * H}px"
 					>
+						{#if turnId === token.id}
+							<!-- Whose turn it is: a ring of gold around the token, breathing. -->
+							<span
+								class="pointer-events-none absolute -translate-1/2 animate-pulse rounded-full border-accent shadow-[0_0_0.5em_0.1em_var(--color-accent)] motion-reduce:animate-none"
+								style:width="{across * 1.2}px"
+								style:height="{across * 1.2}px"
+								style:border-width="{across * 0.06}px"
+								style:font-size="{across * 0.4}px"
+								aria-hidden="true"
+							></span>
+						{/if}
 						<button
 							class={[
 								'absolute grid -translate-1/2 place-items-center overflow-hidden rounded-full border-(--o) bg-(--c) leading-none font-semibold text-[#12151c] [-webkit-tap-highlight-color:transparent]',
@@ -2339,6 +2639,7 @@
 								selected ? 'token-selected' : inHand ? 'token-lifted' : 'token-shadow',
 								// Only the GM ever has a hidden one to draw.
 								token.hidden && 'border-dashed opacity-55',
+								down && 'brightness-60 saturate-0',
 								tool !== 'pan' && 'pointer-events-none'
 							]}
 							data-token-id={token.id}
@@ -2350,7 +2651,9 @@
 							style:--c={token.color}
 							style:--o={token.outline ?? '#12151c'}
 							title="{token.name}{token.locked ? ' · locked' : ''}"
-							aria-label="Token: {token.name}{token.hidden ? ' (hidden from players)' : ''}{mine
+							aria-label="Token: {token.name}{token.hidden ? ' (hidden from players)' : ''}{down
+								? ' (down)'
+								: ''}{turnId === token.id ? ' (their turn)' : ''}{mine
 								? '. Arrow keys move it.'
 								: ''}"
 							aria-pressed={selected}
@@ -2369,9 +2672,44 @@
 								/>
 							{/if}
 						</button>
+						{#if down}
+							<svg
+								class="pointer-events-none absolute -translate-1/2"
+								style:width="{across}px"
+								style:height="{across}px"
+								viewBox="0 0 24 24"
+								aria-hidden="true"
+							>
+								<path
+									class="fill-none stroke-[#12151c] stroke-[5] [stroke-linecap:round]"
+									d="M5.5 5.5 18.5 18.5M18.5 5.5 5.5 18.5"
+								/>
+								<path
+									class="fill-none stroke-[#e5544b] stroke-[2.5] [stroke-linecap:round]"
+									d="M5.5 5.5 18.5 18.5M18.5 5.5 5.5 18.5"
+								/>
+							</svg>
+						{/if}
+						{#each pips as mark, i (mark)}
+							<!-- Round its rim from the top, clockwise, each in its own colour (--c). -->
+							{@const angle = ((20 + i * 28) * Math.PI) / 180}
+							<span
+								class="pointer-events-none absolute -translate-1/2 rounded-full border-[#12151c] bg-(--c)"
+								style:left="{Math.sin(angle) * (across / 2)}px"
+								style:top="{-Math.cos(angle) * (across / 2)}px"
+								style:width="{across * 0.24}px"
+								style:height="{across * 0.24}px"
+								style:border-width="{across * 0.03}px"
+								style:--c={MARK_COLOR[mark]}
+								aria-hidden="true"
+							></span>
+						{/each}
 						{#if across * view.k >= 26 || selected}
 							<span
-								class="pointer-events-none absolute left-0 w-max max-w-[160px] origin-top -translate-x-1/2 scale-(--inv) truncate pt-0.5 text-xs font-semibold text-[#fff8e4] text-shadow-map"
+								class={[
+									'pointer-events-none absolute left-0 w-max origin-top -translate-x-1/2 scale-(--inv) truncate pt-0.5 font-semibold text-[#fff8e4] text-shadow-map',
+									passive ? 'max-w-[260px] text-lg' : 'max-w-[160px] text-xs'
+								]}
 								style:top="{across / 2}px"
 							>
 								{token.name}
@@ -2584,45 +2922,49 @@
 				</div>
 			{/if}
 
-			<!-- Everyone else's mouse, each in its own colour (--c). On top of the map,
-			     and never in the way of your own. Only the position glides from one
-			     report to the next, not the size in a zoom. -->
-			{#each cursors as other (other.id)}
+			<!-- A spot someone is pointing out: rings spreading from it in their
+			     colour (--c), with their name under it, gone again after a moment.
+			     The same size on screen at any zoom, and never in the way of the
+			     pointer. -->
+			{#each pings as ping (ping.key)}
 				<div
-					class="pointer-events-none absolute top-0 left-0 z-3 flex origin-top-left scale-(--inv) items-start transition-[translate] duration-80 ease-linear motion-reduce:transition-none"
-					style:translate="{other.x * W}px {other.y * H}px"
-					style:--c={tintOf(other)}
-					aria-hidden="true"
+					class="pointer-events-none absolute top-0 left-0 z-3 size-0 animate-ping-fade scale-(--inv)"
+					style:translate="{ping.x * W}px {ping.y * H}px"
+					style:--c={tintOf(ping)}
+					role="status"
+					aria-label="{ping.name} is pointing here"
 				>
-					<!-- The negative margins put the tip of the arrow exactly on the spot. -->
-					<svg
-						class="-mt-[1.5px] -ml-0.5 shrink-0 drop-shadow-[0_1px_2px_rgb(0_0_0/0.6)]"
-						viewBox="0 0 18 22"
-						width="18"
-						height="22"
-					>
-						<path
-							class="fill-(--c) stroke-[#12151c] stroke-[1.5] [stroke-linejoin:round]"
-							d="M2 1.5v16l4.4-4 2.9 6.6 2.7-1.2-2.9-6.5h6Z"
-						/>
-					</svg>
 					<span
-						class="mt-[17px] -ml-[3px] max-w-[150px] truncate rounded-[3px_9px_9px_9px] bg-(--c) px-[7px] text-xs leading-[1.6] font-semibold text-[#12151c] shadow-[0_1px_3px_rgb(0_0_0/0.5)]"
-						>{other.name}</span
+						class="absolute size-24 -translate-1/2 animate-ping-ring rounded-full border-[3px] border-(--c) shadow-[0_0_6px_rgb(0_0_0/0.7),inset_0_0_6px_rgb(0_0_0/0.7)] motion-reduce:size-12 motion-reduce:animate-none"
+					></span>
+					<span
+						class="absolute size-24 -translate-1/2 animate-ping-ring rounded-full border-[3px] border-(--c) shadow-[0_0_6px_rgb(0_0_0/0.7),inset_0_0_6px_rgb(0_0_0/0.7)] [animation-delay:0.35s] motion-reduce:hidden"
+					></span>
+					<span
+						class="absolute size-3 -translate-1/2 rounded-full border-[1.5px] border-[#12151c] bg-(--c)"
+					></span>
+					<span
+						class={[
+							'absolute left-0 w-max -translate-x-1/2 truncate rounded-full bg-(--c) px-2 leading-[1.6] font-semibold text-[#12151c] shadow-[0_1px_3px_rgb(0_0_0/0.5)]',
+							passive ? 'top-4 max-w-[240px] text-base' : 'top-3 max-w-[150px] text-xs'
+						]}>{ping.name}</span
 					>
 				</div>
 			{/each}
 
 			<!-- How long each ruler is, written at the end it is being pulled to. -->
 			{#each rulers as ruler (ruler.key)}
-				{#if ruler.from[0] !== ruler.to[0] || ruler.from[1] !== ruler.to[1]}
+				{#if ruler.length && (ruler.from[0] !== ruler.to[0] || ruler.from[1] !== ruler.to[1])}
 					<div
 						class="pointer-events-none absolute top-0 left-0 z-3 size-0 origin-top-left scale-(--inv)"
 						style:translate="{ruler.to[0] * W}px {ruler.to[1] * H}px"
 						style:--c={ruler.tint}
 					>
 						<span
-							class="absolute bottom-3 left-0 -translate-x-1/2 rounded-full border border-(--c) bg-night/90 px-2 py-0.5 text-xs font-semibold whitespace-nowrap"
+							class={[
+								'absolute bottom-3 left-0 -translate-x-1/2 rounded-full border border-(--c) bg-night/90 px-2 py-0.5 font-semibold whitespace-nowrap',
+								passive ? 'text-base' : 'text-xs'
+							]}
 						>
 							{ruler.length}
 						</span>
@@ -2702,6 +3044,7 @@
 					bind:this={bar}
 					tokens={selectedTokens}
 					drawings={selectedDrawings}
+					turns={map.turns}
 					{role}
 					{userId}
 					tip={barPosition?.under === false ? 'top' : 'bottom'}
@@ -2762,7 +3105,20 @@
 		{:else if tool === 'measure'}
 			<p class={hint}>
 				Drag across the map to measure.
-				<span class={keys}>Alt measures off the grid · Esc puts the ruler away</span>
+				<span class={keys}>
+					{#if battle}Alt measures off the grid ·{/if} Esc puts the ruler away
+				</span>
+			</p>
+		{:else if tool === 'template'}
+			<p class={hint}>
+				{#if shape === 'circle'}
+					Drag out from the middle of the circle.
+				{:else if shape === 'cone'}
+					Drag from the tip of the cone the way it points.
+				{:else}
+					Drag from one corner of the box to the other.
+				{/if}
+				<span class={keys}>Alt leaves the grid · Esc cancels</span>
 			</p>
 		{:else if tool === 'select'}
 			<p class={hint}>

@@ -11,6 +11,9 @@ node_modules
 # Database and uploaded map images
 /data
 
+# What `bun run backup` makes
+/backups
+
 # OS
 .DS_Store
 Thumbs.db

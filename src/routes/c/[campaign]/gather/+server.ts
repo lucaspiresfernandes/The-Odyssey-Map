@@ -40,8 +40,8 @@ export const POST: RequestHandler = async (event) => {
 	const audience = audienceOf(getDb(), actor.campaignId, mapId);
 	if (!audience) return refuse(404, 'That map does not exist.');
 
-	const gather: Gather = { mapId, view, by: actor.name, from };
+	const gather: Gather = { mapId, view, by: actor.name, from, at: Date.now() };
 	const players = audience === 'table';
 	await summon(actor.campaignId, { gm: gather, player: players ? gather : null });
-	return json({ ok: true, players } satisfies GatherResponse);
+	return json({ ok: true, players, at: gather.at } satisfies GatherResponse);
 };

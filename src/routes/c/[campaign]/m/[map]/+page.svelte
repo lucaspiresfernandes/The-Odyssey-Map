@@ -1,9 +1,10 @@
 <script lang="ts">
-	import { goto, refreshAll } from '$app/navigation';
+	import { goto, preloadData, refreshAll } from '$app/navigation';
 	import { tick, untrack } from 'svelte';
 	import { getLive } from '#lib/client/live.svelte.ts';
 	import { MapState } from '#lib/client/mapstate.svelte.ts';
 	import { UndoStack, type Step } from '#lib/client/undo.ts';
+	import Finder from '#lib/components/Finder.svelte';
 	import Gallery from '#lib/components/Gallery.svelte';
 	import MapCanvas from '#lib/components/MapCanvas.svelte';
 	import MapSetup from '#lib/components/MapSetup.svelte';
@@ -11,17 +12,22 @@
 	import MarkerGlyph from '#lib/components/MarkerGlyph.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import NamePrompt from '#lib/components/NamePrompt.svelte';
+	import ScalePrompt from '#lib/components/ScalePrompt.svelte';
 	import TokenDock from '#lib/components/TokenDock.svelte';
 	import TokenForm from '#lib/components/TokenForm.svelte';
 	import ToolButton, { type ToolIcon } from '#lib/components/ToolButton.svelte';
-	import { freeCell, snapToGrid } from '#lib/shared/grid.ts';
+	import TurnOrder from '#lib/components/TurnOrder.svelte';
+	import { freeCell, milesCount, snapToGrid } from '#lib/shared/grid.ts';
 	import { canEditWorld } from '#lib/shared/rules.ts';
+	import { tileLevels } from '#lib/shared/tiles.ts';
 	import {
 		INK_COLORS,
 		LIMITS,
 		MARKER_TYPES,
 		TOKEN_COLORS,
+		imageUrl,
 		type Command,
+		type FindEntry,
 		type GalleryItem,
 		type Gather,
 		type MapKind,
@@ -32,8 +38,10 @@
 		type Patch,
 		type Point,
 		type Region,
+		type TemplateKind,
 		type Token,
-		type TokenInput
+		type TokenInput,
+		type Turns
 	} from '#lib/shared/types.ts';
 	import type { PageProps } from './$types';
 
@@ -50,9 +58,13 @@
 	});
 	$effect(() =>
 		live.subscribe((event) => {
+			const scale = world.map.miles;
 			world.apply(event);
 			leaveIfShut(event.patch);
 			refreshIfBorrowed(event.patch);
+			// With a scale of its own given or taken away, how far across this
+			// map is has to be worked out again, which only the server does.
+			if (world.map.miles !== scale) refreshAll();
 		})
 	);
 
@@ -67,8 +79,15 @@
 	 * follows when the GM brings everyone somewhere, and changes nothing.
 	 */
 	const display = $derived(data.display);
-	/** Everyone else's mouse, for those looking at the same map. */
-	const cursors = $derived(live.cursors.filter((c) => c.mapId === world.map.id));
+	/** What everyone else looking at this map has in hand: a token, a ruler. */
+	const hands = $derived(live.hands.filter((hand) => hand.mapId === world.map.id));
+	/** The spots of this map being pointed out right now. */
+	const pings = $derived(live.pings.filter((ping) => ping.mapId === world.map.id));
+	/**
+	 * How many miles across this world map is: its own scale, or the one
+	 * worked out from a map further out. Null when nothing says.
+	 */
+	const miles = $derived(world.map.miles ?? world.miles);
 
 	/** The address of a map of this campaign. A display stays a display from map to map. */
 	const mapUrl = (mapId: string) => `/c/${campaignId}/m/${mapId}${display ? '?display' : ''}`;
@@ -82,7 +101,15 @@
 	 * and moves things. The others are picked from the palette in the corner.
 	 * `reveal` and `cover` are the GM's two ways with the fog of war.
 	 */
-	type BattleTool = 'pan' | 'select' | 'measure' | 'sketch' | 'text' | 'reveal' | 'cover';
+	type BattleTool =
+		| 'pan'
+		| 'select'
+		| 'measure'
+		| 'sketch'
+		| 'text'
+		| 'template'
+		| 'reveal'
+		| 'cover';
 	type Prompt =
 		| { kind: 'region'; points: Point[] }
 		| { kind: 'rename'; mapId: string; initial: string };
@@ -99,19 +126,35 @@
 	let canvas = $state<ReturnType<typeof MapCanvas>>();
 	let placing = $state<Placing | null>(null);
 	let drawing = $state(false);
+	/** The ruler is out on a world map. */
+	let measuring = $state(false);
 	let battleTool = $state<BattleTool>('pan');
-	/** The colour the pen draws in and text is written in. */
+	/** The colour the pen draws in, text is written in and templates are laid down in. */
 	let ink = $state<string>(INK_COLORS[0]);
+	/** Which template the template tool lays down. */
+	let shape = $state<TemplateKind>('circle');
 	let form = $state<Form | null>(null);
 	/** The token whose picture, colour and outline are being changed. */
 	let tokenForm = $state<Token | null>(null);
 	/** Goes up whenever the gallery may have changed, so the dock reads it again. */
 	let galleryStamp = $state(0);
-	// The two palettes of a battle map fold away, and stay as they were left.
+	// The palettes of a battle map fold away, and stay as they were left.
 	let dockFolded = $state(false);
 	let toolsFolded = $state(false);
+	let turnsFolded = $state(false);
+	let turnOrder = $state<ReturnType<typeof TurnOrder>>();
 	/** The GM is setting up the grid of this battle map. */
 	let setup = $state(false);
+	/** The GM is saying how many miles across this world map is. */
+	let scaling = $state(false);
+	/** The finder is open. */
+	let finding = $state(false);
+	/** A marker the finder is taking this person to, on a map they are on their way to. */
+	let wanted: string | null = null;
+	/** Whether the road the party has taken is drawn on world maps. This person's own view, like the filter. */
+	let showJourney = $state(true);
+	/** The picture held up for the table that this person has closed, by its file. */
+	let closedPicture = $state<string | null>(null);
 	/**
 	 * The GM is in the gallery: to choose an image to lay under this map, or
 	 * to look after the whole of it, with nothing to pick.
@@ -143,7 +186,9 @@
 	 * further in.
 	 */
 	const battle = $derived(world.map.kind === 'battle');
-	const tool = $derived(battle ? battleTool : placing ? 'place' : drawing ? 'draw' : 'pan');
+	const tool = $derived(
+		battle ? battleTool : placing ? 'place' : drawing ? 'draw' : measuring ? 'measure' : 'pan'
+	);
 	/** The GM has one of the two fog tools in hand. */
 	const fogging = $derived(battleTool === 'reveal' || battleTool === 'cover');
 
@@ -164,15 +209,17 @@
 	// page is in it, and written whenever one is folded or unfolded.
 	let recalled = false;
 	$effect(() => {
-		const folded = { dock: dockFolded, tools: toolsFolded };
+		const folded = { dock: dockFolded, tools: toolsFolded, turns: turnsFolded };
 		untrack(() => {
 			try {
 				if (recalled) {
 					localStorage.setItem('odyssey:dock', folded.dock ? '1' : '0');
 					localStorage.setItem('odyssey:tools', folded.tools ? '1' : '0');
+					localStorage.setItem('odyssey:turns', folded.turns ? '1' : '0');
 				} else {
 					dockFolded = localStorage.getItem('odyssey:dock') === '1';
 					toolsFolded = localStorage.getItem('odyssey:tools') === '1';
+					turnsFolded = localStorage.getItem('odyssey:turns') === '1';
 				}
 			} catch {
 				// A private window may refuse. The palettes then start unfolded.
@@ -203,11 +250,14 @@
 		untrack(() => {
 			placing = null;
 			drawing = false;
+			measuring = false;
 			battleTool = 'pan';
 			form = null;
 			tokenForm = null;
 			filterOpen = false;
 			setup = false;
+			scaling = false;
+			finding = false;
 			gallery = null;
 			prompt = null;
 			deleting = null;
@@ -217,7 +267,16 @@
 			selectedParty = false;
 			// Undo is for the map in front of you, not one you have left.
 			undos.clear();
+			// The finder may have brought this person here for one marker.
+			const marker = wanted;
+			wanted = null;
+			if (marker) pinMarker(marker);
 		});
+	});
+
+	// A picture that was closed stays closed until another is held up.
+	$effect(() => {
+		if (!live.shown) closedPicture = null;
 	});
 
 	/** The border and background of a notice of each type. */
@@ -279,6 +338,7 @@
 
 	function startPlacing(next: Placing) {
 		drawing = false;
+		measuring = false;
 		selectedMarkerId = null;
 		selectedRegionId = null;
 		placing = next;
@@ -339,6 +399,58 @@
 		);
 	}
 
+	/** Pins the card of a marker of this map open, showing its type if that was filtered out. */
+	function pinMarker(id: string) {
+		const marker = world.markers.find((each) => each.id === id);
+		if (!marker) return;
+		hiddenTypes = hiddenTypes.filter((type) => type !== marker.type);
+		selectedRegionId = null;
+		selectedMarkerId = id;
+	}
+
+	/** The finder found what was looked for: off to its map, and to the marker if it is one. */
+	async function go(entry: FindEntry) {
+		finding = false;
+		const marker = entry.kind === 'marker' ? entry.id : null;
+		if (entry.mapId === world.map.id) {
+			if (marker) pinMarker(marker);
+			return;
+		}
+		wanted = marker;
+		try {
+			await goto(mapUrl(entry.mapId));
+		} catch {
+			wanted = null;
+		}
+	}
+
+	// ------------------------------------------------- the scale and the ruler
+
+	/** Takes the ruler out on a world map. One with no scale has nothing to tell: the GM is asked for it. */
+	function startMeasuring() {
+		if (miles === null) {
+			if (isGm) scaling = true;
+			return;
+		}
+		placing = null;
+		drawing = false;
+		selectedMarkerId = null;
+		selectedRegionId = null;
+		measuring = true;
+	}
+
+	// ------------------------------------------------ a picture for the table
+
+	/** Holds a picture of the gallery up for the whole table, or with null puts it away. */
+	async function showPicture(item: GalleryItem | null) {
+		try {
+			await live.show(item?.id ?? null);
+			if (item) say(`The table is looking at “${item.name}”.`, 'success');
+		} catch (err) {
+			say((err as Error).message, 'failure');
+		}
+	}
+
 	async function deleteMarker(marker: Marker) {
 		selectedMarkerId = null;
 		const { ok, step } = await attempt({ t: 'marker.delete', id: marker.id });
@@ -374,9 +486,13 @@
 		const dropped = drop && canvas.spotAt(drop.x, drop.y);
 		// Let go anywhere but over the map, it goes back in the dock.
 		if (drop && !dropped) return;
-		const [x, y] = dropped
-			? snapToGrid(world.map, dropped)
-			: freeCell(world.map, canvas.middle(), here);
+		// A picture may say what its tokens start out as: how big, and ringed in what.
+		const size = item?.tokenSize ?? 1;
+		const [x, y] = snapToGrid(
+			world.map,
+			dropped || freeCell(world.map, canvas.middle(), here),
+			size
+		);
 		// A token is called what its picture is. A plain one a player adds is
 		// most likely themself.
 		const name = (item?.name ?? (isGm ? 'Token' : data.me.name)).slice(0, LIMITS.tokenName);
@@ -387,6 +503,8 @@
 			name: name.trim() || 'Token',
 			image: item?.file ?? null,
 			color: tokenColor,
+			outline: item?.tokenOutline ?? null,
+			size,
 			x,
 			y
 		});
@@ -398,6 +516,11 @@
 	function saveToken(values: Pick<TokenInput, 'color' | 'outline' | 'image'>) {
 		if (!tokenForm) return Promise.resolve(false);
 		return run({ t: 'token.update', id: tokenForm.id, changes: values });
+	}
+
+	/** The GM changed who takes turns, in what order, or whose turn it is. */
+	function setTurns(turns: Partial<Turns>) {
+		run({ t: 'map.update', id: world.map.id, turns });
 	}
 
 	/** Takes a tool of the battle map in hand. */
@@ -450,10 +573,19 @@
 		}
 	}
 
-	/** The GM has brought everyone somewhere: this window goes there, and looks at the same part. */
-	async function follow(call: Gather) {
+	/**
+	 * The GM has brought everyone somewhere: this window goes there, and looks
+	 * at the same part. `late` says the call was made before this window
+	 * connected. The map may have been closed to players since, so the way
+	 * there is tried first, and a call that leads nowhere is left alone.
+	 */
+	async function follow(call: Gather, late: boolean) {
 		if (call.mapId !== world.map.id) {
 			try {
+				if (late) {
+					const there = await preloadData(mapUrl(call.mapId));
+					if (there.type !== 'loaded' || there.status !== 200) return;
+				}
 				await goto(mapUrl(call.mapId));
 			} catch {
 				return;
@@ -499,7 +631,15 @@
 		{ tool: 'select', icon: 'marquee', label: 'Select several', key: 'w' },
 		{ tool: 'measure', icon: 'ruler', label: 'Measure a distance', key: 'e' },
 		{ tool: 'sketch', icon: 'draw', label: 'Draw', key: 'r' },
-		{ tool: 'text', icon: 'text', label: 'Write text', key: 't' }
+		{ tool: 'text', icon: 'text', label: 'Write text', key: 't' },
+		{ tool: 'template', icon: 'template', label: 'Lay down a spell template', key: 'y' }
+	];
+
+	/** The templates the template tool lays down. */
+	const SHAPES: { shape: TemplateKind; icon: ToolIcon; label: string }[] = [
+		{ shape: 'circle', icon: 'circle', label: 'Circle: a burst around a spot' },
+		{ shape: 'cone', icon: 'cone', label: 'Cone: as wide at its end as it is long' },
+		{ shape: 'rect', icon: 'box', label: 'Box: a square or a wall' }
 	];
 
 	// ------------------------------------------------------ maps & regions
@@ -585,7 +725,7 @@
 	function onkeydown(e: KeyboardEvent) {
 		// A display has nothing to undo and no tools to take up.
 		if (display) return;
-		if (form || tokenForm || setup || gallery || prompt || deleting) return;
+		if (form || tokenForm || setup || scaling || finding || gallery || prompt || deleting) return;
 		// In a text field, a letter is a letter and Ctrl+Z belongs to the text.
 		const typing =
 			e.target instanceof Element && !!e.target.closest('input, textarea, select, [contenteditable]');
@@ -600,6 +740,13 @@
 			return;
 		}
 
+		// Ctrl+K opens the finder, from anywhere on the page.
+		if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'k') {
+			e.preventDefault();
+			finding = true;
+			return;
+		}
+
 		// Each tool of a battle map has a key of its own.
 		if (battle && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) {
 			const hit = BATTLE_TOOLS.find((each) => each.key === e.key.toLowerCase());
@@ -608,10 +755,16 @@
 				if (!e.repeat) take(hit.tool);
 				return;
 			}
+			// And N moves the fight on to the next turn, for whoever runs it.
+			if (isGm && e.key.toLowerCase() === 'n' && world.map.turns.order.length) {
+				e.preventDefault();
+				if (!e.repeat) turnOrder?.next();
+				return;
+			}
 		}
 
 		if (e.key !== 'Escape') return;
-		if (placing || drawing || battleTool !== 'pan') {
+		if (placing || drawing || measuring || battleTool !== 'pan') {
 			putAway();
 		} else if (filterOpen) {
 			filterOpen = false;
@@ -627,6 +780,7 @@
 	function putAway() {
 		placing = null;
 		drawing = false;
+		measuring = false;
 		battleTool = 'pan';
 	}
 
@@ -718,7 +872,28 @@
 				{/each}
 			</ul>
 
+			<!-- Nothing of the finder is on screen but this, until it is asked for. -->
+			<ToolButton
+				small
+				tip="bottom"
+				icon="search"
+				label="Find a place or a marker"
+				hint="Ctrl+K"
+				onclick={() => (finding = true)}
+			/>
+
 			{#if isGm}
+				{#if live.shown}
+					<!-- A picture is up for the whole table. This is how it comes down. -->
+					<button
+						class="btn btn-sm btn-active max-w-56"
+						title="The table is looking at this picture. Click to put it away."
+						onclick={() => showPicture(null)}
+					>
+						<span class="truncate">Showing “{live.shown.name}”</span>
+						<span aria-hidden="true">×</span>
+					</button>
+				{/if}
 				<!-- The players' view of this map in a window of its own, to put on a
 				     screen the table can see. It opens in the one window however
 				     often it is asked for. -->
@@ -757,19 +932,28 @@
 				tokens={world.tokens}
 				drawings={world.drawings}
 				party={world.party}
-				{cursors}
+				journey={world.journey}
+				{showJourney}
+				{miles}
+				{hands}
+				{pings}
 				role={data.role}
 				userId={data.me.id}
 				passive={display}
 				{tool}
 				{ink}
+				{shape}
 				depth={world.trail.length}
 				bind:selectedMarkerId
 				bind:selectedRegionId
 				bind:selectedIds
 				bind:selectedParty
 				{send}
-				ondone={() => (battleTool = 'pan')}
+				ondone={() => {
+					// A template that was laid down, a text that was written: back to
+					// the hand. The ruler of a world map stays out for the next stretch.
+					battleTool = 'pan';
+				}}
 				onplace={placed}
 				onnote={(x, y) => {
 					if (!display) form = { mode: 'create', kind: 'player', x, y };
@@ -787,10 +971,11 @@
 				ondelete={deleteMarker}
 				onhide={(marker, hidden) => run({ t: 'marker.update', id: marker.id, changes: { hidden } })}
 				onedittoken={(token) => (tokenForm = token)}
-				oncursor={(at) => {
-					// A display is nobody at the table: it has no pointer to show.
-					if (!display) live.point(at && { mapId: world.map.id, ...at });
+				onhand={(at) => {
+					// A display is nobody at the table: it holds nothing.
+					if (!display) live.hold(at && { mapId: world.map.id, ...at });
 				}}
+				onping={(x, y) => live.ping({ mapId: world.map.id, x, y })}
 			/>
 
 			{#if display}
@@ -801,6 +986,30 @@
 				>
 					{world.map.name}
 				</p>
+			{/if}
+
+			{#if battle}
+				<!-- Whose turn it is, down the left side of a battle map. It is there
+				     once a token has been put in the order, for everyone, and on a
+				     table display under the name of the map. A narrow screen keeps
+				     its Fit button in that corner, so there it starts lower. -->
+				<div class={['absolute left-3.5 z-1', display ? 'top-14' : 'top-3.5 max-[720px]:top-16']}>
+					<TurnOrder
+						bind:this={turnOrder}
+						{campaignId}
+						tokens={world.tokens}
+						turns={world.map.turns}
+						gm={isGm}
+						passive={display}
+						bind:collapsed={turnsFolded}
+						selectedId={selectedIds.length === 1 ? selectedIds[0] : null}
+						onpick={(id) => {
+							battleTool = 'pan';
+							selectedIds = [id];
+						}}
+						onchange={setTurns}
+					/>
+				</div>
 			{/if}
 
 			{#if empty && isGm && tool === 'pan'}
@@ -851,12 +1060,34 @@
 							/>
 						</div>
 					{/if}
-					{#if !toolsFolded && (battleTool === 'sketch' || battleTool === 'text')}
-						<!-- The inks, out while there is something to draw or write with. -->
+					{#if !toolsFolded && battleTool === 'template'}
+						<!-- The shapes a template comes in, out while one is to be laid down. -->
+						<div
+							class="grid gap-1.5 p-1.5 {floating}"
+							role="toolbar"
+							aria-label="Shape of the template"
+						>
+							{#each SHAPES as each (each.shape)}
+								<ToolButton
+									tip="left"
+									icon={each.icon}
+									label={each.label}
+									active={shape === each.shape}
+									onclick={() => (shape = each.shape)}
+								/>
+							{/each}
+						</div>
+					{/if}
+					{#if !toolsFolded && (battleTool === 'sketch' || battleTool === 'text' || battleTool === 'template')}
+						<!-- The inks, out while there is something to draw, write or lay down with. -->
 						<div
 							class="grid gap-1.5 p-1.5 {floating}"
 							role="radiogroup"
-							aria-label={battleTool === 'text' ? 'Colour of the text' : 'Colour of the pen'}
+							aria-label={battleTool === 'text'
+								? 'Colour of the text'
+								: battleTool === 'template'
+									? 'Colour of the template'
+									: 'Colour of the pen'}
 						>
 							{#each INK_COLORS as option (option)}
 								<!-- Each ink is a disc of itself, which arrives as --c. -->
@@ -1019,6 +1250,32 @@
 									{/if}
 								</button>
 							{/each}
+							<!-- And one for the road the party has taken, in the GM's gold. -->
+							<button
+								class={[
+									'inline-flex cursor-pointer items-center gap-1.25 rounded-full border py-1 pr-2.5 pl-2 text-[13px] touch:py-2',
+									showJourney
+										? 'border-accent bg-accent/18 text-[color-mix(in_srgb,var(--color-accent)_70%,white)]'
+										: 'text-muted line-through decoration-muted/60'
+								]}
+								aria-pressed={showJourney}
+								onclick={() => (showJourney = !showJourney)}
+							>
+								<svg
+									width="15"
+									height="15"
+									viewBox="0 0 24 24"
+									fill="none"
+									stroke="currentColor"
+									stroke-width="2"
+									stroke-linecap="round"
+									stroke-linejoin="round"
+									aria-hidden="true"
+								>
+									<path d="M5 21V4 M5 4h14l-3.5 4.5L19 13H5" />
+								</svg>
+								The party's road
+							</button>
 						</div>
 						<div class="flex items-center justify-between gap-2">
 							<span class="text-xs text-muted">Only changes what you see.</span>
@@ -1043,7 +1300,13 @@
 					aria-label="Map tools"
 				>
 					{#if tool !== 'pan'}
-						<button class="btn" onclick={putAway}>Cancel</button>
+						<button class="btn" onclick={putAway}>{measuring ? 'Put the ruler away' : 'Cancel'}</button>
+						{#if measuring && isGm}
+							<!-- What the ruler goes by, and the way to change it. -->
+							<button class="btn" onclick={() => (scaling = true)}>
+								Scale: {miles === null ? 'none' : `${milesCount(miles)} across`}
+							</button>
+						{/if}
 					{:else}
 						<!-- The tools for the map. This wrapper only exists on a narrow
 						     screen, where it makes them a row of their own. -->
@@ -1064,10 +1327,22 @@
 								hint={hiddenTypes.length
 									? `${hiddenTypes.length} of ${MARKER_TYPES.length} types hidden`
 									: undefined}
-								active={hiddenTypes.length > 0}
+								active={hiddenTypes.length > 0 || !showJourney}
 								expanded={filterOpen}
 								onclick={() => (filterOpen = !filterOpen)}
 							/>
+							<!-- A ruler needs a scale to go by. Where no map on the way here
+							     has one, the GM is asked for it, and players have no ruler. -->
+							{#if isGm || miles !== null}
+								<ToolButton
+									icon="ruler"
+									label="Measure a distance"
+									hint={miles === null
+										? 'Asks how far across this map is first'
+										: `This map is about ${milesCount(miles)} across`}
+									onclick={startMeasuring}
+								/>
+							{/if}
 							{#if isGm}
 								<span class="w-px self-stretch bg-line"></span>
 								<ToolButton
@@ -1223,12 +1498,70 @@
 {:else if gallery === 'browse'}
 	<Gallery
 		{campaignId}
+		onshow={showPicture}
+		shownFile={live.shown?.file ?? null}
 		onclose={() => {
 			gallery = null;
 			// What was added, revealed or taken out shows in the dock of tokens.
 			galleryStamp++;
 		}}
 	/>
+{/if}
+
+{#if scaling && !battle}
+	<ScalePrompt
+		map={world.map}
+		{miles}
+		onsubmit={async (across) => {
+			const saved = await run({ t: 'map.update', id: world.map.id, miles: across });
+			// With no scale left to go by, the ruler goes back in the drawer.
+			if (saved && across === null) measuring = false;
+			return saved;
+		}}
+		onclose={() => (scaling = false)}
+	/>
+{/if}
+
+{#if finding}
+	<Finder {campaignId} here={world.map.id} onpick={go} onclose={() => (finding = false)} />
+{/if}
+
+{#if live.shown && !isGm && closedPicture !== live.shown.file}
+	<!-- A picture the GM is holding up for the table: over everything, for as
+	     long as it is up. Each person may close their own. A table display
+	     has nobody to close it, and shows it until the GM puts it away. A
+	     big map image is shown by its preview, which is plenty for a screen. -->
+	{@const shown = live.shown}
+	<div
+		class="fixed inset-0 z-20 grid place-items-center bg-[rgb(6_8_12/0.9)] p-5"
+		role="dialog"
+		aria-label="A picture from the GM: {shown.name}"
+	>
+		{#if !display}
+			<button
+				class="absolute inset-0 cursor-zoom-out"
+				aria-label="Close the picture"
+				onclick={() => (closedPicture = shown.file)}
+			></button>
+		{/if}
+		<figure class="pointer-events-none relative grid max-h-full justify-items-center gap-3">
+			<img
+				class="max-h-[calc(100dvh-110px)] max-w-full rounded-md object-contain shadow-pop"
+				src={imageUrl(
+					campaignId,
+					shown.file,
+					tileLevels(shown.width, shown.height) > 0 ? 'preview' : undefined
+				)}
+				alt={shown.name}
+			/>
+			<figcaption class="font-serif text-xl font-semibold text-[#fff8e4] text-shadow-map">
+				{shown.name}
+				{#if !display}
+					<span class="ml-2 font-sans text-xs font-normal text-muted">Click anywhere to close</span>
+				{/if}
+			</figcaption>
+		</figure>
+	</div>
 {/if}
 
 {#if prompt}

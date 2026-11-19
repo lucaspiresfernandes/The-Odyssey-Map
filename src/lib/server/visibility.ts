@@ -1,16 +1,17 @@
 // The only path from the event log to a client.
 //
 // Stored events hold full before/after snapshots, including hidden world
-// markers, hidden tokens, tokens under the fog and hidden regions. Nothing
-// leaves the app without passing through the functions below, which decide
-// what a given role is allowed to receive. That includes what is handed to
+// markers, hidden tokens, tokens under the fog, hidden regions, and turn
+// orders that name tokens a player can't see. Nothing leaves the app
+// without passing through the functions below, which decide what a given
+// role is allowed to receive. That includes what is handed to
 // the WebSocket server to deliver.
 
 import { eq } from 'drizzle-orm';
 import type { Db } from './db';
-import { tokensOn } from './queries';
+import { mapFor, tokensOn } from './queries';
 import { maps } from './schema';
-import { isConcealed } from './world';
+import { isConcealed, mapColumns } from './world';
 import { canSeeMarker, canSeeRegion, canSeeToken } from '../shared/rules';
 import {
 	NO_FOG,
@@ -105,16 +106,30 @@ export function toLiveEvent(db: Db, event: StoredEvent, role: Role): LiveEvent |
 	// Nothing that happens on a map behind a hidden region reaches a player.
 	if (role !== 'gm' && isConcealed(db, event.mapId)) return null;
 
-	let fog: Fog | undefined;
+	// What happens to a token is weighed against the map it is on: its fog,
+	// and for the turn order, who else stands there.
+	let home: MapInfo | undefined;
 	if (role !== 'gm' && event.entity === 'token') {
-		fog = db.select({ fog: maps.fog }).from(maps).where(eq(maps.id, event.mapId)).get()?.fog;
+		home = db.select(mapColumns).from(maps).where(eq(maps.id, event.mapId)).get();
 	}
-	const patch = projectEvent(event, role, fog);
+	const patch = projectEvent(event, role, home?.fog);
 	if (!patch) return null;
-	// Fog that moved has uncovered some tokens for the players and covered
-	// others. They are sent the lot as they may see it now.
-	if (role !== 'gm' && patch.t === 'map.upsert' && fogChanged(event)) {
-		patch.tokens = tokensOn(db, patch.map, role);
+	if (role !== 'gm' && patch.t === 'map.upsert') {
+		// Fog that moved has uncovered some tokens for the players and covered
+		// others. They are sent the lot as they may see it now.
+		const seen = tokensOn(db, patch.map, role);
+		if (fogChanged(event)) patch.tokens = seen;
+		// Of the turn order, only the tokens they can see.
+		patch.map = mapFor(db, patch.map, role, seen);
+	}
+	// A token that takes turns has come into a player's sight, or gone out
+	// of it: the turn order they are shown changes with that.
+	if (home && (patch.t === 'token.upsert' || patch.t === 'token.remove')) {
+		const before = event.before as Token | null;
+		const wasSeen = !!before && canSeeToken(role, before, home.fog);
+		if ((patch.t === 'token.remove' || !wasSeen) && home.turns.order.includes(event.entityId)) {
+			patch.turns = mapFor(db, home, role).turns;
+		}
 	}
 	return {
 		seq: event.seq,

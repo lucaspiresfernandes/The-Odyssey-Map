@@ -9,6 +9,7 @@
 	//
 	// Opened on its own, with no `kind`, it is the GM's storeroom: both
 	// shelves, to stock and tidy ahead of the session. Nothing is picked.
+	// From there a picture can be held up for the whole table to look at.
 
 	import {
 		LIMITS,
@@ -29,10 +30,26 @@
 		readonly?: boolean;
 		/** What to do with the picture that is picked, when there is a `kind` to pick from. */
 		onpick?: (item: GalleryItem) => void;
+		/**
+		 * For the GM's storeroom: holds a picture up for the whole table to look
+		 * at, or with null puts away the one that is up. `shownFile` is the file
+		 * of that one.
+		 */
+		onshow?: (item: GalleryItem | null) => void;
+		shownFile?: string | null;
 		onclose: () => void;
 	}
 
-	let { campaignId, kind, current = null, readonly = false, onpick, onclose }: Props = $props();
+	let {
+		campaignId,
+		kind,
+		current = null,
+		readonly = false,
+		onpick,
+		onshow,
+		shownFile = null,
+		onclose
+	}: Props = $props();
 
 	const ACCEPT = 'image/png,image/jpeg,image/webp,image/gif,image/avif';
 	const SHELVES: { kind: GalleryKind; title: string }[] = [
@@ -338,6 +355,40 @@
 										aria-hidden="true"
 									>
 										<path d={item.hidden ? STRUCK : EYE} />
+									</svg>
+								</button>
+							{/if}
+							{#if onshow}
+								<!-- Holds the picture up for everyone at the table, on their own
+								     screens and on the table display. It stays gold, and in view,
+								     for as long as it is up: click it again to put it away. -->
+								{@const up = item.file === shownFile}
+								<button
+									class={[
+										'absolute top-1 left-1/2 grid size-6.5 -translate-x-1/2 cursor-pointer place-items-center rounded-full border bg-night/85 transition-opacity touch:size-9',
+										up
+											? 'border-accent text-accent'
+											: 'text-muted opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 hover:text-cream touch:opacity-100'
+									]}
+									aria-label="Show {item.name} to the table"
+									aria-pressed={up}
+									title={up
+										? 'The table is looking at this. Click to put it away.'
+										: 'Show it to the table, full screen'}
+									onclick={() => onshow(up ? null : item)}
+								>
+									<svg
+										width="15"
+										height="15"
+										viewBox="0 0 24 24"
+										fill="none"
+										stroke="currentColor"
+										stroke-width="2"
+										stroke-linecap="round"
+										stroke-linejoin="round"
+										aria-hidden="true"
+									>
+										<path d="M3 4h18v12H3Z M8 20h8 M12 16v4" />
 									</svg>
 								</button>
 							{/if}

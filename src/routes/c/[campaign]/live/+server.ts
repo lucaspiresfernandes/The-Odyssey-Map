@@ -3,6 +3,7 @@
 
 import { json, type RequestHandler } from '@sveltejs/kit';
 import { getDb } from '#lib/server/db.ts';
+import { shownTo } from '#lib/server/gallery.ts';
 import { requireMemberApi } from '#lib/server/session.ts';
 import { latestSeq } from '#lib/server/world.ts';
 import type { LiveIdentity } from '#lib/shared/types.ts';
@@ -13,7 +14,8 @@ export const GET: RequestHandler = (event) => {
 		user: { id: user.id, name: user.name },
 		// A table display is shown what a player is, whoever opened it.
 		role: event.url.searchParams.has('display') ? 'player' : campaign.role,
-		seq: latestSeq(getDb(), campaign.id)
+		seq: latestSeq(getDb(), campaign.id),
+		shown: shownTo(getDb(), campaign.id)
 	};
 	return json(identity, { headers: { 'cache-control': 'no-store' } });
 };

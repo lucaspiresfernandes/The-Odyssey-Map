@@ -8,6 +8,7 @@
 		TOKEN_COLORS,
 		imageUrl,
 		type GalleryItem,
+		type GalleryResponse,
 		type Token,
 		type TokenInput
 	} from '#lib/shared/types.ts';
@@ -52,6 +53,37 @@
 	function wear(item: GalleryItem) {
 		picking = false;
 		image = item.file;
+		remembered = false;
+	}
+
+	/** The picture in the gallery has been told what its tokens start out as. */
+	let remembered = $state(false);
+	let remembering = $state(false);
+	let rememberError = $state('');
+
+	/**
+	 * Tells the gallery that tokens made from this picture start out like
+	 * this one: as many cells across, with the outline picked in this form.
+	 */
+	async function remember() {
+		remembering = true;
+		rememberError = '';
+		try {
+			const listed = (await (await fetch(`/c/${campaignId}/gallery`)).json()) as GalleryResponse;
+			const item = listed.items?.find((each) => each.file === image);
+			if (!item) throw new Error('That picture is no longer in the gallery.');
+			const response = await fetch(`/c/${campaignId}/gallery/${item.id}`, {
+				method: 'PATCH',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ preset: { size: token.size, outline: outline || null } })
+			});
+			const result = (await response.json()) as GalleryResponse;
+			if (!result.ok) throw new Error(result.error);
+			remembered = true;
+		} catch (err) {
+			rememberError = (err as Error).message || "That couldn't be saved.";
+		}
+		remembering = false;
 	}
 
 	/** What a colour to pick has in common with the next: a disc, and how it shows it is the one. */
@@ -82,6 +114,22 @@
 					</button>
 				{/if}
 			</div>
+			{#if gm && image}
+				<!-- So the next ogre out of the dock is as big as this one. -->
+				<p class="text-[13px] text-muted">
+					{#if remembered}
+						New tokens with this picture now start out this size, with this outline.
+					{:else}
+						<button
+							type="button"
+							class="cursor-pointer text-accent underline disabled:cursor-default disabled:opacity-60"
+							disabled={remembering}
+							onclick={remember}>Start new tokens with this picture like this one</button
+						>: its size, and the outline picked below.
+					{/if}
+					{#if rememberError}<span class="text-danger">{rememberError}</span>{/if}
+				</p>
+			{/if}
 		</div>
 
 		<!-- A picture covers the disc, so only a plain token has a colour to pick.

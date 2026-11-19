@@ -43,6 +43,21 @@
 		// Four ways in to one spot: everyone is brought here.
 		gather:
 			'M12 2v5 M12 17v5 M2 12h5 M17 12h5 M9.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0 M10 5l2 2 2-2 M10 19l2-2 2 2 M5 10l2 2-2 2 M19 10l-2 2 2 2',
+		// A burst: the area of a spell. Then the three shapes it can take.
+		template:
+			'M12 2v4 M12 18v4 M2 12h4 M18 12h4 M4.9 4.9l2.9 2.9 M16.2 16.2l2.9 2.9 M4.9 19.1l2.9-2.9 M16.2 7.8l2.9-2.9 M9.5 12a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0-5 0',
+		circle: 'M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0 M11.5 12a.5.5 0 1 0 1 0a.5.5 0 1 0-1 0',
+		cone: 'M3 12 20 4.5v15Z',
+		box: 'M4 4h16v16H4Z',
+		// An hourglass: whose turn it is. And the way on to the next one.
+		turns: 'M6 2h12 M6 22h12 M7 2v4l5 6-5 6v4 M17 2v4l-5 6 5 6v4',
+		next: 'M5 4l10 8-10 8Z M19 5v14',
+		// A token with a pip on its rim.
+		mark: 'M4 13a7.5 7.5 0 1 0 15 0a7.5 7.5 0 1 0-15 0 M15 6.5a3 3 0 1 0 6 0a3 3 0 1 0-6 0',
+		search: 'M4 11a7 7 0 1 0 14 0a7 7 0 1 0-14 0 M21 21l-4.3-4.3',
+		// A screen on a stand: something held up for the whole table.
+		show: 'M3 4h18v12H3Z M8 20h8 M12 16v4',
+		close: 'M6 6l12 12 M18 6 6 18',
 		plus: 'M12 5v14 M5 12h14',
 		up: 'M6 15l6-6 6 6',
 		down: 'M6 9l6 6 6-6',
