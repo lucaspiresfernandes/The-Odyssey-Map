@@ -80,7 +80,9 @@ GM's.
   way down to that one shows the banner beside the name of the region to go through, so
   "where are we?" has an answer from anywhere. The party stands where the players are:
   it can't be put on a map behind a hidden region, and a region can't be hidden while
-  the party is inside. On a battle map, tokens stand for it.
+  the party is inside. On a battle map, tokens stand for it. The struck-through banner
+  beside it takes the party off the maps for everyone, from any map that shows it, and
+  `Ctrl+Z` plants it back where it stood.
 - **Bring everyone here.** The button with four arrows, in the bar under a world map and
   among the tools of a battle map. Every other browser in the campaign steps to the map
   you are on and is shown the part of it you are looking at, zoomed so all of what you
@@ -182,9 +184,9 @@ What is on a battle map:
   drag a handle, the angle or the size it has come to, in feet, is written over the token. With
   several tokens selected there are no handles.
 - **The buttons on a selected token.** They float just under it, below its name. Anyone at the table labels
-  it, locks it, duplicates it and opens its picture, colour and outline: a locked token
-  can't be moved, resized or turned until someone unlocks it. Only the GM hides it,
-  reveals it and deletes it.
+  it, locks it, duplicates it, opens its picture, colour and outline, and deletes it: a
+  locked token can't be moved, resized or turned until someone unlocks it. Only the GM
+  hides it and reveals it.
 - **Drawings.** With **Draw** in hand, drag across the map to draw a line in the colour
   you pick beside the tools. Lines sit on the map under the tokens, and grow and shrink
   with it.
@@ -255,18 +257,19 @@ tokens, and the tools are in the corner.
 | Maps, regions | create, edit, hide, reveal, delete | read (never the hidden ones) |
 | The gallery | add, rename, reveal, hide, take out, lay an image under a map | look through what the GM has revealed, pick one of those for a token |
 | Battle maps and grids | make one behind a new region, set up the grid | read |
-| The party | put on a world map, move | see where it is |
+| The party | put on a world map, move, take off the maps | see where it is |
 | Fog of war, on battle maps | cover, clear, lift, see through | see what has been cleared |
 | Bring everyone here | call everyone to a map and a view of it | follow |
-| Tokens | create anywhere, give any picture, hide, reveal, delete | create where there is no fog, give a revealed picture |
-| Any token they can see | move, resize, turn, recolour, outline, label, lock, unlock, duplicate | move, resize, turn, recolour, outline, label, lock, unlock, duplicate |
+| Tokens | create anywhere, give any picture, hide, reveal | create where there is no fog, give a revealed picture |
+| Any token they can see | move, resize, turn, recolour, outline, label, lock, unlock, duplicate, delete | move, resize, turn, recolour, outline, label, lock, unlock, duplicate, delete |
 | Drawings and text, on battle maps | create, move, change, rub out, anyone's | create, and move, change, rub out their own |
 | Undo and redo | their own changes | their own changes to table notes, tokens and drawings |
 
 A table note can be deleted by whoever added it and by the GM, never by another player.
 
-A token is deleted by the GM only. The one way round that is undo: a player who has just
-put a token on the map, or duplicated one, can take that back with `Ctrl+Z`.
+A token is deleted by anyone who can see it, locked or not: a player never deletes one
+that is hidden or under the fog, because to them it isn't there. Whoever deleted it
+brings it back with `Ctrl+Z`. Beyond that, restoring a deleted token is the GM's.
 
 Hidden world markers are filtered on the server. They are not in the page a player loads,
 not in the events their browser receives, and out of reach of a player's undo. Hidden
@@ -457,8 +460,7 @@ Type-checks everything.
   fog are sent to players as well, and covered the same way.
 - A token is under the fog or not by its middle. A big one at the edge of the clear
   shows with part of it covered.
-- There is one party per campaign, and it is the GM's to move. It can't be taken off
-  the maps again, except by undoing the click that put it there.
+- There is one party per campaign, and it is the GM's to move and to take off the maps.
 - **Bring everyone here** is a call, not a leash: once there, everyone is free to pan
   away or step elsewhere. Someone who connects after the call isn't brought along.
 - A table display shows the map as a player sees it, and no more: it has no view of its

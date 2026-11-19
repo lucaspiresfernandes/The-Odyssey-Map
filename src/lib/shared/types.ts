@@ -378,6 +378,8 @@ export type Command =
 	  }
 	/** Puts the party at a spot of a world map, wherever it was before. */
 	| { t: 'party.move'; mapId: string; x: number; y: number }
+	/** Takes the party off the maps, until it is put on one again. */
+	| { t: 'party.remove' }
 	/** Takes back the change with this sequence number by performing its opposite. */
 	| { t: 'history.revert'; seq: number }
 	/**

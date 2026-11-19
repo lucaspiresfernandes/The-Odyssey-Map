@@ -278,6 +278,18 @@
 		else form = { mode: 'create', kind: target.create, x, y };
 	}
 
+	/**
+	 * The party shows on this map: it stands here, or in a region further
+	 * in, whose name then carries its banner.
+	 */
+	const partyHere = $derived(world.party?.trail.includes(world.map.id) ?? false);
+
+	/** Takes the party's banner off the maps. Undo plants it back where it stood. */
+	async function removeParty() {
+		const { ok, step } = await attempt({ t: 'party.remove' });
+		if (ok) say('Took the party off the map.', step);
+	}
+
 	async function saveMarker(values: Pick<MarkerInput, 'type' | 'title' | 'description' | 'hidden'>) {
 		if (!form) return false;
 		let command: Command;
@@ -1080,6 +1092,16 @@
 										: 'Put the party on this map'}
 									hint="Shows the table where it is"
 									onclick={() => startPlacing({ party: true })}
+								/>
+								<!-- Always here, so the bar keeps its shape, and live on the
+								     maps that show the party. -->
+								<ToolButton
+									icon="partyOff"
+									label="Remove the party marker"
+									hint={partyHere ? 'Takes it off the map for everyone' : "The party isn't on this map"}
+									danger
+									disabled={!partyHere}
+									onclick={removeParty}
 								/>
 								<ToolButton
 									icon="gather"

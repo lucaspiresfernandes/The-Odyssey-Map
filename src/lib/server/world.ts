@@ -26,9 +26,10 @@ import {
 	canChangeDrawing,
 	canEditMarkerKind,
 	canEditWorld,
+	canHideToken,
 	canMoveParty,
 	canRemoveMarker,
-	canRemoveToken,
+	canRestoreToken,
 	canSeeEvent
 } from '../shared/rules';
 import {
@@ -645,14 +646,14 @@ function readToken(db: Db, id: string): Token {
 }
 
 /**
- * Taking a token off the map, or putting a deleted one back, is the GM's.
- * `undoing` is the one way round that: a player takes back a token they
- * put on the table themselves, and may change their mind about that again.
- * Undo only ever reaches a player's own changes, so that is all it opens.
+ * Anyone who sees a token can take it off the map. Putting a deleted one
+ * back is the GM's. `undoing` is the one way round that: a player who took
+ * a token off the map may change their mind about it. Undo only ever
+ * reaches a player's own changes, so that is all it opens.
  */
-function requireTokenRemoval(actor: Actor, what: 'delete' | 'restore', undoing: boolean) {
-	if (!canRemoveToken(actor.role) && !undoing) {
-		fail('forbidden', `Only the GM can ${what} a token.`);
+function requireTokenRestore(actor: Actor, undoing: boolean) {
+	if (!canRestoreToken(actor.role) && !undoing) {
+		fail('forbidden', 'Only the GM can restore a token.');
 	}
 }
 
@@ -772,7 +773,7 @@ function updateToken(
 
 	const changes = asTokenChanges(rawChanges);
 	// Hiding is the GM's. Everything else about a token is the whole table's.
-	if (actor.role !== 'gm' && changes.hidden !== undefined) {
+	if (!canHideToken(actor.role) && changes.hidden !== undefined) {
 		fail('forbidden', 'Only the GM can hide a token.');
 	}
 
@@ -811,9 +812,8 @@ function updateToken(
 	return [record(db, actor, before.mapId, 'token', 'update', before, after)];
 }
 
-function deleteToken(db: Db, actor: Actor, id: string, undoing = false): StoredEvent[] {
+function deleteToken(db: Db, actor: Actor, id: string): StoredEvent[] {
 	const { token, deletedAt } = findToken(db, actor, id);
-	requireTokenRemoval(actor, 'delete', undoing);
 	if (deletedAt !== null) fail('conflict', 'That token is already deleted.');
 
 	db.update(tokens).set({ deletedAt: Date.now() }).where(eq(tokens.id, id)).run();
@@ -822,7 +822,7 @@ function deleteToken(db: Db, actor: Actor, id: string, undoing = false): StoredE
 
 function restoreToken(db: Db, actor: Actor, id: string, undoing = false): StoredEvent[] {
 	const { token, deletedAt } = findToken(db, actor, id);
-	requireTokenRemoval(actor, 'restore', undoing);
+	requireTokenRestore(actor, undoing);
 	if (deletedAt === null) fail('conflict', 'That token is already on the map.');
 
 	db.update(tokens).set({ deletedAt: null, updatedAt: Date.now() }).where(eq(tokens.id, id)).run();
@@ -1293,6 +1293,12 @@ function moveParty(db: Db, actor: Actor, raw: Record<string, unknown>): StoredEv
 	return writeParty(db, actor, { mapId: map.id, x: asCoord(raw.x), y: asCoord(raw.y) });
 }
 
+/** Takes the party off the maps: it is nowhere until it is put on one again. */
+function removeParty(db: Db, actor: Actor): StoredEvent[] {
+	if (!canMoveParty(actor.role)) fail('forbidden', 'Only the GM moves the party.');
+	return writeParty(db, actor, null);
+}
+
 // ------------------------------------------------------------------ revert
 
 const MARKER_FIELDS = ['type', 'title', 'description', 'x', 'y', 'hidden'] as const;
@@ -1364,9 +1370,7 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 	}
 
 	if (event.entity === 'token') {
-		if (event.action === 'create' || event.action === 'restore') {
-			return deleteToken(db, actor, id, true);
-		}
+		if (event.action === 'create' || event.action === 'restore') return deleteToken(db, actor, id);
 		if (event.action === 'delete') return restoreToken(db, actor, id, true);
 		// Undoing a move puts the token back where it stood, and leaves a
 		// rename made since alone.
@@ -1477,6 +1481,8 @@ function run(db: Db, actor: Actor, input: unknown, nested = false): StoredEvent[
 			return updateMap(db, actor, asId(cmd.id), cmd);
 		case 'party.move':
 			return moveParty(db, actor, cmd);
+		case 'party.remove':
+			return removeParty(db, actor);
 		case 'token.create':
 			return createToken(db, actor, cmd);
 		case 'token.update':

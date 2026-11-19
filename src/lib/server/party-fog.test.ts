@@ -123,6 +123,31 @@ describe('the party', () => {
 		expect(refusal(() => perform(db, player, { t: 'history.revert', seq: moved.seq }))).toBe('not_found');
 	});
 
+	test('the GM takes it off the maps, and undo plants it back', () => {
+		const port = draw('Port Varr');
+		perform(db, gm, { t: 'party.move', mapId: port.targetMapId, x: 0.3, y: 0.6 });
+		expect(refusal(() => perform(db, player, { t: 'party.remove' }))).toBe('forbidden');
+
+		const [gone] = perform(db, gm, { t: 'party.remove' });
+		expect(gone).toMatchObject({ entity: 'party', action: 'delete', mapId: port.targetMapId, after: null });
+		expect(toLiveEvent(db, gone, 'player')!.patch).toEqual({ t: 'party.set', party: null });
+		expect(party('gm')).toBeNull();
+		expect(party('gm', port.targetMapId)).toBeNull();
+		// With no party there is nothing to take off, and nothing is recorded.
+		expect(perform(db, gm, { t: 'party.remove' })).toHaveLength(0);
+
+		// Unlike one lost with its map, this one has somewhere to come back to.
+		expect(undoable([gone])).toEqual([gone.seq]);
+		expect(refusal(() => perform(db, player, { t: 'history.revert', seq: gone.seq }))).toBe('not_found');
+		const [back] = perform(db, gm, { t: 'history.revert', seq: gone.seq });
+		expect(party()).toMatchObject({ mapId: port.targetMapId, x: 0.3, y: 0.6, trail: [mapId, port.targetMapId] });
+		// Redo takes it off again.
+		perform(db, gm, { t: 'history.revert', seq: back.seq });
+		expect(party('gm')).toBeNull();
+		// And with it gone, the region it stood in can be hidden.
+		expect(perform(db, gm, { t: 'region.update', id: port.id, hidden: true })).toHaveLength(1);
+	});
+
 	test('it goes with the map it stands on when the region there is deleted', () => {
 		const port = draw('Port Varr');
 		const tavern = draw('The Gilded Eel', port.targetMapId);

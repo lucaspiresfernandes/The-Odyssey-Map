@@ -567,13 +567,23 @@ async function run() {
 	// player's token is hidden by now, so this is about the ogre.
 	tokenCommand(40, { t: 'token.update', id: ogreId, changes: { name: 'Ogre chief', locked: true } });
 	tokenCommand(41, { t: 'token.duplicate', id: ogreId });
-	tokenCommand(42, { t: 'token.delete', id: ogreId });
 	await pause(700);
 	const chief = tokenEvents(gmSocket, ogreId).at(-1);
 	check('a player labels and locks the GM\'s token', ack(40)?.ok === true && chief?.name === 'Ogre chief' && chief?.locked === true);
 	const twin = gmSocket.messages.filter((m) => m.t === 'event' && m.event.patch.token?.name === 'Ogre chief').map((m) => m.event.patch.token).find((t) => t.id !== ogreId);
 	check('and duplicates it, into one that is not locked', ack(41)?.ok === true && !!twin && twin.locked === false);
-	check('but cannot delete it', ack(42)?.ok === false);
+	// Anyone takes a token off the map, and whoever did can change their mind.
+	// The last the GM heard of the copy: that it is on the map, or off it.
+	const twinNews = () => gmSocket.messages.filter((m) => m.t === 'event' && (m.event.patch.token?.id ?? m.event.patch.id) === twin?.id).at(-1)?.event.patch.t;
+	tokenCommand(42, { t: 'token.delete', id: twin?.id });
+	await pause(500);
+	check('and deletes the copy, which the GM sees go', ack(42)?.ok === true && twinNews() === 'token.remove');
+	tokenCommand(43, { t: 'token.restore', id: twin?.id });
+	await pause(300);
+	check('putting it back is not theirs to ask for', ack(43)?.ok === false && twinNews() === 'token.remove');
+	tokenCommand(44, { t: 'history.revert', seq: ack(42)?.undo?.[0] });
+	await pause(500);
+	check('except by undoing what they did', ack(44)?.ok === true && twinNews() === 'token.upsert');
 	check('a locked token stays where it is, for the GM too', (await gm.command(campaign, { t: 'token.update', id: ogreId, changes: { x: 0.2 } })).status === 409);
 	// Several changes as one: turned and unlocked together, or not at all.
 	const both = await gm.command(campaign, {
@@ -638,6 +648,14 @@ async function run() {
 	check('the GM moves the party, and the player is shown where', marched.status === 200 && partyNews.at(-1)?.event.patch.party?.x === 0.4);
 	check('a player cannot', (await player.command(campaign, { t: 'party.move', mapId, x: 0.1, y: 0.1 })).status === 403);
 	check('nor does it go on a battle map', (await gm.command(campaign, { t: 'party.move', mapId: bridgeId, x: 0.5, y: 0.5 })).status === 400);
+	check('nor can a player take it off the maps', (await player.command(campaign, { t: 'party.remove' })).status === 403);
+	const struck = await gm.command(campaign, { t: 'party.remove' });
+	await pause(300);
+	const partyNow = () => playerSocket.messages.filter((m) => m.t === 'event' && m.event.patch.t === 'party.set').at(-1)?.event.patch.party;
+	check('the GM takes the party off the maps, and the player is told', struck.status === 200 && partyNow() === null);
+	const replanted = await gm.command(campaign, { t: 'history.revert', seq: struck.body.undo?.[0] });
+	await pause(300);
+	check('and undo plants it back where it stood', replanted.status === 200 && partyNow()?.x === 0.4);
 
 	// Fog of war: what stands under it is not in the page a player loads, and
 	// when it moves they are sent the tokens they may see now.

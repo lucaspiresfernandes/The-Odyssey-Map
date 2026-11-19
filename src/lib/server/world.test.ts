@@ -629,8 +629,10 @@ describe('battle maps', () => {
 		expect(perform(db, player, { t: 'token.update', id: goblin.id, changes: { x: 0.1 } })[0].after).toMatchObject({ x: 0.1 });
 		expect(perform(db, other, { t: 'token.update', id: mine.id, changes: { x: 0.9 } })[0].after).toMatchObject({ x: 0.9 });
 		expect(perform(db, gm, { t: 'token.update', id: mine.id, changes: { x: 0.3 } })).toHaveLength(1);
-		// Taking one off the map is still the GM's.
-		expect(refusal(() => perform(db, other, { t: 'token.delete', id: mine.id }))).toBe('forbidden');
+		// Taking one off the map as well.
+		expect(perform(db, other, { t: 'token.delete', id: mine.id })[0]).toMatchObject({ action: 'delete', after: null });
+		expect(perform(db, player, { t: 'token.delete', id: goblin.id })).toHaveLength(1);
+		expect(sees(id, 'gm').tokens).toHaveLength(0);
 	});
 
 	test('only the GM hides a token', () => {
@@ -824,15 +826,40 @@ describe('battle maps', () => {
 		expect(perform(db, gm, { t: 'token.duplicate', id: lurker.id })[0].after).toMatchObject({ hidden: true });
 	});
 
-	test('only the GM takes a token off the map', () => {
+	test('anyone takes a token off the map, and whoever did puts it back', () => {
 		const { id } = battlefield();
 		const mine = token(player, id, { name: 'Mira' });
-		expect(refusal(() => perform(db, player, { t: 'token.delete', id: mine.id }))).toBe('forbidden');
+		const ogre = token(gm, id, { name: 'Ogre', x: 0.7 });
+
+		// A player deletes the GM's token, and everyone is told it is gone.
+		const [slain] = perform(db, player, { t: 'token.delete', id: ogre.id });
+		expect(slain).toMatchObject({ entity: 'token', action: 'delete', actorId: player.userId });
+		expect(toLiveEvent(db, slain, 'gm')!.patch).toEqual({ t: 'token.remove', id: ogre.id, mapId: id });
+		expect(sees(id, 'gm').tokens.map((t) => t.name)).toEqual(['Mira']);
+		expect(refusal(() => perform(db, player, { t: 'token.delete', id: ogre.id }))).toBe('conflict');
+		// Changing their mind is theirs, by undo and no other way. It is nobody else's, but the GM's.
+		expect(refusal(() => perform(db, player, { t: 'token.restore', id: ogre.id }))).toBe('forbidden');
+		expect(refusal(() => perform(db, other, { t: 'history.revert', seq: slain.seq }))).toBe('not_found');
+		const [back] = perform(db, player, { t: 'history.revert', seq: slain.seq });
+		expect(back).toMatchObject({ action: 'restore' });
+		expect(sees(id).tokens).toHaveLength(2);
+		// And redo takes it off again.
+		perform(db, player, { t: 'history.revert', seq: back.seq });
+		expect(sees(id).tokens).toHaveLength(1);
+		perform(db, gm, { t: 'token.restore', id: ogre.id });
+
+		// A token the player cannot see is not theirs to delete: to them it is not there.
+		perform(db, gm, { t: 'token.update', id: ogre.id, changes: { hidden: true } });
+		expect(refusal(() => perform(db, player, { t: 'token.delete', id: ogre.id }))).toBe('not_found');
+		expect(sees(id, 'gm').tokens).toHaveLength(2);
+
+		// What the GM deleted is the GM's to bring back.
 		const [gone] = perform(db, gm, { t: 'token.delete', id: mine.id });
 		expect(refusal(() => perform(db, player, { t: 'token.restore', id: mine.id }))).toBe('forbidden');
 		perform(db, gm, { t: 'history.revert', seq: gone.seq });
+		perform(db, gm, { t: 'token.delete', id: ogre.id });
 
-		// What a player may do is take back a token they put down themselves, and put it back again.
+		// A player also takes back a token they put down themselves, and puts it back again.
 		const [made] = perform(db, player, { t: 'token.create', mapId: id, name: 'Familiar', x: 0.3, y: 0.3 });
 		const [unmade] = perform(db, player, { t: 'history.revert', seq: made.seq });
 		expect(sees(id).tokens).toHaveLength(1);

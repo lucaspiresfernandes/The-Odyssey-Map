@@ -3,13 +3,13 @@
 	// token, one drawing, or a whole catch of them. Each button is there only
 	// for those it would do something for.
 	//
-	// A token is the whole table's: its label, its lock, its look, and copying
-	// it. Hiding it and taking it off the map are the GM's. Turning and
-	// resizing it are not done from here: the map has handles for those on
-	// the token itself. A drawing is changed and rubbed out by whoever made
-	// it, and by the GM.
+	// A token is the whole table's: its label, its lock, its look, copying it,
+	// and taking it off the map. Hiding it is the GM's. Turning and resizing
+	// it are not done from here: the map has handles for those on the token
+	// itself. A drawing is changed and rubbed out by whoever made it, and by
+	// the GM.
 
-	import { canChangeDrawing, canRemoveToken } from '#lib/shared/rules.ts';
+	import { canChangeDrawing, canHideToken } from '#lib/shared/rules.ts';
 	import {
 		LIMITS,
 		type Command,
@@ -42,7 +42,7 @@
 	let { tokens, drawings, role, userId, tip, send, oncopy, onedit, onwrite, onclear }: Props =
 		$props();
 
-	const gm = $derived(canRemoveToken(role));
+	const gm = $derived(canHideToken(role));
 	const erasable = $derived(drawings.filter((d) => canChangeDrawing(role, userId, d)));
 	/** The one token selected, when that is all there is. */
 	const one = $derived(tokens.length === 1 && drawings.length === 0 ? tokens[0] : null);
@@ -53,7 +53,7 @@
 	const allLocked = $derived(tokens.length > 0 && tokens.every((t) => t.locked));
 	const allHidden = $derived(tokens.length > 0 && tokens.every((t) => t.hidden));
 	const several = $derived(tokens.length > 1);
-	const removable = $derived((gm ? tokens.length : 0) + erasable.length);
+	const removable = $derived(tokens.length + erasable.length);
 
 	let labelling = $state(false);
 	let label = $state('');
@@ -100,14 +100,14 @@
 	/** Takes off the map everything selected that is this person's to take off. */
 	export function remove() {
 		const commands: Command[] = [
-			...(gm ? tokens : []).map((t): Command => ({ t: 'token.delete', id: t.id })),
+			...tokens.map((t): Command => ({ t: 'token.delete', id: t.id })),
 			...erasable.map((d): Command => ({ t: 'drawing.delete', id: d.id }))
 		];
 		if (commands.length === 0) return;
 		let note = `Deleted ${commands.length} things.`;
 		if (commands.length === 1) {
 			note =
-				gm && tokens.length
+				tokens.length
 					? `Deleted “${tokens[0].name}”.`
 					: `Rubbed out the ${erasable[0].kind === 'text' ? 'text' : 'drawing'}.`;
 		}
@@ -199,7 +199,7 @@
 					{tip}
 					danger
 					icon="delete"
-					label={removable > 1 ? `Delete all ${removable}` : gm && tokens.length ? 'Delete' : 'Rub out'}
+					label={removable > 1 ? `Delete all ${removable}` : tokens.length ? 'Delete' : 'Rub out'}
 					onclick={remove}
 				/>
 			{/if}

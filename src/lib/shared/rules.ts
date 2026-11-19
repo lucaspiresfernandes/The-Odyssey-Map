@@ -55,14 +55,23 @@ export function canSeeRegion(role: Role, region: Pick<Region, 'hidden'>): boolea
 /**
  * A token is the whole table's: anyone who sees it can move it, resize it,
  * turn it, give it another look, label it, lock or unlock it, and put a copy
- * of it beside it. A lock is all that holds it in place.
+ * of it beside it, and take it off the map. A lock is all that holds it in
+ * place.
  */
 export function canMoveToken(token: Pick<Token, 'locked'>): boolean {
 	return !token.locked;
 }
 
-/** Taking a token off the map, and hiding or revealing it, are the GM's. */
-export function canRemoveToken(role: Role): boolean {
+/** Hiding a token from the players, and revealing it to them, are the GM's. */
+export function canHideToken(role: Role): boolean {
+	return role === 'gm';
+}
+
+/**
+ * Putting back a token that was taken off the map is the GM's too. Whoever
+ * took it off has undo for that, which is no one's but theirs.
+ */
+export function canRestoreToken(role: Role): boolean {
 	return role === 'gm';
 }
 
@@ -91,7 +100,10 @@ export function canSeeToken(
 	return role === 'gm' || (!token.hidden && !isFogged(fog, [token.x, token.y]));
 }
 
-/** The party is the GM's to move: it goes where the story has taken everyone. */
+/**
+ * The party is the GM's to move, and to take off the maps: it goes where
+ * the story has taken everyone.
+ */
 export function canMoveParty(role: Role): boolean {
 	return role === 'gm';
 }
