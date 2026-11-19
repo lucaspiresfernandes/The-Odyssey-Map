@@ -3,7 +3,7 @@
 // browser posts here itself when its live connection is down, so the map
 // stays editable.
 
-import { json, type RequestHandler } from '@sveltejs/kit';
+import { type RequestHandler } from '@sveltejs/kit';
 import { announce } from '#lib/server/bridge.ts';
 import { getDb } from '#lib/server/db.ts';
 import { sweepGallery } from '#lib/server/gallery.ts';
@@ -30,13 +30,13 @@ export const POST: RequestHandler = async (event) => {
 	const { actor } = requireMemberApi(event, event.params.campaign!);
 
 	if (!event.request.headers.get('content-type')?.includes('application/json')) {
-		return json({ ok: false, error: 'Malformed request.' } satisfies CommandResponse, { status: 415 });
+		return Response.json({ ok: false, error: 'Malformed request.' } satisfies CommandResponse, { status: 415 });
 	}
 	let command: unknown;
 	try {
 		command = await event.request.json();
 	} catch {
-		return json({ ok: false, error: 'Malformed request.' } satisfies CommandResponse, { status: 400 });
+		return Response.json({ ok: false, error: 'Malformed request.' } satisfies CommandResponse, { status: 400 });
 	}
 
 	try {
@@ -48,14 +48,14 @@ export const POST: RequestHandler = async (event) => {
 		// A deleted map may have been the last thing showing a picture that
 		// was taken out of the gallery. Nothing holds that one any more.
 		if (deletedMaps(events).length) await dropImages(sweepGallery(db, actor.campaignId));
-		return json({
+		return Response.json({
 			ok: true,
 			events: events.map((e) => toLiveEvent(db, e, actor.role)).filter((e) => e !== null),
 			undo: undoable(events)
 		} satisfies CommandResponse);
 	} catch (err) {
 		if (err instanceof ActionError) {
-			return json({ ok: false, error: err.message } satisfies CommandResponse, {
+			return Response.json({ ok: false, error: err.message } satisfies CommandResponse, {
 				status: STATUS[err.code]
 			});
 		}

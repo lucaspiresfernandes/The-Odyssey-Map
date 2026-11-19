@@ -2,7 +2,7 @@
 // on its tokens. What is in the gallery is open to the whole table. See
 // `canLoadImage` for the ones that have been taken out of it.
 
-import { json, type RequestHandler } from '@sveltejs/kit';
+import { type RequestHandler } from '@sveltejs/kit';
 import { getDb } from '#lib/server/db.ts';
 import { canLoadImage } from '#lib/server/gallery.ts';
 import { requireMemberApi } from '#lib/server/session.ts';
@@ -19,7 +19,7 @@ const CONTENT_TYPES: Record<string, string> = {
 };
 
 function refuse(status: number, error: string) {
-	return json({ ok: false, error }, { status });
+	return Response.json({ ok: false, error }, { status });
 }
 
 export const GET: RequestHandler = async (event) => {

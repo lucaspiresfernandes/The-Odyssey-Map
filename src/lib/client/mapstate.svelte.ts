@@ -10,7 +10,6 @@ import type {
 	MapSnapshot,
 	Marker,
 	Party,
-	Point,
 	Region,
 	Token
 } from '#lib/shared/types.ts';

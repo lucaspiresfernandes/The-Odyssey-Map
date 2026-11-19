@@ -1,7 +1,7 @@
 // Asked by the WebSocket server when a browser connects: it passes along the
 // browser's cookies, and the answer tells it who that is in this campaign.
 
-import { json, type RequestHandler } from '@sveltejs/kit';
+import { type RequestHandler } from '@sveltejs/kit';
 import { getDb } from '#lib/server/db.ts';
 import { shownTo } from '#lib/server/gallery.ts';
 import { requireMemberApi } from '#lib/server/session.ts';
@@ -17,5 +17,5 @@ export const GET: RequestHandler = (event) => {
 		seq: latestSeq(getDb(), campaign.id),
 		shown: shownTo(getDb(), campaign.id)
 	};
-	return json(identity, { headers: { 'cache-control': 'no-store' } });
+	return Response.json(identity, { headers: { 'cache-control': 'no-store' } });
 };

@@ -2,7 +2,7 @@
 // a new picture in.
 // The pictures themselves are served by ../image/[file].
 
-import { json, type RequestHandler } from '@sveltejs/kit';
+import { type RequestHandler } from '@sveltejs/kit';
 import { getDb } from '#lib/server/db.ts';
 import {
 	addToGallery,
@@ -32,13 +32,13 @@ function sniff(bytes: Uint8Array): Extension | null {
 }
 
 function refuse(status: number, error: string) {
-	return json({ ok: false, error } satisfies GalleryResponse, { status });
+	return Response.json({ ok: false, error } satisfies GalleryResponse, { status });
 }
 
 // Looking is for everyone at the table. Everything else here is the GM's.
 export const GET: RequestHandler = (event) => {
 	const { actor } = requireMemberApi(event, event.params.campaign!);
-	return json({ ok: true, items: listGallery(getDb(), actor) } satisfies GalleryResponse);
+	return Response.json({ ok: true, items: listGallery(getDb(), actor) } satisfies GalleryResponse);
 };
 
 export const POST: RequestHandler = async (event) => {
@@ -117,7 +117,7 @@ export const POST: RequestHandler = async (event) => {
 			width: picture.width,
 			height: picture.height
 		});
-		return json({ ok: true, items: listGallery(db, actor) } satisfies GalleryResponse);
+		return Response.json({ ok: true, items: listGallery(db, actor) } satisfies GalleryResponse);
 	} catch (err) {
 		await storage.remove(uploadKey(file));
 		if (err instanceof ActionError) return refuse(400, err.message);

@@ -4,7 +4,7 @@
 // to say who may follow: players are never sent to a map behind a hidden
 // region. The WebSocket server passes the call on to the rest.
 
-import { json, type RequestHandler } from '@sveltejs/kit';
+import { type RequestHandler } from '@sveltejs/kit';
 import { summon } from '#lib/server/bridge.ts';
 import { getDb } from '#lib/server/db.ts';
 import { audienceOf } from '#lib/server/queries.ts';
@@ -13,7 +13,7 @@ import { canEditWorld } from '#lib/shared/rules.ts';
 import type { Gather, GatherResponse, Sight } from '#lib/shared/types.ts';
 
 function refuse(status: number, error: string) {
-	return json({ ok: false, error } satisfies GatherResponse, { status });
+	return Response.json({ ok: false, error } satisfies GatherResponse, { status });
 }
 
 /** A view of a map that makes sense: a spot on or near it, and some of it showing. */
@@ -43,5 +43,5 @@ export const POST: RequestHandler = async (event) => {
 	const gather: Gather = { mapId, view, by: actor.name, from, at: Date.now() };
 	const players = audience === 'table';
 	await summon(actor.campaignId, { gm: gather, player: players ? gather : null });
-	return json({ ok: true, players, at: gather.at } satisfies GatherResponse);
+	return Response.json({ ok: true, players, at: gather.at } satisfies GatherResponse);
 };

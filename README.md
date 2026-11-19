@@ -140,7 +140,10 @@ are everyone's. The rest are the GM's.
   of its own, to drag onto a TV or a second screen and make full screen (`F11`). It is
   the players' view and nothing around it: no bars, no tools, and nothing a player
   would not be sent, even though it is your login that opened it. It can be panned and
-  zoomed, and regions stepped into, but nothing on it can be changed. Names are
+  zoomed, and regions stepped into, but nothing on it can be changed. The way back out
+  is in its top corner: the name of the map it is on, with the maps on the way there
+  lettered before it, fainter. Click one to step back out to it, or press `Backspace`
+  to go back one map. Names are
   lettered larger on it, to be read from across the room, and on a battle map it shows
   the turn order down its side. It follows **Bring everyone here**, which is how you
   turn the page for the table, and it shows the picture you are holding up. It asks the
@@ -238,8 +241,8 @@ them. It has two palettes of its own, and each folds away with the arrow at its 
   the view. Drag one and it goes down where you let go. The GM's **+** adds pictures to
   the gallery straight from here.
 - **The tools**, in the upper right corner: select and move, select several, measure,
-  draw, write text. Each has a key: `Q`, `W`, `E`, `R` and `T`, in that order. The
-  pen draws lines and shapes both: what it draws is picked beside it. The GM's also has the map image, the name, the grid, the fog
+  draw. Each has a key: `Q`, `W`, `E` and `R`, in that order. The pen draws lines,
+  shapes and text: which of them is picked beside it. The GM's also has the map image, the name, the grid, the fog
   of war and **Bring everyone here**. A tool stays in hand until you click it again,
   take another or press `Esc`.
 - **The turn order**, down the left side, once a token has been put in it: see below.
@@ -288,7 +291,7 @@ What is on a battle map:
   its place, in case it comes back. Players see only the tokens they can see: a hidden
   one is not in their strip, and its turn is nobody's.
 - **Shapes.** For the area of a spell, a breath, a wall. They come out of the same pen
-  as the lines: with **Draw lines and shapes** in hand, pick a circle, a cone or a box
+  as the lines: with **Draw** in hand, pick a circle, a cone or a box
   in place of the line, and a colour, and drag: out from the middle of a circle, from
   the tip of a cone the way it points, from one corner of a box to the other. A cone is
   as wide at its far end as it is long. Its size is written on it in feet while you
@@ -301,12 +304,13 @@ What is on a battle map:
   a cone from a corner, the middle of a cell or the middle of one of its sides. `Alt`
   leaves the grid, while drawing and while moving. A shape is moved and rubbed out like
   any drawing: by whoever drew it, and the GM.
-- **Drawings.** With **Draw lines and shapes** in hand, and the line picked beside the
+- **Drawings.** With **Draw** in hand, and the line picked beside the
   tools, drag across the map to draw a line freehand in the colour you pick there. The
   pen stays in hand for the next line. Lines sit on the map under the tokens, and grow
   and shrink with it.
-- **Text.** With **Write text** in hand, click the map and type, then press `Enter`.
-  Double-click a text of yours to reword it.
+- **Text.** Out of the same pen again: with **Draw** in hand and **Draw text** picked
+  beside the tools, click the map and type, then press `Enter`. The hand is back once
+  it is written. Double-click a text of yours to reword it, whatever is in hand.
 - **Selecting several.** With **Select several** in hand, drag a box: every token,
   drawing and text it touches is selected. `Shift`-click adds one or takes one out.
   Drag any of them and the rest come along, and the buttons act on all of them at once.
@@ -350,13 +354,14 @@ always a world map.
 | Drag a handle of a selected token | Turn it, 15 degrees at a time, or resize it, half a cell at a time |
 | `Alt`-click, or a finger held on a spot | Ping: point the spot out to everyone looking at that map |
 | `Ctrl+K` | Find a map or a marker by name, and go there |
-| `Q` `W` `E` `R` `T` | On a battle map: select and move, select several, measure, draw lines and shapes, write text |
+| `Q` `W` `E` `R` | On a battle map: select and move, select several, measure, draw lines, shapes and text |
 | `N`, as the GM | On a battle map: on to the next turn |
 | Click a token, a drawing or a text | Select it: its buttons float under it. `Shift`-click selects several |
 | Double-click a text | Reword it, if it's yours |
 | `Delete` | Take what is selected off a battle map, if it's yours to take off |
 | A token with the focus | Arrow keys walk it one cell at a time |
 | Breadcrumbs | Step back out |
+| The names in the corner of a table display, or `Backspace` there | Step back out |
 | Arrow keys, `+` `-` `0` | Pan, zoom and fit from the keyboard |
 | `Ctrl+Z`, `Ctrl+Shift+Z` | Undo and redo what you did on the map you're looking at |
 

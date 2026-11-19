@@ -131,8 +131,8 @@
 			| 'cover';
 		/**
 		 * The colour `sketch` draws in, `text` writes in and a template is laid
-		 * down in. To the table `sketch` and `template` are one tool, the pen:
-		 * the page says which of the two it is being used as.
+		 * down in. To the table those three are one tool, the pen: the page
+		 * says which of them it is being used as.
 		 */
 		ink: string;
 		/** Which template the `template` tool lays down. */

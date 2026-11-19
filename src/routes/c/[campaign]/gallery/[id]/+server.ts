@@ -2,7 +2,7 @@
 // hiding it again, saying what a token made from it starts out as, and
 // taking it out. All of it is the GM's.
 
-import { json, type RequestHandler } from '@sveltejs/kit';
+import { type RequestHandler } from '@sveltejs/kit';
 import { holdUp } from '#lib/server/bridge.ts';
 import { getDb } from '#lib/server/db.ts';
 import {
@@ -27,7 +27,7 @@ const STATUS: Record<ErrorCode, number> = {
 
 function refusal(err: unknown) {
 	if (!(err instanceof ActionError)) throw err;
-	return json({ ok: false, error: err.message } satisfies GalleryResponse, {
+	return Response.json({ ok: false, error: err.message } satisfies GalleryResponse, {
 		status: STATUS[err.code]
 	});
 }
@@ -48,7 +48,7 @@ export const PATCH: RequestHandler = async (event) => {
 		if (body?.name !== undefined || (body?.hidden === undefined && body?.preset === undefined)) {
 			renameInGallery(db, actor, id, body?.name);
 		}
-		return json({ ok: true, items: listGallery(db, actor) } satisfies GalleryResponse);
+		return Response.json({ ok: true, items: listGallery(db, actor) } satisfies GalleryResponse);
 	} catch (err) {
 		return refusal(err);
 	}
@@ -63,7 +63,7 @@ export const DELETE: RequestHandler = async (event) => {
 		await dropImages(removeFromGallery(db, actor, event.params.id!));
 		// The one being held up for the table comes down with it.
 		if (held && !shownTo(db, actor.campaignId)) await holdUp(actor.campaignId, null);
-		return json({ ok: true, items: listGallery(db, actor) } satisfies GalleryResponse);
+		return Response.json({ ok: true, items: listGallery(db, actor) } satisfies GalleryResponse);
 	} catch (err) {
 		return refusal(err);
 	}

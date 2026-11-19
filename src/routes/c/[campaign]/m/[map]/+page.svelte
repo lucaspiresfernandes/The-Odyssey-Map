@@ -103,9 +103,9 @@
 	 * see `pen`. `reveal` and `cover` are the GM's two ways with the fog
 	 * of war.
 	 */
-	type BattleTool = 'pan' | 'select' | 'measure' | 'sketch' | 'text' | 'reveal' | 'cover';
+	type BattleTool = 'pan' | 'select' | 'measure' | 'sketch' | 'reveal' | 'cover';
 	/** What the pen draws: a line freehand, or a shape dragged out. */
-	type Pen = 'line' | TemplateKind;
+	type Pen = 'line' | TemplateKind | 'text';
 	type Prompt =
 		| { kind: 'region'; points: Point[] }
 		| { kind: 'rename'; mapId: string; initial: string };
@@ -182,10 +182,16 @@
 	const battle = $derived(world.map.kind === 'battle');
 	const tool = $derived(
 		battle
-			? // To the map, the pen is two tools: one that follows the pointer, one that drags a shape out.
-				battleTool === 'sketch' && pen !== 'line'
-				? 'template'
-				: battleTool
+			? // To the map, the pen is three tools: one that follows the pointer,
+				// one that drags a shape out, and one that waits for a click to
+				// start writing at.
+				battleTool !== 'sketch'
+				? battleTool
+				: pen === 'line'
+					? 'sketch'
+					: pen === 'text'
+						? 'text'
+						: 'template'
 			: placing
 				? 'place'
 				: drawing
@@ -633,21 +639,21 @@
 	/** Each with the key that takes it in hand: the top row of the keyboard, left to right. */
 	const BATTLE_TOOLS: { tool: BattleTool; icon: ToolIcon; label: string; key: string }[] = [
 		{ tool: 'pan', icon: 'pointer', label: 'Select and move', key: 'q' },
-		{ tool: 'select', icon: 'marquee', label: 'Select several', key: 'w' },
+		{ tool: 'select', icon: 'marquee', label: 'Select multiple', key: 'w' },
 		{ tool: 'measure', icon: 'ruler', label: 'Measure a distance', key: 'e' },
-		{ tool: 'sketch', icon: 'draw', label: 'Draw lines and shapes', key: 'r' },
-		{ tool: 'text', icon: 'text', label: 'Write text', key: 't' }
+		{ tool: 'sketch', icon: 'draw', label: 'Draw', key: 'r' }
 	];
 
 	/**
-	 * What the pen draws: a line, or one of the shapes, for the area of a
-	 * spell, a breath, a wall.
+	 * What the pen draws: a line, one of the shapes, for the area of a spell,
+	 * a breath, a wall, or a line of text.
 	 */
-	const PENS: { pen: Pen; icon: ToolIcon; label: string }[] = [
-		{ pen: 'line', icon: 'draw', label: 'Line: drawn freehand' },
-		{ pen: 'circle', icon: 'circle', label: 'Circle: a burst around a spot' },
-		{ pen: 'cone', icon: 'cone', label: 'Cone: as wide at its end as it is long' },
-		{ pen: 'rect', icon: 'box', label: 'Box: a square or a wall' }
+	const PENS: { pen: Pen; icon: ToolIcon; label: string; hint: string }[] = [
+		{ pen: 'line', icon: 'draw', label: 'Draw a line', hint: 'Freehand' },
+		{ pen: 'circle', icon: 'circle', label: 'Draw a circle', hint: 'A burst around a spot' },
+		{ pen: 'cone', icon: 'cone', label: 'Draw a cone', hint: 'As wide at its end as it is long' },
+		{ pen: 'rect', icon: 'box', label: 'Draw a box', hint: 'A square or a wall' },
+		{ pen: 'text', icon: 'text', label: 'Draw text', hint: 'Click the map and type' }
 	];
 
 	// ------------------------------------------------------ maps & regions
@@ -731,8 +737,17 @@
 	}
 
 	function onkeydown(e: KeyboardEvent) {
-		// A display has nothing to undo and no tools to take up.
-		if (display) return;
+		// A display has nothing to undo and no tools to take up. It has one
+		// key: Backspace steps back out of the map it is on, to the one the
+		// region that led here is drawn on.
+		if (display) {
+			const outside = world.trail.at(-2);
+			if (e.key === 'Backspace' && outside) {
+				e.preventDefault();
+				if (!e.repeat) goto(mapUrl(outside.id));
+			}
+			return;
+		}
 		if (form || tokenForm || setup || scaling || finding || gallery || prompt || deleting) return;
 		// In a text field, a letter is a letter and Ctrl+Z belongs to the text.
 		const typing =
@@ -948,7 +963,7 @@
 				passive={display}
 				{tool}
 				{ink}
-				shape={pen === 'line' ? 'circle' : pen}
+				shape={pen === 'line' || pen === 'text' ? 'circle' : pen}
 				depth={world.trail.length}
 				bind:selectedMarkerId
 				bind:selectedRegionId
@@ -958,8 +973,8 @@
 				ondone={() => {
 					// A shape that was drawn, a text that was written: back to the
 					// hand, to move it or get on with the fight. The pen stays in
-					// hand after a line, which is seldom the only one, and it
-					// remembers what it last drew for the next time it is taken up.
+					// hand after a line, which is seldom the only one. Either way
+					// it remembers what it last drew for the next time it is taken up.
 					battleTool = 'pan';
 				}}
 				onplace={placed}
@@ -988,12 +1003,27 @@
 
 			{#if display}
 				<!-- Where the table is, lettered on the corner of the screen like a
-				     place name: no bar, no box. -->
-				<p
-					class="pointer-events-none absolute top-4 left-5 font-serif text-xl font-semibold tracking-[0.02em] text-[#fff8e4] opacity-70 text-shadow-map"
+				     place name: no bar, no box. The maps on the way here are lettered
+				     before it, fainter, and each is the way back out to itself. Only
+				     the names take the pointer, so the map under the rest of the line
+				     still does. -->
+				<nav
+					class="pointer-events-none absolute top-4 left-5 flex max-w-[calc(100%-40px)] items-baseline gap-2 overflow-hidden font-serif text-xl font-semibold tracking-[0.02em] whitespace-nowrap text-[#fff8e4] text-shadow-map"
+					aria-label="Breadcrumb"
 				>
-					{world.map.name}
-				</p>
+					{#each world.trail as crumb, i (crumb.id)}
+						{#if i < world.trail.length - 1}
+							<a
+								class="pointer-events-auto shrink-0 text-[#fff8e4] no-underline opacity-45 transition-opacity hover:opacity-100 focus-visible:opacity-100 touch:py-2"
+								href={mapUrl(crumb.id)}
+								title="Back out to {crumb.name}">{crumb.name}</a
+							>
+							<span class="opacity-45" aria-hidden="true">›</span>
+						{:else}
+							<span class="truncate opacity-70" aria-current="page">{crumb.name}</span>
+						{/if}
+					{/each}
+				</nav>
 			{/if}
 
 			{#if battle}
@@ -1069,25 +1099,26 @@
 						</div>
 					{/if}
 					{#if !toolsFolded && battleTool === 'sketch'}
-						<!-- What the pen draws, out while it is in hand: a line, or a shape. -->
+						<!-- What the pen draws, out while it is in hand: a line, a shape, or text. -->
 						<div class="grid gap-1.5 p-1.5 {floating}" role="toolbar" aria-label="What to draw">
 							{#each PENS as each (each.pen)}
 								<ToolButton
 									tip="left"
 									icon={each.icon}
 									label={each.label}
+									hint={each.hint}
 									active={pen === each.pen}
 									onclick={() => (pen = each.pen)}
 								/>
 							{/each}
 						</div>
 					{/if}
-					{#if !toolsFolded && (battleTool === 'sketch' || battleTool === 'text')}
-						<!-- The inks, out while there is something to draw or write with. -->
+					{#if !toolsFolded && battleTool === 'sketch'}
+						<!-- The inks, out with the pen. -->
 						<div
 							class="grid gap-1.5 p-1.5 {floating}"
 							role="radiogroup"
-							aria-label={battleTool === 'text' ? 'Colour of the text' : 'Colour of the pen'}
+							aria-label={pen === 'text' ? 'Colour of the text' : 'Colour of the pen'}
 						>
 							{#each INK_COLORS as option (option)}
 								<!-- Each ink is a disc of itself, which arrives as --c. -->
