@@ -35,7 +35,9 @@ on port 3001.
 2. Use the bar under the map to choose a map image from the gallery, place world markers
    and draw regions. See [The gallery](#the-gallery).
    Each region gets a name and its own map: double-click it to step inside and build that
-   one too. Click a region to select it: the Region buttons in the bar then enter, hide,
+   one too. Until you give that map an image, it shows a closer look at the part of this
+   one that the region covers, so one big image can carry several maps. See
+   [Maps without an image](#maps-without-an-image). Click a region to select it: the Region buttons in the bar then enter, hide,
    rename or delete it, and its corners reshape it. Drag a corner to move it, drag the dot in the
    middle of an edge to add a corner, double-click a corner to remove it. Deleting a region
    asks first: the map behind it goes too, with everything inside, and there is no undo.
@@ -145,6 +147,32 @@ A token picture is made to fit in 512 pixels when it is added, however big it ca
 The zoom stops at twice the image's own pixels, where it would only get blurrier. For a
 map that should zoom further, enlarge the image with an upscaler such as
 [Upscayl](https://upscayl.org) and upload the result.
+
+### Maps without an image
+
+A world map with no image of its own borrows one. It shows the part of its parent's
+image that lies under the region leading to it: the box around the region's corners, at
+whatever size fills the screen. Draw a region around a kingdom on the map of the
+continent, step in, and there is the kingdom, ready for markers, notes and regions of
+its own.
+
+It goes as deep as you like. A map inside a borrowing map shows a part of that part, and
+so on down, all cut from the nearest map on the way up that has an image. How deep it
+stays worth looking at depends on that image: a region 500 pixels across on it is 500
+pixels of picture, however big it is shown. A big image goes a long way, which is what
+the tiles are for.
+
+Nothing is stored for it, and nothing needs doing. Reshape the region and the map
+behind it shows the new part, also for whoever is in there at the time. Give the map
+an image of its own and it shows that instead; `Ctrl+Z` brings the borrowed one back.
+What is on a borrowing map is placed in fractions of the map, not of the picture. So
+shape the region first and fill the map behind it afterwards: a reshape that changes
+the box around the region slides the picture under the markers, notes and regions
+already there.
+
+A map with nothing to borrow from is plain paper: the first map of a campaign, and any
+map with no image anywhere on the way up. So is a battle map, which is a table of its
+own and keeps its plain grid until you give it an image.
 
 ### Battle maps
 
@@ -324,6 +352,12 @@ scripts/            run both servers, seed a demo, end-to-end check
 - **Deleting a region is the exception.** It removes the region, the map behind it, every
   map further inside, their markers, their tokens and their events. Nothing is kept to
   undo it with, so the GM is asked to confirm first. Their images stay in the gallery.
+- **A borrowed picture is worked out, not stored.** When a map is loaded, the app walks
+  up from it through the regions on the way, to the first map with an image, and sends
+  along which part of that image to show: `backdropOf` in `queries.ts`, with the
+  arithmetic in `shared/backdrop.ts`. The browser draws that part with the same preview
+  and tiles as the whole image, and loads only the tiles the part touches. It asks for
+  the map again when a region or a map on the way up changes.
 - **Pointers skip the app.** Where each mouse is goes from browser to browser through the
   WebSocket server alone. It isn't a change to the world, so it is never stored.
 - **So does a token in someone's hand.** While a token is dragged, where it is rides
@@ -416,8 +450,8 @@ bun run test
 ```
 
 Unit tests for the rules: permissions, hidden markers and regions, battle maps, tokens
-and drawings, the party, the fog of war and what it keeps from players, the grid's
-arithmetic, undo and restore, campaign isolation, and the storage, on disk and off.
+and drawings, the party, the fog of war and what it keeps from players, maps that
+borrow their picture, the grid's arithmetic, undo and restore, campaign isolation, and the storage, on disk and off.
 
 ```bash
 bun run test:e2e
@@ -436,6 +470,14 @@ Type-checks everything.
 
 - Hiding applies to world markers and regions. A map itself is hidden only through the
   region that leads to it, so the first map of a campaign is always open.
+- A borrowed picture is the box around the region, not the region's own outline: what
+  lies beside an odd-shaped region shows too. It is only as sharp as the image it is cut
+  from, and it can't be turned off for one map: to have plain paper there, lay a plain
+  image under it.
+- What is on a borrowing map doesn't follow the picture when its region is moved or
+  resized.
+- A battle map never borrows. To fight on a part of a bigger map, lay that map's image
+  under the battle map itself.
 - Events are numbered in one sequence. A player who inspects their network traffic can
   see the numbers skip when the GM makes a hidden change, though never what the change was.
 - A player is a browser cookie. Clearing it means joining again as a new player, who can

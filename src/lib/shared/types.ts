@@ -259,20 +259,35 @@ export function imageUrl(campaignId: string, file: string, part?: string): strin
 	return part ? `${url}?part=${part}` : url;
 }
 
-export function mapImageUrl(
-	map: Pick<MapInfo, 'campaignId' | 'imageFile'>,
-	part?: string
-): string | null {
-	return map.imageFile ? imageUrl(map.campaignId, map.imageFile, part) : null;
-}
-
 export interface Crumb {
 	id: string;
 	name: string;
 }
 
+/**
+ * The picture a world map shows while it has none of its own: the part of
+ * the image of a map further out that lies under the region leading here.
+ * See src/lib/shared/backdrop.ts.
+ */
+export interface Backdrop {
+	/** The image it is a part of: its file name, and its size in pixels. */
+	file: string;
+	width: number;
+	height: number;
+	/** The part that shows, in pixels of that image: its left and top, how wide and how tall. */
+	x: number;
+	y: number;
+	w: number;
+	h: number;
+}
+
 export interface MapSnapshot {
 	map: MapInfo;
+	/**
+	 * What to show under the map while it has no image of its own, or null
+	 * for plain paper. Worked out whether or not it has one now.
+	 */
+	backdrop: Backdrop | null;
 	/** Root map first, current map last. */
 	trail: Crumb[];
 	regions: Region[];

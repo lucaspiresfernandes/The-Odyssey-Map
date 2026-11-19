@@ -416,6 +416,89 @@ describe('nested maps', () => {
 	});
 });
 
+describe('maps that borrow their picture', () => {
+	const draw = (on: string, name: string, extra: Record<string, unknown> = {}) =>
+		perform(db, gm, { t: 'region.create', mapId: on, name, points: SQUARE, ...extra })[1].after as Region;
+	const backdrop = (id: string, role: 'gm' | 'player' = 'player') =>
+		getMapSnapshot(db, gm.campaignId, id, role)!.backdrop;
+	/** Lays a 640 by 480 picture under a map. */
+	function paint(id: string): GalleryItem {
+		const item = picture();
+		perform(db, gm, { t: 'map.update', id, image: item.file });
+		return item;
+	}
+
+	test('a map with no image shows the part of its parent’s under the region', () => {
+		const coast = paint(mapId);
+		const city = draw(mapId, 'Port Varr');
+		// SQUARE is a tenth in from the left and the top, and three tenths across.
+		expect(backdrop(city.targetMapId)).toEqual({ file: coast.file, width: 640, height: 480, x: 64, y: 48, w: 192, h: 144 });
+		// The first map has nothing further out to borrow from.
+		expect(backdrop(mapId)).toBeNull();
+	});
+
+	test('without an image anywhere on the way, a map is plain paper', () => {
+		const city = draw(mapId, 'Port Varr');
+		const tavern = draw(city.targetMapId, 'The Gilded Eel');
+		expect(backdrop(city.targetMapId)).toBeNull();
+		expect(backdrop(tavern.targetMapId)).toBeNull();
+	});
+
+	test('a map inside a borrowing map shows a part of that part', () => {
+		const coast = paint(mapId);
+		const city = draw(mapId, 'Port Varr');
+		const tavern = draw(city.targetMapId, 'The Gilded Eel');
+		expect(backdrop(tavern.targetMapId)).toEqual({ file: coast.file, width: 640, height: 480, x: 83.2, y: 62.4, w: 57.6, h: 43.2 });
+	});
+
+	test('the nearest image on the way is the one borrowed from', () => {
+		paint(mapId);
+		const city = draw(mapId, 'Port Varr');
+		const tavern = draw(city.targetMapId, 'The Gilded Eel');
+		const streets = paint(city.targetMapId);
+		expect(backdrop(tavern.targetMapId)).toMatchObject({ file: streets.file, x: 64, y: 48, w: 192, h: 144 });
+		// The city has an image of its own now. What it would borrow is still
+		// worked out, for the day that image is taken back off.
+		expect(getMapSnapshot(db, gm.campaignId, city.targetMapId, 'gm')!.map.imageFile).toBe(streets.file);
+		expect(backdrop(city.targetMapId)).toMatchObject({ x: 64, y: 48 });
+	});
+
+	test('it follows the region when the region is reshaped, and undo', () => {
+		paint(mapId);
+		const city = draw(mapId, 'Port Varr');
+		const half: Point[] = [[0, 0], [0.5, 0], [0.5, 1], [0, 1]];
+		const [reshaped] = perform(db, gm, { t: 'region.update', id: city.id, points: half });
+		expect(backdrop(city.targetMapId)).toMatchObject({ x: 0, y: 0, w: 320, h: 480 });
+		perform(db, gm, { t: 'history.revert', seq: reshaped.seq });
+		expect(backdrop(city.targetMapId)).toMatchObject({ x: 64, y: 48, w: 192, h: 144 });
+	});
+
+	test('a battle map borrows nothing: it is plain paper until it has an image', () => {
+		paint(mapId);
+		const arena = draw(mapId, 'The Pit', { kind: 'battle' });
+		expect(backdrop(arena.targetMapId, 'gm')).toBeNull();
+	});
+
+	test('a region with no room in it borrows nothing', () => {
+		paint(mapId);
+		const line: Point[] = [[0.1, 0.1], [0.2, 0.1], [0.3, 0.1]];
+		const [, drawn] = perform(db, gm, { t: 'region.create', mapId, name: 'A crack', points: line });
+		expect(backdrop((drawn.after as Region).targetMapId)).toBeNull();
+	});
+
+	test('a player may load the image a map they can open borrows from', () => {
+		const coast = paint(mapId);
+		const city = draw(mapId, 'Port Varr');
+		// The picture was never revealed in the gallery: it is the map that shows it.
+		expect(backdrop(city.targetMapId)?.file).toBe(coast.file);
+		expect(canLoadImage(db, gm.campaignId, 'player', coast.file)).toBe(true);
+		// Behind a hidden region there is no map for a player to ask about.
+		perform(db, gm, { t: 'region.update', id: city.id, hidden: true });
+		expect(getMapSnapshot(db, gm.campaignId, city.targetMapId, 'player')).toBeNull();
+		expect(backdrop(city.targetMapId, 'gm')).not.toBeNull();
+	});
+});
+
 describe('hidden regions', () => {
 	/** Draws a region and returns it, with the events that drawing it made. */
 	function draw(name: string, on = mapId, extra: Record<string, unknown> = {}) {

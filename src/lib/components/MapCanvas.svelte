@@ -12,6 +12,7 @@
 
 	import { untrack } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
+	import { frameOf } from '#lib/shared/backdrop.ts';
 	import { boxOf, capped, linePath, thinOut, touchesBox } from '#lib/shared/drawing.ts';
 	import { cellBox, cleared, covered, fogPath } from '#lib/shared/fog.ts';
 	import {
@@ -34,8 +35,8 @@
 		ROTATION_STEP,
 		TOKEN_SIZE_STEP,
 		imageUrl,
-		mapImageUrl,
 		markerType,
+		type Backdrop,
 		type Command,
 		type Cursor,
 		type CursorSpot,
@@ -60,6 +61,8 @@
 
 	interface Props {
 		map: MapInfo;
+		/** What a world map shows while it has no image of its own, or null for plain paper. */
+		backdrop: Backdrop | null;
 		regions: Region[];
 		markers: Marker[];
 		/** The pieces on a battle map. A world map shows none. */
@@ -136,6 +139,7 @@
 
 	let {
 		map,
+		backdrop,
 		regions,
 		markers,
 		tokens,
@@ -280,14 +284,28 @@
 	/** A finger is pointing, not a mouse: the corners of a region grow to be caught by one. */
 	const coarse = new MediaQuery('(pointer: coarse)');
 	const grip = $derived(coarse.current ? 1.6 : 1);
-	const W = $derived(map.width);
-	const H = $derived(map.height);
-	const image = $derived(mapImageUrl(map));
+	/**
+	 * The picture under the map, and the part of it that shows. A map's own
+	 * image shows whole. A world map without one borrows a part of an image
+	 * from further out: see src/lib/shared/backdrop.ts.
+	 */
+	const source = $derived.by((): Backdrop | null => {
+		if (!map.imageFile) return map.kind === 'world' ? backdrop : null;
+		const { width, height } = map;
+		return { file: map.imageFile, width, height, x: 0, y: 0, w: width, h: height };
+	});
+	/** The size of a map with a borrowed picture, which is the size of the part it shows. */
+	const borrowed = $derived(!map.imageFile && source ? frameOf(source) : null);
+	const W = $derived(borrowed?.width ?? map.width);
+	const H = $derived(borrowed?.height ?? map.height);
+	/** How many pixels of the map one pixel of the picture covers: more than one for a small borrowed part. */
+	const blownUp = $derived(borrowed?.scale ?? 1);
+	const image = $derived(source && imageUrl(map.campaignId, source.file));
 	const fitK = $derived(cw > 0 && ch > 0 ? Math.min(cw / W, ch / H) * 0.94 : 1);
 	const minK = $derived(fitK * 0.5);
 	// A picture is only so sharp, so the zoom stops at twice its own pixels.
 	// A map without one is drawn fresh at any size.
-	const maxK = $derived(image ? Math.max(fitK * 2, 2) : Math.max(fitK * 16, 4));
+	const maxK = $derived(image ? Math.max(fitK * 2, 2 / blownUp) : Math.max(fitK * 16, 4));
 
 	// Small regions go on top, so a district inside a larger outline stays reachable.
 	const orderedRegions = $derived(
@@ -965,8 +983,10 @@
 
 	// A big image is a small preview with tiles over it: see
 	// src/lib/shared/tiles.ts. A small one is shown whole, as it was uploaded.
-	const levels = $derived(image ? tileLevels(W, H) : 0);
-	const picture = $derived(levels > 0 ? mapImageUrl(map, 'preview') : image);
+	const levels = $derived(source ? tileLevels(source.width, source.height) : 0);
+	const picture = $derived(
+		source && levels > 0 ? imageUrl(map.campaignId, source.file, 'preview') : image
+	);
 
 	interface PlacedTile extends Tile {
 		src: string;
@@ -989,19 +1009,23 @@
 	const arrived = new Set<string>();
 
 	function retile() {
-		const level = tileLevelFor(view.k * (window.devicePixelRatio || 1));
+		// Screen pixels to one pixel of the picture.
+		const k = view.k * blownUp;
+		const level = tileLevelFor(k * (window.devicePixelRatio || 1));
 		let over: PlacedTile[] = [];
-		if (level < levels) {
+		if (source && level < levels) {
+			const { file, x, y, w, h } = source;
 			// A little more than the screen, so a pan doesn't outrun them at once.
+			// Never more than the part of the picture the map shows.
 			const pad = 256;
-			over = tilesIn(W, H, level, {
-				x0: (-pad - view.x) / view.k,
-				y0: (-pad - view.y) / view.k,
-				x1: (cw + pad - view.x) / view.k,
-				y1: (ch + pad - view.y) / view.k
+			over = tilesIn(source.width, source.height, level, {
+				x0: Math.max(x, x + (-pad - view.x) / k),
+				y0: Math.max(y, y + (-pad - view.y) / k),
+				x1: Math.min(x + w, x + (cw + pad - view.x) / k),
+				y1: Math.min(y + h, y + (ch + pad - view.y) / k)
 			}).map((tile) => ({
 				...tile,
-				src: mapImageUrl(map, `${tile.level}/${tile.x}/${tile.y}`)!
+				src: imageUrl(map.campaignId, file, `${tile.level}/${tile.x}/${tile.y}`)
 			}));
 		}
 
@@ -1038,7 +1062,7 @@
 	// several levels doesn't fetch them all.
 	let tileTimer: ReturnType<typeof setTimeout> | undefined;
 	$effect(() => {
-		void [view, cw, ch, image, W, H];
+		void [view, cw, ch, source];
 		if (levels === 0) return;
 		tileTimer ??= setTimeout(() => {
 			tileTimer = undefined;
@@ -1976,35 +2000,46 @@
 			style:transform="translate({view.x}px, {view.y}px) scale({view.k})"
 			style:--inv={1 / view.k}
 		>
-			{#if picture}
+			{#if source && picture}
 				<!-- The picture never takes the pointer, so holding a finger on the map
-				     doesn't bring up the browser's menu for saving it. -->
-				<img
-					class="pointer-events-none block h-full w-full rounded-[3px] shadow-map [-webkit-user-drag:none]"
-					src={picture}
-					alt=""
-					width={W}
-					height={H}
-					draggable="false"
-				/>
-				{#if tiling.of === image}
-					<div class="pointer-events-none absolute inset-0 overflow-hidden rounded-[3px]">
-						{#each [...tiling.under, ...tiling.over] as tile (tile.src)}
-							<img
-								class="absolute [-webkit-user-drag:none]"
-								src={tile.src}
-								alt=""
-								draggable="false"
-								style:left="{tile.left}px"
-								style:top="{tile.top}px"
-								style:width="{tile.width}px"
-								style:height="{tile.height}px"
-								onload={() => tileArrived(tile.src)}
-								onerror={() => tileArrived(tile.src)}
-							/>
-						{/each}
+				     doesn't bring up the browser's menu for saving it. The map is a
+				     window onto it: all of the map's own image, or the part of a
+				     borrowed one that belongs here, moved and blown up to fill it. -->
+				<div class="pointer-events-none absolute inset-0 overflow-hidden rounded-[3px] shadow-map">
+					<div
+						class="absolute top-0 left-0 origin-top-left"
+						style:width="{source.width}px"
+						style:height="{source.height}px"
+						style:transform={borrowed
+							? `scale(${blownUp}) translate(${-source.x}px, ${-source.y}px)`
+							: undefined}
+					>
+						<img
+							class="block h-full w-full [-webkit-user-drag:none]"
+							src={picture}
+							alt=""
+							width={source.width}
+							height={source.height}
+							draggable="false"
+						/>
+						{#if tiling.of === image}
+							{#each [...tiling.under, ...tiling.over] as tile (tile.src)}
+								<img
+									class="absolute [-webkit-user-drag:none]"
+									src={tile.src}
+									alt=""
+									draggable="false"
+									style:left="{tile.left}px"
+									style:top="{tile.top}px"
+									style:width="{tile.width}px"
+									style:height="{tile.height}px"
+									onload={() => tileArrived(tile.src)}
+									onerror={() => tileArrived(tile.src)}
+								/>
+							{/each}
+						{/if}
 					</div>
-				{/if}
+				</div>
 			{:else}
 				<div
 					class={[

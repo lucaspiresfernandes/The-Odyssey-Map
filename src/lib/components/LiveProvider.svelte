@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { refreshAll } from '$app/navigation';
 	import { page } from '$app/state';
-	import type { Snippet } from 'svelte';
+	import { onMount, type Snippet } from 'svelte';
 	import { Live, setLive } from '#lib/client/live.svelte.ts';
 	import type { MapSnapshot } from '#lib/shared/types.ts';
 
@@ -36,7 +36,10 @@
 	});
 	setLive(live);
 
-	$effect(() => {
+	// Once, for as long as the component is there. Not an effect: connecting
+	// reads the address out of the props, and an effect would run again when
+	// a refresh hands over a fresh copy of them, hanging up for good.
+	onMount(() => {
 		live.connect();
 		return () => live.stop();
 	});

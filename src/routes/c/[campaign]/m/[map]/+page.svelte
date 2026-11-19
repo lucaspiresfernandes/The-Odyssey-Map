@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
+	import { goto, refreshAll } from '$app/navigation';
 	import { tick, untrack } from 'svelte';
 	import { getLive } from '#lib/client/live.svelte.ts';
 	import { MapState } from '#lib/client/mapstate.svelte.ts';
@@ -52,6 +52,7 @@
 		live.subscribe((event) => {
 			world.apply(event);
 			leaveIfShut(event.patch);
+			refreshIfBorrowed(event.patch);
 		})
 	);
 
@@ -85,8 +86,11 @@
 	type Prompt =
 		| { kind: 'region'; points: Point[] }
 		| { kind: 'rename'; mapId: string; initial: string };
+	/** What kind of news a notice is. Each kind has its own colours. */
+	type NoticeType = 'success' | 'failure' | 'info' | 'warning';
 	interface Notice {
 		id: number;
+		type: NoticeType;
 		text: string;
 		/** What the Undo button on the notice takes back. */
 		undo?: Step | null;
@@ -129,7 +133,6 @@
 	let hiddenTypes = $state<MarkerType[]>([]);
 	/** The pills that choose them are out, over the bar under the map. */
 	let filterOpen = $state(false);
-	let inviteOpen = $state(false);
 	// Raw, because a notice's step is looked up in the undo stack by identity,
 	// and deep state would hand out a proxy of it instead.
 	let notice = $state.raw<Notice | null>(null);
@@ -186,6 +189,7 @@
 	);
 	const empty = $derived(
 		!world.map.imageFile &&
+			!world.backdrop &&
 			world.markers.length === 0 &&
 			world.regions.length === 0 &&
 			world.tokens.length === 0
@@ -216,9 +220,17 @@
 		});
 	});
 
-	function say(text: string, undo?: Step | null) {
+	/** The border and background of a notice of each type. */
+	const NOTICE_COLORS: Record<NoticeType, string> = {
+		success: 'border-[#3f7d58] bg-[#1e3329]',
+		failure: 'border-[#9a4a44] bg-[#3b2224]',
+		info: 'border-[#4a5670] bg-[#2a3142]',
+		warning: 'border-[#96721f] bg-[#3a3018]'
+	};
+
+	function say(text: string, type: NoticeType, undo?: Step | null) {
 		const id = Date.now();
-		notice = { id, text, undo };
+		notice = { id, type, text, undo };
 		setTimeout(() => {
 			if (notice?.id === id) notice = null;
 		}, 7000);
@@ -232,7 +244,7 @@
 		try {
 			return { ok: true, step: undos.did(await live.send(command)) };
 		} catch (err) {
-			say((err as Error).message);
+			say((err as Error).message, 'failure');
 			return { ok: false, step: null };
 		}
 	}
@@ -249,17 +261,17 @@
 		// A notice offering to undo something would now be offering the past.
 		if (notice?.undo) notice = null;
 		try {
-			if (!(await undos.undo(step))) say('Nothing to undo.');
+			if (!(await undos.undo(step))) say('Nothing to undo.', 'info');
 		} catch (err) {
-			say((err as Error).message);
+			say((err as Error).message, 'failure');
 		}
 	}
 
 	async function redo() {
 		try {
-			if (!(await undos.redo())) say('Nothing to redo.');
+			if (!(await undos.redo())) say('Nothing to redo.', 'info');
 		} catch (err) {
-			say((err as Error).message);
+			say((err as Error).message, 'failure');
 		}
 	}
 
@@ -285,7 +297,7 @@
 	async function removeParty() {
 		selectedParty = false;
 		const { ok, step } = await attempt({ t: 'party.remove' });
-		if (ok) say('Took the party off the map.', step);
+		if (ok) say('Took the party off the map.', 'success', step);
 	}
 
 	async function saveMarker(values: Pick<MarkerInput, 'type' | 'title' | 'description' | 'hidden'>) {
@@ -330,7 +342,7 @@
 	async function deleteMarker(marker: Marker) {
 		selectedMarkerId = null;
 		const { ok, step } = await attempt({ t: 'marker.delete', id: marker.id });
-		if (ok) say(`Deleted “${marker.title}”.`, step);
+		if (ok) say(`Deleted “${marker.title}”.`, 'success', step);
 	}
 
 	// -------------------------------------------------------------- tokens
@@ -344,7 +356,7 @@
 		if (commands.length === 0) return true;
 		const command = commands.length === 1 ? commands[0] : { t: 'batch' as const, cmds: commands };
 		const { ok, step } = await attempt(command);
-		if (ok && note) say(note, step);
+		if (ok && note) say(note, 'success', step);
 		return ok;
 	}
 
@@ -426,13 +438,15 @@
 		if (!canvas) return;
 		try {
 			const players = await live.gather(world.map.id, canvas.sight());
-			say(
-				players
-					? 'Everyone is brought here.'
-					: "Players can't come in here while a region on the way is hidden. Your other screens follow."
-			);
+			if (players) say('Everyone is brought here.', 'success');
+			else {
+				say(
+					"Players can't come in here while a region on the way is hidden. Your other screens follow.",
+					'warning'
+				);
+			}
 		} catch (err) {
-			say((err as Error).message);
+			say((err as Error).message, 'failure');
 		}
 	}
 
@@ -448,7 +462,7 @@
 		}
 		if (world.map.id !== call.mapId) return;
 		canvas?.lookAt(call.view);
-		say(`${call.by} brought everyone here.`);
+		say(`${call.by} brought everyone here.`, 'info');
 	}
 
 	$effect(() => live.onGather(follow));
@@ -525,12 +539,28 @@
 		}
 	}
 
+	/**
+	 * A world map with no image of its own shows part of one from further
+	 * out: see src/lib/shared/backdrop.ts. Which part hangs on the regions on
+	 * the way here and on the images of the maps they are drawn on, and only
+	 * the server works that out. So when one of those changes, it is asked
+	 * for the map again.
+	 */
+	function refreshIfBorrowed(patch: Patch) {
+		if (world.map.kind !== 'world') return;
+		const onTheWay = (mapId: string) => world.trail.some((crumb) => crumb.id === mapId);
+		const reshaped = patch.t === 'region.upsert' && onTheWay(patch.region.targetMapId);
+		const repainted =
+			patch.t === 'map.upsert' && patch.map.id !== world.map.id && onTheWay(patch.map.id);
+		if (reshaped || repainted) refreshAll();
+	}
+
 	/** Runs once the GM has confirmed. There is no undo for this one. */
 	async function deleteRegion(region: Region) {
 		deleting = null;
 		selectedRegionId = null;
 		if (await run({ t: 'region.delete', id: region.id })) {
-			say(`Deleted “${region.name}” and everything inside it.`);
+			say(`Deleted “${region.name}” and everything inside it.`, 'success');
 		}
 	}
 
@@ -545,11 +575,10 @@
 	async function copyInvite() {
 		try {
 			await navigator.clipboard.writeText(inviteUrl);
-			inviteOpen = false;
-			say('Invite link copied to the clipboard.');
+			say('Invite link copied to the clipboard.', 'success');
 		} catch {
 			// The popup stays open, so the link can be copied by hand.
-			say('Copy the link from the box.');
+			say('Copy the link from the box.', 'warning');
 		}
 	}
 
@@ -586,8 +615,6 @@
 			putAway();
 		} else if (filterOpen) {
 			filterOpen = false;
-		} else if (inviteOpen) {
-			inviteOpen = false;
 		} else {
 			selectedMarkerId = null;
 			selectedRegionId = null;
@@ -706,34 +733,15 @@
 				<button
 					class="btn btn-sm"
 					onclick={() => {
-						inviteOpen = false;
 						gallery = 'browse';
 					}}>Gallery</button
 				>
-				<div class="relative">
-					<button
-						class="btn btn-sm"
-						aria-expanded={inviteOpen}
-						onclick={() => (inviteOpen = !inviteOpen)}>Invite</button
-					>
-					{#if inviteOpen}
-						<div
-							class="absolute top-[calc(100%+8px)] right-0 z-5 grid w-[min(340px,calc(100vw-24px))] gap-2.5 rounded-xl border bg-panel p-3.5 text-[13px] shadow-pop"
-						>
-							<p>Share this link. Anyone who opens it joins as a player.</p>
-							<div class="flex gap-1.5">
-								<input
-									class="input min-h-7 text-[13px] touch:min-h-9 touch:text-base"
-									readonly
-									value={inviteUrl}
-									aria-label="Invite link"
-									onfocus={(e) => e.currentTarget.select()}
-								/>
-								<button class="btn btn-sm btn-primary" onclick={copyInvite}>Copy</button>
-							</div>
-						</div>
-					{/if}
-				</div>
+				<button
+					class="btn btn-sm"
+					onclick={() => {
+						copyInvite();
+					}}>Invite</button
+				>
 			{/if}
 		</div>
 	</header>
@@ -743,6 +751,7 @@
 			<MapCanvas
 				bind:this={canvas}
 				map={world.map}
+				backdrop={world.backdrop}
 				regions={world.regions}
 				markers={shownMarkers}
 				tokens={world.tokens}
@@ -950,7 +959,10 @@
 			>
 				{#if notice}
 					<div
-						class="pointer-events-auto flex max-w-[calc(100%-28px)] items-center gap-2 rounded-[10px] border border-[#4a5670] bg-[#2a3142] py-2 pr-2 pl-3.5 text-sm shadow-pop"
+						class={[
+							'pointer-events-auto flex max-w-[calc(100%-28px)] items-center gap-2 rounded-[10px] border py-2 pr-2 pl-3.5 text-sm shadow-pop',
+							NOTICE_COLORS[notice.type]
+						]}
 						role="status"
 					>
 						<span>{notice.text}</span>
@@ -974,7 +986,7 @@
 						stamp={galleryStamp}
 						bind:collapsed={dockFolded}
 						onadd={addToken}
-						onerror={say}
+						onerror={(text) => say(text, 'failure')}
 					/>
 				{:else}
 				{#if filterOpen && tool === 'pan'}

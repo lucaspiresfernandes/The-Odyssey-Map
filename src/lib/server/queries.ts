@@ -3,8 +3,9 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import type { Db } from './db';
 import { drawings, maps, markers, regions, tokens } from './schema';
+import { boxAround, boxWithin, partOf } from '../shared/backdrop';
 import { canSeeMarker, canSeeRegion, canSeeToken } from '../shared/rules';
-import type { Crumb, MapInfo, MapSnapshot, Role, Token } from '../shared/types';
+import type { Backdrop, Crumb, MapInfo, MapSnapshot, Rect, Role, Token } from '../shared/types';
 import {
 	drawingColumns,
 	isConcealed,
@@ -43,6 +44,42 @@ export function audienceOf(db: Db, campaignId: string, mapId: string): 'table' |
 		.get();
 	if (!map) return null;
 	return isConcealed(db, mapId) ? 'gm' : 'table';
+}
+
+/**
+ * What a map shows while it has no image of its own: the part of the image
+ * of a map further out that lies under the way here. Null when no map on
+ * the way has an image, and for a battle map, which is a table of its own:
+ * plain paper until it is given a picture.
+ *
+ * It names the image of a map on the way here, which whoever can open this
+ * map can open too.
+ */
+export function backdropOf(db: Db, map: Pick<MapInfo, 'id' | 'kind'>): Backdrop | null {
+	if (map.kind !== 'world') return null;
+	// The part of the map being looked at, starting with all of this one.
+	let box: Rect = [0, 0, 1, 1];
+	let id = map.id;
+	for (let depth = 0; depth < 64; depth++) {
+		const door = db
+			.select({ points: regions.points, mapId: regions.mapId })
+			.from(regions)
+			.where(eq(regions.targetMapId, id))
+			.get();
+		// The first map of a campaign has nothing further out to borrow from.
+		if (!door) return null;
+		box = boxWithin(boxAround(door.points), box);
+		const outer = db
+			.select({ file: maps.imageFile, width: maps.width, height: maps.height })
+			.from(maps)
+			.where(eq(maps.id, door.mapId))
+			.get();
+		if (!outer) return null;
+		// A map with an image is the size of it.
+		if (outer.file) return partOf({ ...outer, file: outer.file }, box);
+		id = door.mapId;
+	}
+	return null;
 }
 
 /** A map with everything on it that `role` may see, or null if it isn't in this campaign. */
@@ -100,6 +137,7 @@ export function getMapSnapshot(
 
 		return {
 			map,
+			backdrop: backdropOf(tx, map),
 			trail,
 			regions: regionList,
 			markers: markerList,

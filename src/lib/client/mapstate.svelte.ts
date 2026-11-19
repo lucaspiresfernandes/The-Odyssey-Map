@@ -2,6 +2,7 @@
 // by applying live events on top of it.
 
 import type {
+	Backdrop,
 	Crumb,
 	Drawing,
 	LiveEvent,
@@ -15,6 +16,12 @@ import type {
 
 export class MapState {
 	map = $state() as MapInfo;
+	/**
+	 * What the map shows while it has no image of its own. Only the server
+	 * can work it out, so it is as old as the snapshot: the page asks for a
+	 * new one when something on the way here changes.
+	 */
+	readonly backdrop: Backdrop | null;
 	trail = $state<Crumb[]>([]);
 	regions = $state<Region[]>([]);
 	markers = $state<Marker[]>([]);
@@ -28,6 +35,7 @@ export class MapState {
 
 	constructor(snapshot: MapSnapshot) {
 		this.map = snapshot.map;
+		this.backdrop = snapshot.backdrop;
 		this.trail = snapshot.trail;
 		this.regions = snapshot.regions;
 		this.markers = snapshot.markers;

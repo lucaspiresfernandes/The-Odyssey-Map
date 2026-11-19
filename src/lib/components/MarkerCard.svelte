@@ -2,6 +2,7 @@
 	import { canEditMarkerKind, canRemoveMarker } from '#lib/shared/rules.ts';
 	import { markerType, type Marker, type Role } from '#lib/shared/types.ts';
 	import MarkerGlyph from './MarkerGlyph.svelte';
+	import ToolButton from './ToolButton.svelte';
 
 	interface Props {
 		marker: Marker;
@@ -66,16 +67,21 @@
 
 	{#if editable}
 		{#if pinned}
-			<footer class="mt-1.5 flex flex-wrap gap-1.5">
-				<button class="btn btn-sm" onclick={() => onedit(marker)}>Edit</button>
-				<button class="btn btn-sm" onclick={() => onmove(marker)}>Move</button>
+			<!-- Icons, each with a tooltip that names it, like the tools under the map. -->
+			<footer class="mt-1.5 flex flex-wrap gap-1">
+				<ToolButton small icon="rename" label="Edit" onclick={() => onedit(marker)} />
+				<ToolButton small icon="move" label="Move" onclick={() => onmove(marker)} />
 				{#if marker.kind === 'world'}
-					<button class="btn btn-sm" onclick={() => onhide(marker, !marker.hidden)}>
-						{marker.hidden ? 'Reveal' : 'Hide'}
-					</button>
+					<ToolButton
+						small
+						icon={marker.hidden ? 'reveal' : 'hide'}
+						label={marker.hidden ? 'Reveal to players' : 'Hide from players'}
+						active={marker.hidden}
+						onclick={() => onhide(marker, !marker.hidden)}
+					/>
 				{/if}
 				{#if removable}
-					<button class="btn btn-sm btn-danger" onclick={() => ondelete(marker)}>Delete</button>
+					<ToolButton small danger icon="delete" label="Delete" onclick={() => ondelete(marker)} />
 				{/if}
 			</footer>
 		{:else}
