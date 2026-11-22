@@ -32,6 +32,8 @@
 		"vite": "^8.3.0"
 	},
 	"dependencies": {
+		"@dicebear/core": "^10.7.0",
+		"@dicebear/styles": "^10.6.0",
 		"drizzle-orm": "^0.45.4",
 		"qrcode-generator": "^2.0.4",
 		"sharp": "^0.35.5"

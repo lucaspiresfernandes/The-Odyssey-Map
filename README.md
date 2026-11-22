@@ -419,7 +419,15 @@ them. It has three palettes of its own, and each folds away:
   that is open: see below. The heads are **who is at the table** now, each by name,
   with the GM marked. Click the tab that is lit and the box is put away, down to its two
   buttons. On a world map, which has no turn order, who is at the table stays a row of
-  initials.
+  faces.
+
+Everyone has a face of their own, the GM on gold and the players on slate, wherever
+they show: who is at the table, the seats, the knock at the door, and the names to pick
+from on the invite link. It is drawn by [DiceBear](https://www.dicebear.com) out of
+their user id, so it stays the same when they are renamed. The faces are the
+[Adventurer](https://www.figma.com/community/file/1184595184137881796) style by
+[Lisa Wischofsky](https://www.instagram.com/lischi_art/), under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
 What is on a battle map:
 

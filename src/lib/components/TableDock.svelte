@@ -25,6 +25,7 @@
 	import { canEndTurn } from '#lib/shared/rules.ts';
 	import { joinedTurns, reorderedTurns, sortedByRolls } from '#lib/shared/turns.ts';
 	import { LIMITS, imageUrl, type Presence, type Token, type Turns } from '#lib/shared/types.ts';
+	import Avatar from './Avatar.svelte';
 	import ToolButton from './ToolButton.svelte';
 
 	interface Props {
@@ -591,15 +592,7 @@
 			>
 				{#each online as person (person.id)}
 					<li class="flex items-center gap-2">
-						<span
-							class={[
-								'grid size-6.5 shrink-0 place-items-center rounded-full text-[11px] font-semibold',
-								person.role === 'gm' ? 'bg-accent text-accent-ink' : 'bg-[#3a465c]'
-							]}
-							aria-hidden="true"
-						>
-							{initials(person.name)}
-						</span>
+						<Avatar id={person.id} name={person.name} gm={person.role === 'gm'} class="size-8" />
 						<span class="min-w-0 grow truncate text-[13px]" title={person.name}>{person.name}</span>
 						{#if person.role === 'gm'}
 							<span class="text-[11px] font-semibold text-accent">GM</span>

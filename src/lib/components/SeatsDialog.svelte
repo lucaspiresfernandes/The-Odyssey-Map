@@ -9,6 +9,7 @@
 	// them in.
 
 	import type { Presence, Seat, SeatsResponse } from '#lib/shared/types.ts';
+	import Avatar from './Avatar.svelte';
 	import Modal from './Modal.svelte';
 
 	interface Props {
@@ -135,6 +136,7 @@
 									class={['size-2 shrink-0 rounded-full', here ? 'bg-[#3fae7c]' : 'bg-[#55607a]']}
 									aria-hidden="true"
 								></span>
+								<Avatar id={seat.id} name={seat.name} class="size-7" />
 								{#if seat.guest}
 									<!-- The name is its own field: change it and leave, and the player is renamed. -->
 									<input

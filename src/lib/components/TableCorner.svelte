@@ -3,6 +3,7 @@
 	// the world, and who is at the table. A battle map has none of it.
 
 	import { LIMITS, type Presence } from '#lib/shared/types.ts';
+	import Avatar from './Avatar.svelte';
 
 	interface Props {
 		isGm: boolean;
@@ -18,15 +19,6 @@
 
 	/** A bar that floats over the map. */
 	const floating = 'rounded-xl border bg-panel/94 shadow-pop';
-
-
-	function initials(name: string): string {
-		return name
-			.split(/\s+/)
-			.slice(0, 2)
-			.map((part) => part[0]?.toUpperCase() ?? '')
-			.join('');
-	}
 </script>
 
 <!-- The date it is in the world. It is whatever the GM writes, since
@@ -72,15 +64,17 @@
 	<ul class="pointer-events-auto flex shrink-0 p-1.5 {floating}" aria-label="At the table now">
 		{#each online as person (person.id)}
 			<li
-				class={[
-					'grid size-6.5 cursor-default place-items-center rounded-full border-2 border-panel text-[11px] font-semibold not-first:-ml-1.5',
-					person.role === 'gm' ? 'bg-accent text-accent-ink' : 'bg-[#3a465c]'
-				]}
+				class="cursor-default not-first:-ml-2"
 				title="{person.name}{person.role === 'gm' ? ' (GM)' : ''}{person.id === meId
 					? ' (you)'
 					: ''}"
 			>
-				{initials(person.name)}
+				<Avatar
+					id={person.id}
+					name={person.name}
+					gm={person.role === 'gm'}
+					class="size-8 border-2 border-panel"
+				/>
 			</li>
 		{/each}
 	</ul>

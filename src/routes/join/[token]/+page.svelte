@@ -3,6 +3,7 @@
 	import { invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import type { SeatStatus } from '#lib/shared/types.ts';
+	import Avatar from '#lib/components/Avatar.svelte';
 	import type { PageProps } from './$types';
 
 	let { data, form }: PageProps = $props();
@@ -123,6 +124,7 @@
 							value={seat.id}
 							disabled={seat.here}
 						>
+							<Avatar id={seat.id} name={seat.name} class="-my-1 -ml-1.5 size-7" />
 							<span class="truncate">{seat.name}</span>
 							{#if seat.here}
 								<span class="shrink-0 text-xs text-muted">at the table</span>

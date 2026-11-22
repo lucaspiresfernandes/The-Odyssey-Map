@@ -4,6 +4,7 @@
 	// answered, or they give up.
 
 	import type { Knock } from '#lib/shared/types.ts';
+	import Avatar from './Avatar.svelte';
 
 	interface Props {
 		isGm: boolean;
@@ -25,6 +26,7 @@
 		role="alertdialog"
 		aria-label="{knock.name} {asks}"
 	>
+		<Avatar id={knock.userId} name={knock.name} class="-ml-1 size-7" />
 		<span>
 			<strong>{knock.name}</strong>
 			{asks}.
