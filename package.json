@@ -13,7 +13,6 @@
 		"start": "bun scripts/run.ts start",
 		"start:lan": "bun scripts/run.ts start --lan",
 		"seed": "bun scripts/seed.ts",
-		"backup": "bun scripts/backup.ts",
 		"db:generate": "drizzle-kit generate",
 		"test": "bun run check && bun test src",
 		"test:e2e": "bun run build && bun scripts/e2e.ts",

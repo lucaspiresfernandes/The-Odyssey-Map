@@ -84,24 +84,9 @@ One campaign can be taken out as a single file, and put back in: **Export** besi
 campaign of yours on the first page downloads it, and **Import a campaign from a file**
 under them makes a new campaign out of such a file. See [A campaign in one file](#a-campaign-in-one-file).
 
-Before a session, copy what can't be made again into a folder of its own:
-
-```bash
-bun run backup
-```
-
-That writes `backups/<date and time>/` with the database as one whole file and the
-pictures as they were uploaded. It is safe to run while the app is running. Give it a
-path to put the backups somewhere else: `bun run backup D:\maps`. To go back to one,
-stop the app and put its `odyssey.db` and `uploads/` in `data/` in place of the ones
-there, and delete `odyssey.db-wal` and `odyssey.db-shm` if they are there.
-
-One is also made by itself every time the servers are started, with `bun run dev` or
-`bun run start`, before the app opens the database: so before any migration, and before
-the session. Those go in `backups/auto/`, beside the data folder: a dated folder with
-`odyssey.db` for each start, the newest twenty of them, and one `uploads/` folder beside
-those that every picture is copied into once. To go back to one, use its `odyssey.db`
-and that `uploads/` folder the same way. `AUTO_BACKUP=off` skips it.
+The app makes no backups of its own: that is left to the machine it runs on. What can't
+be made again is the database, `data/odyssey.db`, and the pictures as they were uploaded,
+`data/uploads/`.
 
 ### Getting to the table
 
@@ -758,7 +743,7 @@ src/routes/         the SvelteKit app: pages, plus HTTP endpoints for the galler
                     pictures and a command fallback
 src/lib/components/ the map canvas and the pieces it is made of, marker cards, forms
 ws/server.ts        the WebSocket server: a bridge between browsers and the app
-scripts/            run both servers, seed a demo, back up, end-to-end check
+scripts/            run both servers, seed a demo, end-to-end check
 ```
 
 - **One server owns the database.** Only the SvelteKit app opens it. The WebSocket server
@@ -1017,7 +1002,6 @@ All optional. Copy [.env.example](.env.example) to `.env` to change a default.
 | `BRIDGE_SECRET` | set by `bun run dev` / `start` | shared by the two servers, so only the app can have events delivered |
 | `PUBLIC_WS_URL` | | full WebSocket URL, when a reverse proxy puts both servers on one origin |
 | `ORIGIN` | | public address of the app, when it sits behind a proxy |
-| `AUTO_BACKUP` | on | `off` skips the backup that `bun run dev` and `bun run start` make before the servers come up |
 
 ## Checks
 

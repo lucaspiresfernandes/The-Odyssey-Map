@@ -11,7 +11,7 @@ node_modules
 # Database and uploaded map images
 /data
 
-# What `bun run backup` makes
+# Copies of the data folder, kept out of the repository
 /backups
 
 # OS
