@@ -17,10 +17,12 @@
 		online: Presence[];
 		/** The seats are not what they were: a player was added, renamed or taken away. */
 		onchange: () => void;
+		/** On to the invite: the code to scan and the link to send. */
+		oninvite: () => void;
 		onclose: () => void;
 	}
 
-	let { campaignId, online, onchange, onclose }: Props = $props();
+	let { campaignId, online, onchange, oninvite, onclose }: Props = $props();
 
 	/** Null until the seats have been read. */
 	let seats = $state.raw<Seat[] | null>(null);
@@ -84,6 +86,9 @@
 		removing = null;
 		if (await ask(`/${seat.id}`, { method: 'DELETE' })) onchange();
 	}
+
+	/** There is a seat with nobody in it: someone to invite. */
+	const anyFree = $derived(seats?.some((seat) => seat.guest && !seat.taken) ?? false);
 
 	/** How it stands with a seat, in a few words. */
 	function standing(seat: Seat): string {
@@ -181,7 +186,17 @@
 		{/if}
 	{/if}
 
-	<div class="flex justify-end">
+	<div class="flex justify-end gap-2">
+		<button
+			class="btn"
+			disabled={!anyFree}
+			title={anyFree
+				? 'A code for players to scan, and the link to send them'
+				: 'With no seat free, there is nobody to invite'}
+			onclick={oninvite}
+		>
+			Invite players
+		</button>
 		<button class="btn" onclick={onclose}>Done</button>
 	</div>
 </Modal>

@@ -52,9 +52,10 @@ on port 3001.
    choice is made once, and a map stays the kind it was made as. Step in, and set
    the size of a cell to match the squares of your image, then put tokens on it from the
    dock underneath and hand each player's to them. See [Battle maps](#battle-maps).
-4. Click **Invite**: it shows a code to scan with a phone, and the same link to copy and
-   send. Players pick a name and they're in. They need no account. See
-   [Getting to the table](#getting-to-the-table).
+4. Make a seat for each player: **Seats**, in the menu at the left end of the bar over the
+   map. Then click **Invite**: it shows a code to scan with a phone, and the same link
+   to copy and send. Players pick their name among the seats, you let them in, and they
+   need no account. See [Getting to the table](#getting-to-the-table).
 5. Around a real table, click **Display** and put the window that opens on the screen
    everyone can see. See [At the table](#at-the-table).
 
@@ -104,6 +105,9 @@ and that `uploads/` folder the same way. `AUTO_BACKUP=off` skips it.
 
 ### Getting to the table
 
+- **Seats first.** Players don't name themselves: they pick their name among the seats
+  you made. So **Invite** has a link to share only while some seat has nobody in it.
+  With none, it says so and leads to **Seats**, and the table display is shown no code.
 - **A code to scan.** **Invite** shows the invite link as a QR code. When your own browser
   is on the machine the app runs on, the code is made out to that machine's address on
   your network, not to `localhost`, which a phone could not open. A machine with several
@@ -113,15 +117,17 @@ and that `uploads/` folder the same way. `AUTO_BACKUP=off` skips it.
   of the display window, with the address under it, for everyone to scan from where they
   sit. **Take it off** removes it, and so does stepping the display to another map.
 - **You let everyone in.** The invite link gets someone to the door and no further.
-  They give a name and **Ask to join**, you are asked on your map, and **Let them in**
-  makes them a player. Until then they are nobody at the table, and **Not now** leaves
-  them outside. Someone logged in with an account of their own asks the same way, and
-  joins as themselves. An asking that goes unanswered lapses after ten minutes.
-- **A seat to come back to.** A player is known by the browser they joined with. When that
-  browser has forgotten them, or they come on another device, the invite link lists the
-  seats that are taken under **Played here before?** They pick their own name, you are
-  asked the same way, and **Let them in** logs that browser in as the player they were:
-  with their notes, their tokens and every secret they were let in on.
+  It lists the seats by name. They pick their own, you are asked on your map, and **Let
+  them in** sits that browser down as that player. Until then they are nobody at the
+  table, and **Not now** leaves them outside. An asking that goes unanswered lapses
+  after ten minutes. A browser that is logged in already, with a GM account or as a
+  player of another campaign, picks a name the same way and becomes that player.
+- **A seat to come back to.** A player is known by the browser they sat down with. When
+  that browser has forgotten them, or they come on another device, they open the invite
+  link they have and pick their name again, which is marked **taken**. You are asked
+  the same way, told that it is a seat asked back, and **Let them in** logs that browser
+  in as the player they were: with their notes, their tokens and every secret they were
+  let in on.
 - **The seats are yours to look after.** **Seats**, in the menu at the left end of the bar
   over the map, or `Shift+P`, lists every player of the campaign. A seat is a name and
   nothing else: no login, no password. Make one for each player ahead of the session,
@@ -130,8 +136,8 @@ and that `uploads/` folder the same way. `AUTO_BACKUP=off` skips it.
   name to change it: it changes on their tokens, notes and drawings too. The **×** takes
   a seat away, and asks first: their tokens become nobody's, they are in on no secret
   any more, and a browser that sat in the seat is shown back to the first page. What
-  they made stays on the maps. A player who joined twice by mistake is put right this
-  way: take the second seat away, and let them ask for the first.
+  they made stays on the maps. **Invite players** at the bottom goes on to the invite,
+  once a seat is free.
 
 ### At the table
 
@@ -690,8 +696,8 @@ and the tools are in the corner.
 | The turn order, on battle maps | add tokens, sort by dragging or by rolls, start the fight, next turn, back a turn, end the fight | see whose turn it is, among the tokens they can see, and end the turn of their own token, or of one that is nobody's |
 | Fog of war, on battle maps | cover, clear, lift, see through, make it follow the tokens | see what has been cleared, and where it follows the tokens, what the players' tokens see |
 | Fog on a world map | cover the map or a part of it, clear a part, lift it, see through | see what has been cleared |
-| A seat at the table | make one, rename its player, take it away, let in whoever asks to join or asks for a seat, or not | ask for a seat on the invite link, a new one or one that is there |
-| The invite | show it as a code to scan, on their screen or on the table display, and copy the link | |
+| A seat at the table | make one, rename its player, take it away, let in whoever asks for one, or not | ask for one of the seats on the invite link, by picking their name |
+| The invite | while a seat is free: show it as a code to scan, on their screen or on the table display, and copy the link | |
 | A campaign in one file | export the ones they run, import one as a new campaign | |
 | Tokens | create anywhere, give any picture, hide, reveal, show to some players, hand to a player | create where there is no fog, give a revealed picture: what they put down is their own |
 | Any token they can see | move, resize, turn, recolour, outline, label, mark, number, lock, unlock, duplicate, delete | move, resize, turn, recolour, outline, label, mark, number, lock, unlock, duplicate, delete |
@@ -807,15 +813,18 @@ scripts/            run both servers, seed a demo, back up, end-to-end check
   picture, and a file that fails leaves nothing behind. Only the import endpoint takes
   a body bigger than a map image: see `src/hooks.server.ts`.
 - **A seat is asked for, and given by the GM.** Whoever asks for a seat on the invite
-  link, a new one or one that is taken, makes a row in `seat_claims`, and is handed a
-  cookie whose hash is kept with it. The row holds the name someone new gave, or the
-  user asked for or asking. The app tells the WebSocket server who is asking, and that
-  goes to the GM's sockets and no others. The GM's answer is written on the row. The
-  browser that asked looks for it every two seconds, and it is a yes read there that
-  seats them: someone new is made a user and a member then and not before, so a yes
-  nobody comes back to hear leaves no empty seat, and a browser with no login is logged
-  in as the player. That uses the row up: `seats.ts`. Nothing about it is an event, and
-  there is no undo.
+  link, one nobody has sat in or one that is taken, makes a row in `seat_claims`, and
+  is handed a cookie whose hash is kept with it. The row holds the user whose seat is
+  asked for: nobody makes a user by asking. The app tells the WebSocket server who is
+  asking, and that goes to the GM's sockets and no others. The GM's answer is written
+  on the row. The browser that asked looks for it every two seconds, and it is a yes
+  read there that logs it in as the player. That uses the row up: `seats.ts`. Nothing
+  about it is an event, and there is no undo.
+- **A seat is free while no browser is logged in as its player.** That is read off the
+  `sessions` table, never stored: `freeSeats` in `seats.ts`. The invite dialog counts
+  the free seats each time it opens, and a table display asked for the invite is handed
+  one only while there is a free seat. The link itself goes on working, for whoever
+  sat here before and has to get back in.
 - **What is new is the browser's to know.** Which markers and regions someone has looked
   at is kept in that browser, per campaign and per person, a list of ids for each map:
   `client/discoveries.svelte.ts`. What is on a map and not in the list glints. The server
@@ -906,11 +915,15 @@ scripts/            run both servers, seed a demo, back up, end-to-end check
   to be loaded again. A connection that was waiting to try again tries at once.
 - **The map canvas is a dispatcher.** `MapCanvas.svelte` looks at each press, drag and
   release and hands it to the tool whose it is: `Carry` for what is picked up, the
-  ruler, the pen, the handles of a token, the fog's brush, the outline of a region.
-  Each is a class under `src/lib/client/tools` that keeps what it is in the middle of.
-  They are all given the same `Board`: the map as it stands now, what is selected, and
-  the way to ask the server for a change. What is drawn is in components of its own:
-  the picture and its tiles, the tokens, the pins, the fog, the ink.
+  ruler, the pen, the handles of a token, the fog's brush, the outline of a region,
+  the pointing tool. Each is a class under `src/lib/client/tools` that keeps what it is
+  in the middle of. They are all given the same `Board`: the map as it stands now, what
+  is selected, and the way to ask the server for a change. What is drawn is in
+  components of its own: the picture and its tiles, the tokens, the pins, the fog, the
+  ink, and in `MapOverlays.svelte`, what floats over the map.
+- **What is in hand is the page's to keep.** Which tool is out, on either kind of map,
+  is a `Toolbelt`: `src/lib/client/toolbelt.svelte.ts`. Taking one up puts the last one
+  away, and the map canvas is told the one tool it is to act as.
 - **Fog that follows the tokens is worked out, not kept.** A battle map has `sight`: how
   many feet a player's token sees, or nothing. What the players may see is then worked
   out from where their tokens stand, each time it is asked: `sightOf` in
@@ -1017,7 +1030,7 @@ And for what is kept from some and not from others: closed regions, secrets shar
 some players and what each of them is sent, and the fog of a world map. And the number on a token, one the GM keeps, shapes that pick their targets,
 encounters and how their tokens are stood side by side, initiative rolls, ending a turn, lining up a grid,
 and a campaign going out to a file and coming back.
-And for what a real session leans on: a seat asked for and given, new or back, whose token is
+And for what a real session leans on: a seat asked for and given, free or asked back, whose token is
 whose and whose turn that makes it, a picture on a marker and who may load it, how long
 the way takes, a ruler with bends in it, the fog of a world map cleared and covered by
 hand, and the address an invite is made out to.
@@ -1053,19 +1066,25 @@ Type-checks everything.
   under the battle map itself.
 - Events are numbered in one sequence. A player who inspects their network traffic can
   see the numbers skip when the GM makes a hidden change, though never what the change was.
-- Nobody joins while the GM is away: every seat, new or asked back, is the GM's to give,
-  from a map they have open. See [Getting to the table](#getting-to-the-table). At most
-  eight people wait at once.
+- Nobody sits down while the GM is away: every seat, free or asked back, is the GM's to
+  give, from a map they have open. See [Getting to the table](#getting-to-the-table). At
+  most eight people wait at once, and one per seat: a second asking for the same name
+  takes the place of the first.
 - A player is a browser cookie. A browser that has lost it gets the seat back by asking
-  for it on the invite link. Someone who asks to join under a new name instead is a new
-  player, with none of the old one's notes or secrets. The GM can take that second seat
-  away, but can't merge two who are one person: what the second one made keeps its name.
+  for it on the invite link. A browser holds one login: someone who plays in two
+  campaigns from the same browser asks for their seat again each time they change
+  tables.
+- A seat counts as taken for as long as a browser is logged in as its player, which is
+  up to 180 days after they last sat down, whether or not they are at the table. With
+  every seat taken **Invite** has nothing to share. Someone coming back uses the link
+  they were sent before.
 - Taking a seat away can't be undone. A change from before it that named that player,
   a secret shared with them or a token handed to them, can no longer be taken back with
   `Ctrl+Z`. A new name for a player shows on other screens the next time they load a map.
-- The seats offered on the invite link are everyone who joined by it, by name: anyone
-  with the link can read who plays. A seat is only given by the GM, who has nothing but
-  the name to go by: it is for a table where the GM can see who is asking.
+- The seats offered on the invite link are every player with no account, by name: anyone
+  with the link can read who plays, and which seats are taken. A seat is only given by
+  the GM, who has nothing but the name to go by: it is for a table where the GM can see
+  who is asking.
 - The code for the table display is put there through the browser: **Show the code**
   turns the page of a display window opened from the same browser. A display on another
   device shows it with `&invite` on the end of its address.

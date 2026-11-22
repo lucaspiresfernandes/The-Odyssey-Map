@@ -1,20 +1,22 @@
 // A seat at the table, and getting into it.
 //
-// The invite link gets someone to the door, and no further: the GM lets
-// them in. That goes for a new seat, and for one that is taken.
+// The seats are the GM's to make: one for each player, by name. The invite
+// link gets someone to the door, where they pick their name among the
+// seats, and no further: the GM lets them in. Nobody makes a seat for
+// themselves.
 //
-// A player who joined by invite link has no password: who they are is a
-// cookie in the browser they joined with. Clear it, or come on another
-// device, and they would be a stranger, with none of the secrets they were
-// let in on and none of their notes. So the invite link also offers the
-// seats that are taken: someone picks their own name, the GM is asked, and
-// on a yes that browser is logged in as the player they were.
+// A player has no password: who they are is a cookie in the browser they
+// sat down with. Clear it, or come on another device, and they would be a
+// stranger, with none of the secrets they were let in on and none of their
+// notes. So a seat with someone in it can be asked for as well: the GM is
+// asked, and on a yes that browser is logged in as the player they were.
 //
 // The asking is called a knock. It is the GM's to answer, because the
 // invite link alone must be enough neither to sit down nor to become
 // someone else.
 
 import { and, eq, gt, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
+import type { SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import { AuthError, cleanName, createGuest, hashToken, type User } from './auth';
 import { joinCampaign } from './campaigns';
 import type { Db } from './db';
@@ -37,7 +39,6 @@ import {
 	LIMITS,
 	type Command,
 	type Knock,
-	type Player,
 	type Seat,
 	type SeatStatus,
 	type StoredEvent
@@ -49,26 +50,34 @@ export const KNOCK_LASTS = 10 * 60 * 1000;
 /** The cookie a browser that has knocked holds, to hear the answer by. */
 export const SEAT_COOKIE = 'odyssey_seat';
 
+/** A seat as the invite link offers it: a name, and whether someone sits there already. */
+export type OfferedSeat = Pick<Seat, 'id' | 'name' | 'taken'>;
+
 /**
- * The seats of a campaign someone could ask for: its players who joined by
- * invite link, in the order they joined. A player with an account of their
- * own logs in with it instead.
+ * The seats of a campaign someone could ask for on the invite link: its
+ * players with no login of their own, in the order they were made. A
+ * player with an account logs in with it instead.
  */
-export function seatsOf(db: Db, campaignId: string): Player[] {
-	return db
-		.select({ id: users.id, name: users.name })
-		.from(members)
-		.innerJoin(users, eq(users.id, members.userId))
-		.where(
-			and(
-				eq(members.campaignId, campaignId),
-				eq(members.role, 'player'),
-				isNull(users.passwordHash)
-			)
-		)
-		.orderBy(members.joinedAt, sql`${members}.rowid`)
-		.all();
+export function seatsOf(db: Db, campaignId: string): OfferedSeat[] {
+	return rosterOf(db, campaignId)
+		.filter((seat) => seat.guest)
+		.map(({ id, name, taken }) => ({ id, name, taken }));
 }
+
+/**
+ * How many seats have nobody in them yet. With none, there is nobody to
+ * invite: the GM makes a seat first.
+ */
+export function freeSeats(db: Db, campaignId: string): number {
+	return seatsOf(db, campaignId).filter((seat) => !seat.taken).length;
+}
+
+/** Some browser is logged in as this user. */
+const satIn = (userId: SQLiteColumn) =>
+	sql<boolean>`EXISTS (
+		SELECT 1 FROM ${sessions}
+		WHERE ${sessions.userId} = ${userId} AND ${sessions.expiresAt} > ${Date.now()}
+	)`.mapWith(Boolean);
 
 /** The claim's row and the member it would be, when its user sits at this table already. */
 const seated = and(
@@ -77,65 +86,29 @@ const seated = and(
 );
 
 /**
- * Asks for a seat that is taken. Returns what the browser is to hold, to
- * hear the answer by: only a hash of it is kept. Asking again for the same
- * seat takes the place of the earlier asking.
+ * Asks for a seat: one the GM made that nobody has sat in yet, or one with
+ * someone in it, to get back into from another browser. Returns what the
+ * browser is to hold, to hear the answer by: only a hash of it is kept.
+ * Asking again for the same seat takes the place of the earlier asking.
  */
 export function knock(db: Db, campaignId: string, userId: unknown): string {
-	if (typeof userId !== 'string' || !seatsOf(db, campaignId).some((seat) => seat.id === userId)) {
-		throw new ActionError('not_found', 'That seat is not at this table.');
-	}
-	return ask(db, campaignId, { userId, name: null });
-}
-
-/**
- * Asks for a new seat: as whoever is logged in, or under the name someone
- * with no login gives. Nobody is made a player by it: that waits for the
- * GM's yes. Returns what the browser is to hold, as `knock` does.
- */
-export function knockAsNew(
-	db: Db,
-	campaignId: string,
-	who: { user: Pick<User, 'id'> } | { name: unknown }
-): string {
-	if ('user' in who) {
-		const member = db
-			.select({ userId: members.userId })
-			.from(members)
-			.where(and(eq(members.campaignId, campaignId), eq(members.userId, who.user.id)))
-			.get();
-		if (member) throw new ActionError('conflict', 'You have a seat at this table already.');
-		return ask(db, campaignId, { userId: who.user.id, name: null });
-	}
-	try {
-		return ask(db, campaignId, { userId: null, name: cleanName(who.name) });
-	} catch (err) {
-		if (err instanceof AuthError) throw new ActionError('invalid', err.message);
-		throw err;
-	}
-}
-
-function ask(
-	db: Db,
-	campaignId: string,
-	who: { userId: string; name: null } | { userId: null; name: string }
-): string {
 	return db.transaction(
 		(tx) => {
+			if (typeof userId !== 'string' || !seatsOf(tx, campaignId).some((seat) => seat.id === userId)) {
+				throw new ActionError('not_found', 'That seat is not at this table.');
+			}
 			const now = Date.now();
 			// What nobody is waiting on any more is swept out as new ones come in.
 			tx.delete(seatClaims).where(lt(seatClaims.createdAt, now - KNOCK_LASTS)).run();
-			if (who.userId) {
-				tx.delete(seatClaims)
-					.where(
-						and(
-							eq(seatClaims.campaignId, campaignId),
-							eq(seatClaims.userId, who.userId),
-							eq(seatClaims.status, 'waiting')
-						)
+			tx.delete(seatClaims)
+				.where(
+					and(
+						eq(seatClaims.campaignId, campaignId),
+						eq(seatClaims.userId, userId),
+						eq(seatClaims.status, 'waiting')
 					)
-					.run();
-			}
+				)
+				.run();
 			if (knocksOf(tx, campaignId).length >= LIMITS.knocks) {
 				throw new ActionError(
 					'conflict',
@@ -144,7 +117,7 @@ function ask(
 			}
 			const token = newToken();
 			tx.insert(seatClaims)
-				.values({ id: newId(), campaignId, ...who, tokenHash: hashToken(token), createdAt: now })
+				.values({ id: newId(), campaignId, userId, tokenHash: hashToken(token), createdAt: now })
 				.run();
 			return token;
 		},
@@ -157,14 +130,14 @@ export function knocksOf(db: Db, campaignId: string): Knock[] {
 	return db
 		.select({
 			id: seatClaims.id,
-			userId: seatClaims.userId,
-			name: sql<string>`coalesce(${seatClaims.name}, ${users.name})`,
-			seat: members.userId,
+			userId: users.id,
+			name: users.name,
+			taken: satIn(users.id),
 			at: seatClaims.createdAt
 		})
 		.from(seatClaims)
-		.leftJoin(users, eq(users.id, seatClaims.userId))
-		.leftJoin(members, seated)
+		.innerJoin(users, eq(users.id, seatClaims.userId))
+		.innerJoin(members, seated)
 		.where(
 			and(
 				eq(seatClaims.campaignId, campaignId),
@@ -173,8 +146,7 @@ export function knocksOf(db: Db, campaignId: string): Knock[] {
 			)
 		)
 		.orderBy(seatClaims.createdAt, sql`${seatClaims}.rowid`)
-		.all()
-		.map(({ seat, ...knock }) => ({ ...knock, newcomer: seat === null }));
+		.all();
 }
 
 /** The GM lets someone into the seat they asked for, or doesn't. */
@@ -206,21 +178,20 @@ export function answerKnock(db: Db, actor: Actor, id: unknown, grant: unknown): 
 /** How it stands with a seat a browser asked for: see `seatAnswer`. */
 export interface SeatAnswer {
 	status: SeatStatus['status'];
-	/** The name asked under, or of the seat asked for. */
+	/** The name of the seat asked for. */
 	name?: string;
-	/** A new seat was asked for, not one that is taken. */
-	newcomer?: boolean;
+	/** Someone sits in that seat already: it is asked back, from another browser. */
+	taken?: boolean;
 	/** Who the browser is seated as, once it is `granted` and read. */
 	user?: User;
 }
 
 /**
  * How it stands with the seat a browser asked for, by what it holds. Once
- * it is `granted`, `user` is who that browser is seated as. It is the
- * reading that seats them: someone new is made a player here, and not
- * before, so a yes nobody comes back to hear leaves no empty seat. The
- * asking is used up by being read, so it lets one browser in, once. With
- * `peek` it is only looked at, and stays to be read.
+ * it is `granted`, `user` is who that browser is seated as: the player
+ * whose seat it is. The asking is used up by being read, so it lets one
+ * browser in, once. With `peek` it is only looked at, and stays to be
+ * read. A seat the GM took away meanwhile is `gone`.
  */
 export function seatAnswer(
 	db: Db,
@@ -236,31 +207,26 @@ export function seatAnswer(
 					id: seatClaims.id,
 					status: seatClaims.status,
 					createdAt: seatClaims.createdAt,
-					userId: seatClaims.userId,
-					asName: seatClaims.name,
-					userName: users.name,
+					userId: users.id,
+					name: users.name,
 					passwordHash: users.passwordHash,
-					seat: members.userId
+					taken: satIn(users.id)
 				})
 				.from(seatClaims)
-				.leftJoin(users, eq(users.id, seatClaims.userId))
-				.leftJoin(members, seated)
+				.innerJoin(users, eq(users.id, seatClaims.userId))
+				.innerJoin(members, seated)
 				.where(
 					and(eq(seatClaims.tokenHash, hashToken(token)), eq(seatClaims.campaignId, campaignId))
 				)
 				.get();
 			if (!claim || claim.createdAt <= Date.now() - KNOCK_LASTS) return { status: 'gone' };
-			const name = claim.asName ?? claim.userName ?? '';
-			const newcomer = claim.seat === null;
-			if (claim.status === 'waiting' || peek) return { status: claim.status, name, newcomer };
+			const { name, taken } = claim;
+			if (claim.status === 'waiting' || peek) return { status: claim.status, name, taken };
 
 			tx.delete(seatClaims).where(eq(seatClaims.id, claim.id)).run();
-			if (claim.status === 'refused') return { status: 'refused', name, newcomer };
-			const user: User = claim.userId
-				? { id: claim.userId, name, isGuest: claim.passwordHash === null }
-				: createGuest(tx, name);
-			if (newcomer) joinCampaign(tx, campaignId, user.id);
-			return { status: 'granted', name, newcomer, user };
+			if (claim.status === 'refused') return { status: 'refused', name, taken };
+			const user: User = { id: claim.userId, name, isGuest: claim.passwordHash === null };
+			return { status: 'granted', name, taken, user };
 		},
 		{ behavior: 'immediate' }
 	);
@@ -292,10 +258,7 @@ export function rosterOf(db: Db, campaignId: string): Seat[] {
 			id: users.id,
 			name: users.name,
 			guest: sql<boolean>`${users.passwordHash} IS NULL`.mapWith(Boolean),
-			taken: sql<boolean>`EXISTS (
-				SELECT 1 FROM ${sessions}
-				WHERE ${sessions.userId} = ${users.id} AND ${sessions.expiresAt} > ${Date.now()}
-			)`.mapWith(Boolean)
+			taken: satIn(users.id)
 		})
 		.from(members)
 		.innerJoin(users, eq(users.id, members.userId))
@@ -331,8 +294,8 @@ function findSeat(db: Db, actor: Actor, id: unknown): Seat {
 
 /**
  * Makes a seat with nobody in it yet: a player by that name, for someone
- * to sit down in when they come. They ask for it on the invite link, under
- * the seats that are taken, and the GM lets them in.
+ * to sit down in when they come. They pick it on the invite link, and the
+ * GM lets them in.
  */
 export function createSeat(db: Db, actor: Actor, rawName: unknown): Seat {
 	requireKeeper(actor);

@@ -1,7 +1,6 @@
 // Asked by a browser that is waiting to be let into a seat: how it stands.
-// Once the GM has said yes, this is what seats the browser: someone new is
-// made a player, and a browser with no login is logged in as the player it
-// asked to be. That uses the asking up.
+// Once the GM has said yes, this is what seats the browser: it is logged in
+// as the player whose seat it asked for. That uses the asking up.
 
 import { type RequestHandler } from '@sveltejs/kit';
 import { findCampaignByInvite } from '#lib/server/campaigns.ts';
@@ -22,9 +21,9 @@ export const GET: RequestHandler = (event) => {
 	// Answered, or lapsed: either way there is nothing left to hold on to.
 	event.cookies.delete(SEAT_COOKIE, cookieOptions(event));
 	if (asked.status !== 'granted' || !asked.user) return answer({ status: asked.status });
-	// Whoever asked while logged in is that someone still. Only a player
-	// with nothing to log in with is logged in by the GM's yes: an account
-	// has its password for that.
+	// Only a player with nothing to log in with is logged in by the GM's
+	// yes, and only such a seat can be asked for: an account has its
+	// password for that.
 	if (asked.user.isGuest && event.locals.user?.id !== asked.user.id) {
 		startSession(event, asked.user);
 	}

@@ -1,28 +1,11 @@
 <script lang="ts" module>
 	import { KEY } from '#lib/client/keys.ts';
-	import type { TemplateKind } from '#lib/shared/types.ts';
+	import type { BattleTool, PenKind } from '#lib/client/toolbelt.svelte.ts';
 	import type { ToolIcon } from './ToolButton.svelte';
 
-	/**
-	 * What is in hand on a battle map. `pan` is the hand itself: it selects
-	 * and moves things. The others are picked from the palette in the corner.
-	 * `sketch` is the pen, which draws a line freehand or one of the shapes:
-	 * see `pen`. `reveal` and `cover` are the GM's two ways with the fog
-	 * of war, and `align` is theirs too: it lines the grid up with the squares
-	 * of the map's own picture. With `point` in hand, the table is shown
-	 * where the pointer is for as long as its button is held down.
-	 */
-	export type BattleTool =
-		| 'pan'
-		| 'select'
-		| 'measure'
-		| 'sketch'
-		| 'point'
-		| 'reveal'
-		| 'cover'
-		| 'align';
-	/** What the pen draws: a line freehand, or a shape dragged out. */
-	export type Pen = 'line' | TemplateKind | 'text';
+	export type { BattleTool };
+	/** What the pen draws: a line freehand, a shape dragged out, or text. */
+	export type Pen = PenKind;
 
 	/** Each with the key that takes it in hand: the top row of the keyboard, left to right. */
 	export const BATTLE_TOOLS: { tool: BattleTool; icon: ToolIcon; label: string; key: string }[] = [

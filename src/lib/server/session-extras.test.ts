@@ -25,14 +25,15 @@ import {
 	sweepGallery,
 } from './gallery';
 import { getMapSnapshot } from './queries';
-import { seatClaims } from './schema';
+import { seatClaims, sessions } from './schema';
 import {
 	KNOCK_LASTS,
 	answerKnock,
 	forgetKnock,
+	freeSeats,
 	knock,
-	knockAsNew,
 	knocksOf,
+	removeSeat,
 	seatAnswer,
 	seatsOf,
 } from './seats';
@@ -156,7 +157,7 @@ const asPlayer = (who: Actor) => ({
 const mapNow = (id = mapId) => getMapSnapshot(db, campaignId, id, 'gm')!.map;
 
 describe('a seat at the table', () => {
-	test('the seats to ask for are the players who joined by link', () => {
+	test('the seats to ask for are the players with no login of their own', () => {
 		expect(seatsOf(db, campaignId).map((seat) => seat.name)).toEqual([
 			'Mira',
 			'Tovin',
@@ -239,121 +240,86 @@ describe('a seat at the table', () => {
 		expect(refusal(() => knock(db, campaignId, player.userId))).toBe(
 			'conflict',
 		);
-		expect(refusal(() => knockAsNew(db, campaignId, { name: 'Odo' }))).toBe(
-			'conflict',
-		);
 	});
 });
 
-describe('a new seat at the table', () => {
-	test('someone new is nobody at the table until the GM says yes and they hear of it', () => {
-		const held = knockAsNew(db, campaignId, { name: '  Odo   the  Bold ' });
-		expect(knocksOf(db, campaignId)).toMatchObject([
-			{ userId: null, name: 'Odo the Bold', newcomer: true },
+describe('the seats there are to pick from', () => {
+	test('the link offers the seats with no login, and says which have someone in them', async () => {
+		expect(seatsOf(db, campaignId)).toEqual([
+			{ id: player.userId, name: 'Mira', taken: false },
+			{ id: other.userId, name: 'Tovin', taken: false },
 		]);
-		// Asking seats nobody.
-		expect(seatsOf(db, campaignId).map((seat) => seat.name)).toEqual([
-			'Mira',
-			'Tovin',
+		expect(freeSeats(db, campaignId)).toBe(2);
+
+		createSession(db, player.userId);
+		expect(seatsOf(db, campaignId).map((seat) => seat.taken)).toEqual([
+			true,
+			false,
 		]);
-		expect(seatAnswer(db, campaignId, held)).toMatchObject({
-			status: 'waiting',
-			newcomer: true,
-		});
+		expect(freeSeats(db, campaignId)).toBe(1);
 
-		const [asked] = knocksOf(db, campaignId);
-		expect(refusal(() => answerKnock(db, player, asked.id, true))).toBe(
-			'forbidden',
-		);
-		answerKnock(db, gm, asked.id, true);
-		// Nor does the yes, until the browser that asked comes to hear it.
-		expect(seatAnswer(db, campaignId, held, true)).toMatchObject({
-			status: 'granted',
-			name: 'Odo the Bold',
-		});
-		expect(seatsOf(db, campaignId)).toHaveLength(2);
+		// A login that has run out is nobody sitting there.
+		db.update(sessions).set({ expiresAt: Date.now() - 1000 }).run();
+		expect(freeSeats(db, campaignId)).toBe(2);
 
-		const answer = seatAnswer(db, campaignId, held);
-		expect(answer).toMatchObject({
-			status: 'granted',
-			user: { name: 'Odo the Bold', isGuest: true },
-		});
-		expect(getMembership(db, campaignId, answer.user!.id)?.role).toBe('player');
-		expect(seatsOf(db, campaignId).map((seat) => seat.name)).toEqual([
-			'Mira',
-			'Tovin',
-			'Odo the Bold',
-		]);
-		// Once.
-		expect(seatAnswer(db, campaignId, held).status).toBe('gone');
-		expect(seatsOf(db, campaignId)).toHaveLength(3);
-	});
-
-	test('a no seats nobody', () => {
-		const held = knockAsNew(db, campaignId, { name: 'Odo' });
-		answerKnock(db, gm, knocksOf(db, campaignId)[0].id, false);
-		expect(seatAnswer(db, campaignId, held)).toMatchObject({
-			status: 'refused',
-			newcomer: true,
-		});
-		expect(seatAnswer(db, campaignId, held).status).toBe('gone');
-		expect(seatsOf(db, campaignId)).toHaveLength(2);
-	});
-
-	test("a name that won't do is turned down at the door", () => {
-		expect(refusal(() => knockAsNew(db, campaignId, { name: '   ' }))).toBe(
-			'invalid',
-		);
-		expect(
-			refusal(() => knockAsNew(db, campaignId, { name: 'x'.repeat(41) })),
-		).toBe('invalid');
-		expect(refusal(() => knockAsNew(db, campaignId, { name: null }))).toBe(
-			'invalid',
-		);
-		expect(knocksOf(db, campaignId)).toHaveLength(0);
-	});
-
-	test('someone with an account asks as themselves, and joins as themselves', async () => {
+		// A player with an account logs in with it: theirs is no seat to pick.
 		const account = await registerUser(db, 'wren', 'correct horse battery');
-		const first = knockAsNew(db, campaignId, { user: account });
-		// Asking again takes the place of the earlier asking.
-		const held = knockAsNew(db, campaignId, { user: account });
-		expect(knocksOf(db, campaignId)).toMatchObject([
-			{ userId: account.id, name: 'wren', newcomer: true },
-		]);
-		expect(seatAnswer(db, campaignId, first).status).toBe('gone');
-		expect(getMembership(db, campaignId, account.id)).toBeNull();
+		joinCampaign(db, campaignId, account.id);
+		createSession(db, account.id);
+		expect(seatsOf(db, campaignId)).toHaveLength(2);
+		expect(freeSeats(db, campaignId)).toBe(2);
+		expect(refusal(() => knock(db, campaignId, account.id))).toBe('not_found');
+	});
 
+	test('with every seat taken, or none made, there is no free seat', () => {
+		createSession(db, player.userId);
+		createSession(db, other.userId);
+		expect(freeSeats(db, campaignId)).toBe(0);
+		removeSeat(db, gm, player.userId);
+		removeSeat(db, gm, other.userId);
+		expect(seatsOf(db, campaignId)).toEqual([]);
+		expect(freeSeats(db, campaignId)).toBe(0);
+	});
+
+	test('a seat asked back is told apart from one nobody has sat in', () => {
+		createSession(db, player.userId);
+		const back = knock(db, campaignId, player.userId);
+		knock(db, campaignId, other.userId);
+		expect(
+			knocksOf(db, campaignId).map((each) => [each.name, each.taken]),
+		).toEqual([
+			['Mira', true],
+			['Tovin', false],
+		]);
+		expect(seatAnswer(db, campaignId, back, true)).toMatchObject({
+			status: 'waiting',
+			name: 'Mira',
+			taken: true,
+		});
+	});
+
+	test('a yes makes nobody a player who was not one: it seats them as who the GM made', () => {
+		const held = knock(db, campaignId, other.userId);
 		answerKnock(db, gm, knocksOf(db, campaignId)[0].id, true);
 		expect(seatAnswer(db, campaignId, held)).toMatchObject({
 			status: 'granted',
-			user: { id: account.id, isGuest: false },
+			user: { id: other.userId, name: 'Tovin', isGuest: true },
 		});
-		expect(getMembership(db, campaignId, account.id)?.role).toBe('player');
-		// They log in with their account: theirs is no seat to ask for by name.
-		expect(seatsOf(db, campaignId)).toHaveLength(2);
-	});
-
-	test('whoever sits at the table already has no new seat to ask for', () => {
-		expect(
-			refusal(() =>
-				knockAsNew(db, campaignId, { user: { id: player.userId } }),
-			),
-		).toBe('conflict');
-		expect(
-			refusal(() => knockAsNew(db, campaignId, { user: { id: gm.userId } })),
-		).toBe('conflict');
-	});
-
-	test('a seat asked back is told apart from a new one', () => {
-		knock(db, campaignId, player.userId);
-		knockAsNew(db, campaignId, { name: 'Odo' });
-		expect(
-			knocksOf(db, campaignId).map((each) => [each.name, each.newcomer]),
-		).toEqual([
-			['Mira', false],
-			['Odo', true],
+		expect(seatsOf(db, campaignId).map((seat) => seat.name)).toEqual([
+			'Mira',
+			'Tovin',
 		]);
+	});
+
+	test('a seat taken away while someone asks for it leaves nothing to be let into', () => {
+		const held = knock(db, campaignId, other.userId);
+		const [asked] = knocksOf(db, campaignId);
+		removeSeat(db, gm, other.userId);
+		expect(knocksOf(db, campaignId)).toHaveLength(0);
+		expect(refusal(() => answerKnock(db, gm, asked.id, true))).toBe(
+			'not_found',
+		);
+		expect(seatAnswer(db, campaignId, held).status).toBe('gone');
 	});
 });
 

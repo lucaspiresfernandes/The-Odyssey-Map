@@ -16,6 +16,9 @@
 		return ({ update }: { update: () => Promise<void> }) => update();
 	};
 
+	/** Some seat has someone in it already. */
+	const anyTaken = $derived(data.seats.some((seat) => seat.taken));
+
 	// While the GM is being asked, the answer is looked for every couple of
 	// seconds. A yes seats this browser, and the map opens.
 	$effect(() => {
@@ -62,10 +65,10 @@
 			use:enhance
 		>
 			<p role="status">
-				{#if data.waiting.newcomer}
-					Asking the GM to let you in as <strong>{data.waiting.name}</strong>…
-				{:else}
+				{#if data.waiting.taken}
 					Asking the GM to let you back in as <strong>{data.waiting.name}</strong>…
+				{:else}
+					Asking the GM to let you in as <strong>{data.waiting.name}</strong>…
 				{/if}
 			</p>
 			<p class="text-[13px] text-muted">
@@ -84,55 +87,57 @@
 			</p>
 		{/if}
 
-		<form
-			method="POST"
-			action="?/join"
-			class="grid gap-3.5 rounded-[14px] border bg-panel p-5.5 text-left"
-			use:enhance={asking}
-		>
-			{#if data.user}
-				<p>Join as <strong>{data.user.name}</strong>?</p>
-			{:else}
-				<label class="field">
-					<span>What should the table call you?</span>
-					<!-- svelte-ignore a11y_autofocus -->
-					<input
-						class="input"
-						name="name"
-						maxlength="40"
-						placeholder="Your name"
-						required
-						autofocus={data.seats.length === 0}
-					/>
-				</label>
-			{/if}
-			{#if form?.message}<p class="text-sm text-danger">{form.message}</p>{/if}
-			<button class="btn btn-primary">Ask to join</button>
-			<p class="text-[13px] text-muted">The GM lets you in from their screen.</p>
-		</form>
-
-		{#if data.seats.length}
-			<!-- The seats that are taken: whoever sat in one picks their own name,
-			     and the GM lets them back in. -->
+		{#if data.seats.length === 0}
+			<!-- Nothing to pick: the seats are the GM's to make. -->
+			<div class="grid gap-3.5 rounded-[14px] border bg-panel p-5.5 text-left">
+				<p>
+					There are no seats at this table yet.
+					<span class="block text-[13px] text-muted">
+						Ask your GM to make one for you, then look again.
+					</span>
+				</p>
+				<button class="btn" onclick={() => invalidateAll()}>Look again</button>
+			</div>
+		{:else}
+			<!-- The seats the GM made: whoever is to sit in one picks their own
+			     name, and the GM lets them in. -->
 			<form
 				method="POST"
 				action="?/claim"
-				class="mt-3 grid gap-3 rounded-[14px] border bg-panel p-5.5 text-left"
+				class="grid gap-3.5 rounded-[14px] border bg-panel p-5.5 text-left"
 				use:enhance={asking}
 			>
 				<p>
-					Played here before?
+					Who are you?
 					<span class="block text-[13px] text-muted">
-						Pick your name. The GM lets you back in, with your notes and everything you were shown.
+						Pick your name. The GM lets you in from their screen.
 					</span>
 				</p>
 				<div class="flex flex-wrap gap-2">
 					{#each data.seats as seat (seat.id)}
-						<button class="btn max-w-full" name="seat" value={seat.id}>
+						<button
+							class={['btn max-w-full', !seat.taken && 'btn-primary']}
+							name="seat"
+							value={seat.id}
+						>
 							<span class="truncate">{seat.name}</span>
+							{#if seat.taken}<span class="shrink-0 text-xs text-muted">taken</span>{/if}
 						</button>
 					{/each}
 				</div>
+				{#if form?.message}<p class="text-sm text-danger">{form.message}</p>{/if}
+				{#if anyTaken}
+					<p class="text-[13px] text-muted">
+						A name that is taken has someone sitting there. If it is yours, pick it all the same:
+						the GM lets you back in, with your notes and everything you were shown.
+					</p>
+				{/if}
+				{#if data.user}
+					<p class="text-[13px] text-muted">
+						This browser is logged in as <strong>{data.user.name}</strong>. Sitting down here makes
+						it the player you pick instead.
+					</p>
+				{/if}
 			</form>
 		{/if}
 	{/if}

@@ -18,37 +18,24 @@
 	import { untrack, type Snippet } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
 	import { KEY, chord, isTyping, usesArrows } from '#lib/client/keys.ts';
-	import type { Ruler } from '#lib/client/mapview.ts';
-	import {
-		barSpot,
-		cardSpot,
-		extentOf,
-		nameSpot,
-		regionBarSpot,
-		type Frame
-	} from '#lib/client/placement.ts';
+	import { nameSpot, type Frame } from '#lib/client/placement.ts';
 	import { Stage, clamped, inside } from '#lib/client/stage.svelte.ts';
 	import { POINT_CURSOR, tintOf } from '#lib/client/tints.ts';
 	import { dragSlack, type Board, type Gesture, type GestureOf } from '#lib/client/tools/board.ts';
 	import { Carry } from '#lib/client/tools/carry.svelte.ts';
 	import { FogBrush } from '#lib/client/tools/fog-brush.svelte.ts';
-	import { PIN_HEIGHT, caughtIn } from '#lib/client/tools/marquee.ts';
+	import { InHand, type Holding } from '#lib/client/tools/in-hand.svelte.ts';
+	import { caughtIn } from '#lib/client/tools/marquee.ts';
 	import { Pen } from '#lib/client/tools/pen.svelte.ts';
+	import { Pointing } from '#lib/client/tools/pointing.svelte.ts';
 	import { RegionShaper } from '#lib/client/tools/regions.svelte.ts';
 	import { RulerTool } from '#lib/client/tools/ruler.svelte.ts';
 	import { Shaper } from '#lib/client/tools/shaper.svelte.ts';
+	import { Shapes } from '#lib/client/tools/shapes.svelte.ts';
 	import { frameOf } from '#lib/shared/backdrop.ts';
-	import { boxOf, templateHolds, templateSpan } from '#lib/shared/drawing.ts';
+	import { boxOf } from '#lib/shared/drawing.ts';
 	import { brushSize, isEye } from '#lib/shared/fog.ts';
-	import {
-		feetAlong,
-		feetCount,
-		milesAlong,
-		milesCount,
-		pixelsToFeet,
-		snapToGrid,
-		travelTime
-	} from '#lib/shared/grid.ts';
+	import { snapToGrid } from '#lib/shared/grid.ts';
 	import {
 		canChangeDrawing,
 		canEditMarkerKind,
@@ -58,14 +45,12 @@
 	import {
 		FOG_BRUSH,
 		imageUrl,
-		isTemplate,
 		type Backdrop,
 		type Command,
 		type Diagonal,
 		type Drawing,
 		type Grid,
 		type Hand,
-		type HandSpot,
 		type MapInfo,
 		type Marker,
 		type Ping,
@@ -82,19 +67,11 @@
 	import BattleTokens from './BattleTokens.svelte';
 	import FogLayer from './FogLayer.svelte';
 	import MapLines from './MapLines.svelte';
+	import MapOverlays from './MapOverlays.svelte';
 	import MapPicture from './MapPicture.svelte';
 	import MapPins from './MapPins.svelte';
-	import MarkerCard from './MarkerCard.svelte';
-	import MarkerSelectionBar from './MarkerSelectionBar.svelte';
 	import RegionNames from './RegionNames.svelte';
-	import SelectionBar from './SelectionBar.svelte';
 	import TableSigns from './TableSigns.svelte';
-	import TextBox from './TextBox.svelte';
-	import ToolHints from './ToolHints.svelte';
-	import ZoomButtons from './ZoomButtons.svelte';
-
-	/** What this browser has in hand on the map in front of it. */
-	type Holding = Omit<HandSpot, 'mapId'>;
 
 	interface Props {
 		map: MapInfo;
@@ -304,26 +281,14 @@
 	let hoveredRegionId = $state<string | null>(null);
 	/** Where the mouse is over the map: the outline being drawn and the ring of the fog's brush follow it. */
 	let cursor = $state<Point | null>(null);
-	let cardW = $state(0);
-	let cardH = $state(0);
-	let barW = $state(0);
-	let barH = $state(0);
-	let regionBarW = $state(0);
-	let regionBarH = $state(0);
 	/** How tall each region's name stands on screen, by the region's id: a long one runs to more lines. */
 	const nameHeights = $state<Record<string, number>>({});
-	let bar = $state<ReturnType<typeof SelectionBar>>();
-	let markerBar = $state<ReturnType<typeof MarkerSelectionBar>>();
-	let card = $state<ReturnType<typeof MarkerCard>>();
+	/** What floats over the map: the card, the buttons beside the selection, the hints. */
+	let overlays = $state<ReturnType<typeof MapOverlays>>();
 	/** The box being dragged around things to select them: one corner, and the other. */
 	let marquee = $state.raw<[Point, Point] | null>(null);
 	/** The box the GM is dragging over the squares of the map's picture: one corner, and the other. */
 	let aligning = $state.raw<[Point, Point] | null>(null);
-	/**
-	 * Where this person is pointing: where their pointer is on the map, for
-	 * as long as they hold it down with the pointing tool in hand.
-	 */
-	let pointing = $state.raw<Point | null>(null);
 
 	// What the tools are given to work with: the map as it stands now. Each
 	// tool keeps what it is in the middle of, and takes its part of a press,
@@ -395,7 +360,38 @@
 		onreshape: (region, points) => onreshape(region, points)
 	});
 
+	/** The pointing tool, and the pings a click or a resting finger leaves. */
+	const pointer = new Pointing(board, {
+		tool: () => tool,
+		passive: () => passive,
+		gesture: () => gesture,
+		onping: (x, y) => onping(x, y)
+	});
+	/** What everyone at the table has in hand on this map, and what this browser tells them of its own. */
+	const inHand = new InHand(board, hand, ruler, pointer, {
+		hands: () => hands,
+		me: () => ({ role, userId }),
+		scale: () => ({ miles, dayMiles, units, diagonal })
+	});
+	/** The shapes laid on a battle map, and the tokens they catch. */
+	const shapes = new Shapes(board, {
+		selecting: () => selecting,
+		spotOf: (token) => spotOf(token),
+		shiftOf: (drawing) => shiftOf(drawing),
+		casted: () => pen.casted,
+		shape: () => shape,
+		tokensSelected: () => selectedTokens.length,
+		units: () => units
+	});
+
 	// What the tools hold, under the names the rest of this component reads them by.
+	const pointing = $derived(pointer.at);
+	const rulers = $derived(inHand.rulers);
+	const pointed = $derived(inHand.pointed);
+	const templates = $derived(shapes.laid);
+	const insideSelected = $derived(shapes.inside);
+	const caughtIds = $derived(shapes.caughtIds);
+	const templateSize = shapes.size;
 	const carry = $derived(hand.now);
 	const shaping = $derived(shaper.now);
 	const measure = $derived(ruler.measure);
@@ -450,9 +446,6 @@
 
 	/** The map as it lies on the screen, for placing what floats over it. */
 	const frame = $derived<Frame>({ view, W, H, cw, ch });
-	const cardPosition = $derived(
-		active && cardSpot(frame, [active.x, active.y], PIN_HEIGHT + 12, 12, cardW, cardH)
-	);
 
 	/** How long a card has to be open, or a region's name lit, before it counts as looked at. */
 	const LOOKED_AT = 600;
@@ -525,71 +518,8 @@
 
 	const lines = $derived(battle ? drawings.filter((d) => d.kind === 'line') : []);
 	const texts = $derived(battle ? drawings.filter((d) => d.kind === 'text') : []);
-	/** The templates laid on the map, each with the two points it is kept as, in the map's pixels. */
-	const templates = $derived(
-		battle
-			? drawings.flatMap((drawing) => {
-					const { kind, points } = drawing;
-					if (!isTemplate(kind) || points.length !== 2) return [];
-					const [a, b] = inPixels(points);
-					return [{ drawing, kind, a, b }];
-				})
-			: []
-	);
-	/**
-	 * The tokens a template catches: the ones whose middle is inside it,
-	 * wherever each is drawn right now. `a` and `b` are in the map's pixels.
-	 * A hair of slack takes in a middle that sits right on the line.
-	 */
-	function tokensIn(kind: TemplateKind, a: Point, b: Point): Token[] {
-		return tokens.filter((token) => {
-			const [x, y] = spotOf(token);
-			return templateHolds(kind, a, b, [x * W, y * H], cell * 0.02);
-		});
-	}
-
-	/** The tokens inside the templates that are selected, wherever those are being carried. */
-	const insideSelected = $derived.by(() => {
-		if (!selecting) return [];
-		const found = new Map<string, Token>();
-		for (const { drawing, kind, a, b } of templates) {
-			if (!selectedIds.includes(drawing.id)) continue;
-			const [sx, sy] = shiftOf(drawing);
-			const carried = ([x, y]: Point): Point => [x + sx * W, y + sy * H];
-			for (const token of tokensIn(kind, carried(a), carried(b))) found.set(token.id, token);
-		}
-		return [...found.values()];
-	});
-
-	/**
-	 * The tokens that light up as caught: inside the template being dragged
-	 * out, or inside the ones selected while no token is. Only on this
-	 * person's own screen.
-	 */
-	const caughtIds = $derived.by(() => {
-		const ids = new Set<string>();
-		if (selectedTokens.length === 0) for (const token of insideSelected) ids.add(token.id);
-		if (casted) {
-			const [a, b] = inPixels(casted);
-			for (const token of tokensIn(shape, a, b)) ids.add(token.id);
-		}
-		return ids;
-	});
-
-	/** How big a template is, in words: "20 ft radius", "30 ft cone", "10 × 20 ft". In metres on a metric map. */
-	function templateSize(kind: TemplateKind, a: Point, b: Point): string {
-		const [first, second] = templateSpan(kind, a, b).map((pixels) =>
-			feetCount(pixelsToFeet(map, pixels), units)
-		);
-		// The two sides of a box are told with the unit said once.
-		if (kind === 'rect') return `${first.replace(/ \S+$/, '')} × ${second}`;
-		return `${first} ${kind === 'circle' ? 'radius' : 'cone'}`;
-	}
-
 	/** The token whose turn it is, if it is one this person can see. */
 	const turnId = $derived(battle ? map.turns.current : null);
-	/** Map space to the map's own pixels, where a line is drawn. */
-	const inPixels = (points: Point[]): Point[] => points.map(([x, y]) => [x * W, y * H]);
 
 	const isToken = (thing: Token | Drawing): thing is Token => !('points' in thing);
 	/** A token is picked up by anyone, unless it is locked. */
@@ -619,7 +549,6 @@
 	// The fog the GM lays by hand, and the brush it is painted with, as the brush has them.
 	const brushing = $derived(brush.brushing);
 	const reach = $derived(brush.reach);
-	const fogNow = $derived(brush.now);
 	const fog = $derived(brush.drawn);
 	const brushAt = $derived(brush.at);
 
@@ -642,34 +571,6 @@
 	/** Where a marker is drawn: in this person's hand if it is in it, or where it stands. */
 	const markerSpot = (marker: Marker): Point => inHandAt(marker.id) ?? [marker.x, marker.y];
 
-	/**
-	 * Where the buttons for those markers float: under the lowest of them,
-	 * or over the top of them all when that is too low on the screen.
-	 */
-	const markerBarPosition = $derived.by(() => {
-		if (carry?.held || marquee || tool !== 'pan' || selectedMarkers.length === 0) return null;
-		return barSpot(
-			frame,
-			boxOf(selectedMarkers.map(markerSpot)),
-			{ w: barW, h: barH },
-			{ raise: PIN_HEIGHT, drop: 8, lift: 8 }
-		);
-	});
-
-	/**
-	 * Where the buttons for the selected region float: over its name. They
-	 * are out of the way while a corner is in hand.
-	 */
-	const regionBarPosition = $derived.by(() => {
-		if (!selectedRegion || tool !== 'pan' || outlines.reshape || selectedMarkers.length > 0) {
-			return null;
-		}
-		return regionBarSpot(frame, selectedRegion.points, nameHeights[selectedRegion.id] ?? 20, {
-			w: regionBarW,
-			h: regionBarH
-		});
-	});
-
 	/** The world markers among the ones selected together: what the GM hides, and says who sees. */
 	const selectedPins = $derived(selectedMarkers.filter((m) => m.kind === 'world'));
 
@@ -689,53 +590,6 @@
 	 */
 	const sizeReach = $derived(4 * grip);
 	const turnReach = $derived(26 * grip);
-
-	/**
-	 * Where the buttons for the selection float: just under it, in the middle,
-	 * or over the top of it when it is too low on the screen for that.
-	 */
-	const barPosition = $derived.by(() => {
-		if (carry?.held || shaping?.held || marquee || writing) return null;
-		if (selectedTokens.length + selectedDrawings.length === 0) return null;
-		const box = extentOf(selectedTokens, selectedDrawings, { W, H, cell, spotOf, sizeOf, shiftOf });
-		// A token's name is written under it, so the buttons go under that. With
-		// no room left down there they go over the top, clear of the handle
-		// that turns a token.
-		const clear = handled ? turnReach + 18 * grip : 0;
-		return barSpot(
-			frame,
-			box,
-			{ w: barW, h: barH },
-			{ drop: 6 + (selectedTokens.length ? 18 : 0), lift: 12 + clear }
-		);
-	});
-
-	/** How long a way through these spots is, in words: feet on a battle map, miles and days on a world map. */
-	function distance(points: Point[]): string {
-		const [first] = points;
-		if (points.every(([x, y]) => x === first[0] && y === first[1])) return '';
-		if (battle) return feetCount(feetAlong(map, points, diagonal), units);
-		if (miles === null) return '';
-		const far = milesAlong({ width: W, height: H }, miles, points);
-		const long = travelTime(far, dayMiles);
-		return long ? `${milesCount(far, units)} · ${long}` : milesCount(far, units);
-	}
-
-	/** Every distance being measured on this map right now: this person's, then everyone else's. */
-	const rulers = $derived.by(() => {
-		const drawn: Omit<Ruler, 'length'>[] = [];
-		// Carrying a token measures how far it has come.
-		if (carry?.held && carry.measured) {
-			const from = carry.origins[carry.lead];
-			const to: Point = [from[0] + carry.rest[0], from[1] + carry.rest[1]];
-			drawn.push({ key: 'mine', points: [from, to], tint: '#fff' });
-		} else if (measure) drawn.push({ key: 'mine', points: measure, tint: '#fff' });
-		for (const other of hands) {
-			if (!other.ruler || other.ruler.length < 2) continue;
-			drawn.push({ key: other.id, points: other.ruler.map(clamped), tint: tintOf(other) });
-		}
-		return drawn.map((ruler): Ruler => ({ ...ruler, length: distance(ruler.points) }));
-	});
 
 	function tokenAt(target: Element): Token | null {
 		const id = target.closest<HTMLElement>('[data-token-id]')?.dataset.tokenId;
@@ -764,7 +618,7 @@
 		if (tool !== 'template') pen.casting = null;
 		if (tool !== 'reveal' && tool !== 'cover') brush.sweep = null;
 		if (tool !== 'align') aligning = null;
-		if (tool !== 'point') pointing = null;
+		if (tool !== 'point') pointer.at = null;
 		if (tool !== 'draw') {
 			outlines.clear();
 			cursor = null;
@@ -782,20 +636,12 @@
 		if (caught.length) ondone();
 	}
 
-	/** Copies of tokens were asked for. Once they are made, they are what is selected. */
-	async function copy(commands: Command[]) {
-		const had = new Set(tokens.map((t) => t.id));
-		if (await send(commands)) {
-			selectedIds = tokens.filter((t) => !had.has(t.id)).map((t) => t.id);
-		}
-	}
-
 	/**
 	 * Puts away whatever box is out beside what is selected: a label being
 	 * typed, the marks, the players of a secret. True if one was.
 	 */
 	export function shut(): boolean {
-		return !!bar?.shut();
+		return !!overlays?.shut();
 	}
 
 	/**
@@ -930,7 +776,7 @@
 				brush.sweep = null;
 				brush.sent = null;
 				aligning = null;
-				pointing = null;
+				pointer.at = null;
 			}
 			shown = { key, id: map.id, depth };
 			ready = true;
@@ -973,86 +819,16 @@
 
 	// ------------------------------------------------------ hands and pings
 
-	/**
-	 * Tells the table what this person has in hand: a token being dragged,
-	 * a distance being measured, a spot being pointed at. With none of them
-	 * there is nothing to tell, and where the mouse is stays here.
-	 */
-	function reportHand() {
-		if (!stage.viewport || !ready) return onhand(null);
-		const held = carry && inHandAt(carry.lead);
-		const holding: Holding = {};
-		if (pointing) holding.point = pointing;
-		if (carry && held) {
-			// The table is shown the token under the pointer in this hand. The
-			// rest of a selection arrives when it is put down. A hidden token is
-			// moved in secret: nobody is shown it in the GM's hand.
-			const { lead, origins, rest } = carry;
-			const token = carry.measured ? tokens.find((t) => t.id === lead) : null;
-			if (token && !token.hidden) {
-				holding.drag = { id: lead, x: held[0], y: held[1] };
-				const from = origins[lead];
-				if (carry.held) holding.ruler = [from, [from[0] + rest[0], from[1] + rest[1]]];
-			}
-		} else if (measure) {
-			holding.ruler = measure;
-		}
-		onhand(holding.drag || holding.ruler || holding.point ? holding : null);
-	}
-
 	// Whenever a token is picked up, carried or put down, the ruler moves,
-	// or the pointer does while it is pointing.
+	// or the pointer does while it is pointing, the table is told what this
+	// person has in hand. With nothing in it there is nothing to tell, and
+	// where the mouse is stays here.
 	$effect(() => {
 		void [map.id, ready, carry, measure, pointing];
-		untrack(reportHand);
-	});
-
-	/**
-	 * How long a press with the pointing tool can last and still be a click:
-	 * one that went nowhere and was let go at once. Nobody would have seen
-	 * that pointer, so it leaves a ping behind instead.
-	 */
-	const POINT_CLICK = 250;
-
-	/** Every spot being pointed at on this map right now: this person's, then everyone else's. */
-	const pointed = $derived.by(() => {
-		const shown: { key: string; at: Point; tint: string; name: string | null }[] = [];
-		// This person's own is drawn where their pointer is, in place of the cursor.
-		if (pointing) shown.push({ key: 'mine', at: pointing, tint: tintOf({ role, userId }), name: null });
-		for (const other of hands) {
-			if (!other.point) continue;
-			shown.push({ key: other.id, at: clamped(other.point), tint: tintOf(other), name: other.name });
-		}
-		return shown;
+		untrack(() => onhand(stage.viewport && ready ? inHand.mine() : null));
 	});
 
 	$effect(() => () => onhand(null));
-
-	/** How long a finger rests on one spot before that is a ping, in milliseconds. */
-	const PING_PRESS = 550;
-
-	/** Points a spot out to the table, if it is a spot of the map and there is a table to tell. */
-	function pingAt(clientX: number, clientY: number): boolean {
-		if (passive) return false;
-		const at = toMap(clientX, clientY);
-		if (!inside(at)) return false;
-		onping(at[0], at[1]);
-		return true;
-	}
-
-	/**
-	 * A finger has no Alt key, so resting it on the map pings instead. If
-	 * this press is still down after a moment and hasn't gone anywhere, it
-	 * was that, and letting go does nothing more.
-	 */
-	function awaitPing(e: PointerEvent, g: Extract<Gesture, { type: 'pan' | 'grab' }>) {
-		if (e.pointerType === 'mouse' || tool !== 'pan' || passive) return;
-		const { clientX, clientY } = e;
-		setTimeout(() => {
-			if (gesture !== g || g.moved) return;
-			g.pinged = pingAt(clientX, clientY);
-		}, PING_PRESS);
-	}
 
 	function markerAt(target: Element): Marker | null {
 		const id = target.closest<HTMLElement>('[data-marker-id]')?.dataset.markerId;
@@ -1100,7 +876,7 @@
 			marquee = null;
 			brush.sweep = null;
 			aligning = null;
-			pointing = null;
+			pointer.at = null;
 			const mid = stage.midpoint(pointers);
 			gesture = {
 				type: 'pinch',
@@ -1170,9 +946,7 @@
 		// With the pointing tool, a press is the start of pointing: the table
 		// is shown where the pointer is until it is let go.
 		if (tool === 'point' && !passive) {
-			pointing = clamped(toMap(e.clientX, e.clientY));
-			gesture = { type: 'point', sx: e.clientX, sy: e.clientY, at: performance.now(), moved: false };
-			stage.capture(e.pointerId);
+			gesture = pointer.press(e);
 			return;
 		}
 
@@ -1184,7 +958,7 @@
 		if (thing && canGrab(thing) && !e.shiftKey) {
 			const grab = hand.pickUp(thing, e, target);
 			gesture = grab;
-			awaitPing(e, grab);
+			pointer.awaitPing(e, grab);
 			return;
 		}
 
@@ -1194,7 +968,7 @@
 		if (pin && pickedMarkerIds.has(pin.id) && canGrabMarker(pin)) {
 			const grab = hand.pickUpMarkers(pin, e, target);
 			gesture = grab;
-			awaitPing(e, grab);
+			pointer.awaitPing(e, grab);
 			return;
 		}
 
@@ -1208,7 +982,7 @@
 			target
 		};
 		gesture = pan;
-		awaitPing(e, pan);
+		pointer.awaitPing(e, pan);
 	}
 
 	function onpointermove(e: PointerEvent) {
@@ -1220,12 +994,12 @@
 		if (!pointers.has(e.pointerId)) ruler.hover(e);
 		trackHover(e);
 
-		const pointer = pointers.get(e.pointerId);
-		if (!pointer) return;
+		const down = pointers.get(e.pointerId);
+		if (!down) return;
 		// The button came up somewhere this element never heard about.
 		if (e.pointerType === 'mouse' && e.buttons === 0) return release(e, false);
-		pointer.x = e.clientX;
-		pointer.y = e.clientY;
+		down.x = e.clientX;
+		down.y = e.clientY;
 
 		const g = gesture;
 		if (g?.type === 'pinch' && pointers.size >= 2) {
@@ -1264,8 +1038,7 @@
 		} else if (g?.type === 'align' && aligning) {
 			aligning = [aligning[0], clamped(toMap(e.clientX, e.clientY))];
 		} else if (g?.type === 'point') {
-			if (Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > dragSlack(e)) g.moved = true;
-			pointing = clamped(toMap(e.clientX, e.clientY));
+			pointer.drag(g, e);
 		}
 	}
 
@@ -1303,13 +1076,7 @@
 			if (box && completed) catchIn(box, g.add);
 		}
 		if (g?.type === 'sweep') brush.lift(g, completed);
-		if (g?.type === 'point') {
-			pointing = null;
-			// Let go at once without having gone anywhere, it was a click: too
-			// short for anyone to have seen, so the spot is pinged instead.
-			const clicked = !g.moved && performance.now() - g.at < POINT_CLICK;
-			if (clicked && completed) pingAt(e.clientX, e.clientY);
-		}
+		if (g?.type === 'point') pointer.lift(g, e, completed);
 		if (g?.type === 'align') {
 			const box = alignBox;
 			aligning = null;
@@ -1347,7 +1114,7 @@
 		// With Alt held, a click points the spot out to the table and does
 		// nothing else, whatever is under it.
 		if (e.altKey && tool === 'pan' && !passive) {
-			pingAt(e.clientX, e.clientY);
+			pointer.ping(e.clientX, e.clientY);
 			return;
 		}
 
@@ -1464,12 +1231,12 @@
 		const remove = key === KEY.remove || key === 'Backspace';
 		// Delete takes off the map whatever is selected on it.
 		if (selecting && selectedIds.length && remove) {
-			if (!held) bar?.remove();
+			if (!held) overlays?.removeSelection();
 			return true;
 		}
 		// The same for the markers selected together on a world map.
 		if (selectedMarkers.length && tool === 'pan' && remove) {
-			if (!held) markerBar?.remove();
+			if (!held) overlays?.removeMarkers();
 			return true;
 		}
 		// A ruler being laid along a road: Enter ends it, Backspace takes a bend back.
@@ -1498,14 +1265,14 @@
 			if (selecting && selectedIds.length) {
 				const step = STEPS[key];
 				if (step && !usesArrows(e.target) && walk(step, held)) return true;
-				if (bar?.key(key, held)) return true;
+				if (overlays?.barKey(key, held)) return true;
 			}
 			// A marker with its card pinned: the buttons on the card.
-			if (card?.key(key, held)) return true;
+			if (overlays?.cardKey(key, held)) return true;
 			// Markers selected together are hidden and revealed together, and
 			// who sees them is said for all of them at once.
 			if (key === KEY.hide && canShape && selectedPins.length) {
-				if (!held) markerBar?.hide();
+				if (!held) overlays?.hideMarkers();
 				return true;
 			}
 			if (key === KEY.share && canShape && selectedPins.length) {
@@ -1585,8 +1352,6 @@
 		const [x, y] = snapToGrid(map, next, token.size);
 		send([{ t: 'token.update', id: token.id, changes: { x, y } }]);
 	}
-
-	// ---------------------------------------------------------------- looks
 
 </script>
 
@@ -1768,119 +1533,55 @@
 		</div>
 	</div>
 
-	<!-- What floats over the map. Only the parts that ask for the pointer get it. -->
-	<div class="pointer-events-none absolute inset-0">
-		{#if active && cardPosition}
-			{@const pinned = active.id === selectedMarkerId && !passive}
-			<!-- A table display only ever informs: its cards are never pinned, and offer nothing to do. -->
-
-			<!-- Kept out of sight until its size is known, so it never flashes in the wrong place. -->
-			<div
-				class={['absolute', cardW === 0 && 'invisible', pinned && 'pointer-events-auto']}
-				style:left="{cardPosition.left}px"
-				style:top="{cardPosition.top}px"
-				bind:clientWidth={cardW}
-				bind:clientHeight={cardH}
-			>
-				<MarkerCard
-					bind:this={card}
-					marker={active}
-					campaignId={map.campaignId}
-					{role}
-					{userId}
-					{pinned}
-					onclose={() => (selectedMarkerId = null)}
-					{onedit}
-					{onmove}
-					{ondelete}
-					{onhide}
-					{players}
-					onvisibility={canShape ? (marker) => onmarkervisibility([marker]) : undefined}
-				/>
-			</div>
-		{/if}
-
-		<!-- The buttons for whatever is selected on a battle map, floating just
-		     under it. They stay mounted while it is off screen or in hand, out
-		     of sight, so the Delete key still has them to ask. -->
-		{#if selectedTokens.length + selectedDrawings.length > 0}
-			<div
-				class={['absolute', barPosition && barW > 0 ? 'pointer-events-auto' : 'invisible']}
-				style:left="{barPosition?.left ?? 0}px"
-				style:top="{barPosition?.top ?? 0}px"
-				bind:clientWidth={barW}
-				bind:clientHeight={barH}
-			>
-				<SelectionBar
-					bind:this={bar}
-					tokens={selectedTokens}
-					drawings={selectedDrawings}
-					inside={insideSelected}
-					{role}
-					{userId}
-					tip={barPosition?.under === false ? 'top' : 'bottom'}
-					{send}
-					oncopy={copy}
-					onedit={onedittoken}
-					onwrite={(drawing) => {
-						selectedIds = [];
-						pen.write(drawing);
-					}}
-					onclear={() => (selectedIds = [])}
-					onpick={(picked) => (selectedIds = picked.map((token) => token.id))}
-					onvisibility={onpiecevisibility}
-				/>
-			</div>
-		{/if}
-
-		<!-- The buttons for the markers selected together on a world map,
-		     floating under them the same way. -->
-		<MarkerSelectionBar
-			bind:this={markerBar}
-			{selectedMarkers}
-			{selectedPins}
-			{role}
-			{userId}
-			{canShape}
-			{markerBarPosition}
-			bind:barW
-			bind:barH
-			{send}
-			onclear={() => (selectedIds = [])}
-			{onmarkervisibility}
-		/>
-
-		<!-- The buttons for the region selected on a world map, floating over its
-		     name. Out of sight until their size is known, and while the
-		     region is off screen or a corner of it is in hand. -->
-		{#if regionBar && canShape && selectedRegion && tool === 'pan'}
-			<div
-				class={[
-					'absolute',
-					regionBarPosition && regionBarW > 0 ? 'pointer-events-auto' : 'invisible'
-				]}
-				style:left="{regionBarPosition?.left ?? 0}px"
-				style:top="{regionBarPosition?.top ?? 0}px"
-				bind:clientWidth={regionBarW}
-				bind:clientHeight={regionBarH}
-			>
-				{@render regionBar(selectedRegion, regionBarPosition?.tip ?? 'top')}
-			</div>
-		{/if}
-
-		<!-- A text being typed, right where it will stand on the map and as big. -->
-		<TextBox {pen} {W} {H} {view} />
-
-		<ToolHints
-			{tool}
-			corners={draft.length}
-			{routing}
-			{battle}
-			{shape}
-			fogOn={fogNow.on}
-			writing={!!writing}
-		/>
-
-		<ZoomButtons {passive} onzoom={(factor) => stage.zoomBy(factor)} onfit={() => stage.fit()} />
-	</div>
+	<MapOverlays
+		bind:this={overlays}
+		{map}
+		{role}
+		{userId}
+		{players}
+		{canShape}
+		{passive}
+		{tool}
+		{battle}
+		{shape}
+		{frame}
+		{view}
+		{W}
+		{H}
+		{cell}
+		{active}
+		bind:selectedMarkerId
+		bind:selectedIds
+		{tokens}
+		{selectedTokens}
+		{selectedDrawings}
+		{insideSelected}
+		{selectedMarkers}
+		{selectedPins}
+		{selectedRegion}
+		{handled}
+		{markerSpot}
+		{spotOf}
+		{shiftOf}
+		{marquee}
+		{grip}
+		{turnReach}
+		{nameHeights}
+		{stage}
+		{hand}
+		{shaper}
+		{pen}
+		{outlines}
+		{ruler}
+		{brush}
+		{send}
+		{onedit}
+		{onmove}
+		{ondelete}
+		{onhide}
+		{onmarkervisibility}
+		{onedittoken}
+		{onpiecevisibility}
+		{regionBar}
+	/>
 </div>

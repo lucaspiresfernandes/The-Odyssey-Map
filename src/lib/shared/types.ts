@@ -1058,11 +1058,14 @@ export interface Ping extends PingSpot {
  */
 export interface Knock {
   id: string;
-  /** The player whose seat is asked for. Null for someone new with only a name. */
-  userId: string | null;
+  /** The player whose seat is asked for. */
+  userId: string;
   name: string;
-  /** They have no seat at this table yet, and ask for one. */
-  newcomer: boolean;
+  /**
+   * Some browser sits in that seat already: it is asked back, from another
+   * one. Otherwise it is a seat the GM made that nobody has sat in yet.
+   */
+  taken: boolean;
   at: number;
 }
 
@@ -1132,7 +1135,7 @@ export type ServerMessage =
       hands: Hand[];
       /** The picture the GM is holding up for the table, if any. */
       shown: Shown | null;
-      /** For the GM: who is asking for a seat they sat in before. */
+      /** For the GM: who is asking for a seat. */
       knocks: Knock[];
       /** The date it is in the world, as the GM wrote it. Empty for none. */
       date: string;
@@ -1179,7 +1182,7 @@ export interface LiveIdentity {
   seq: number;
   /** The picture the GM is holding up for the table, if any. */
   shown: Shown | null;
-  /** Who is asking for a seat they sat in before. Only ever told to the GM. */
+  /** Who is asking for a seat. Only ever told to the GM. */
   knocks: Knock[];
   /** The date it is in the world. Empty for none. */
   date: string;

@@ -7,12 +7,14 @@
 	import { DISPLAY_GLINT, Discoveries } from '#lib/client/discoveries.svelte.ts';
 	import { getLive } from '#lib/client/live.svelte.ts';
 	import { MapState } from '#lib/client/mapstate.svelte.ts';
+	import { Notices } from '#lib/client/notices.svelte.ts';
+	import { Toolbelt } from '#lib/client/toolbelt.svelte.ts';
+	import { encounterFromDock, tokenFromDock } from '#lib/client/tools/dock.ts';
 	import { UndoStack, type Step } from '#lib/client/undo.ts';
 	import AlignBar from '#lib/components/AlignBar.svelte';
 	import BattleTools, {
 		BATTLE_TOOLS,
 		PENS,
-		type BattleTool,
 		type Pen
 	} from '#lib/components/BattleTools.svelte';
 	import DisplayLettering from '#lib/components/DisplayLettering.svelte';
@@ -30,6 +32,7 @@
 	import MarkerForm from '#lib/components/MarkerForm.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import NamePrompt from '#lib/components/NamePrompt.svelte';
+	import NoticeToast from '#lib/components/NoticeToast.svelte';
 	import RegionBar from '#lib/components/RegionBar.svelte';
 	import SeatsDialog from '#lib/components/SeatsDialog.svelte';
 	import TokenDock from '#lib/components/TokenDock.svelte';
@@ -40,7 +43,7 @@
 	import WorldBar from '#lib/components/WorldBar.svelte';
 	import WorldTools from '#lib/components/WorldTools.svelte';
 	import VisibilityDialog from '#lib/components/VisibilityDialog.svelte';
-	import { freeCell, gridFromBox, milesCount, snapToGrid } from '#lib/shared/grid.ts';
+	import { gridFromBox, milesCount } from '#lib/shared/grid.ts';
 	import { canEditWorld } from '#lib/shared/rules.ts';
 	import {
 		INK_COLORS,
@@ -61,7 +64,6 @@
 		type Patch,
 		type Player,
 		type Point,
-		type Rect,
 		type Region,
 		type Token,
 		type TokenInput,
@@ -222,7 +224,7 @@
 		if (myTokens.length === 0) return;
 		lastMine = (lastMine + 1) % myTokens.length;
 		const token = myTurn ?? myTokens[lastMine];
-		battleTool = 'pan';
+		belt.battleTool = 'pan';
 		selectedIds = [token.id];
 		canvas?.centreOn([token.x, token.y]);
 	}
@@ -230,37 +232,14 @@
 	/** The address of a map of this campaign. A display stays a display from map to map. */
 	const mapUrl = (mapId: string) => `/c/${campaignId}/m/${mapId}${display ? '?display' : ''}`;
 
-	type Placing = { create: MarkerKind } | { move: Marker };
 	type Form =
 		| { mode: 'create'; kind: MarkerKind; x: number; y: number }
 		| { mode: 'edit'; marker: Marker };
 	type Prompt =
 		| { kind: 'region'; points: Point[] }
 		| { kind: 'rename'; mapId: string; initial: string };
-	/** What kind of news a notice is. Each kind has its own colours. */
-	type NoticeType = 'success' | 'failure' | 'info' | 'warning';
-	interface Notice {
-		id: number;
-		type: NoticeType;
-		text: string;
-		/** What the Undo button on the notice takes back. */
-		undo?: Step | null;
-	}
 
 	let canvas = $state<ReturnType<typeof MapCanvas>>();
-	let placing = $state<Placing | null>(null);
-	let drawing = $state(false);
-	/** The ruler is out on a world map. */
-	let measuring = $state(false);
-	/** The pointing tool is in hand on a world map: held down, the pointer shows to the table. */
-	let pointing = $state(false);
-	/** The box that selects several markers together is in hand on a world map. */
-	let boxing = $state(false);
-	/**
-	 * The GM is at the fog of a world map by hand: clearing some of it, or
-	 * covering the map again.
-	 */
-	let fogTool = $state<'reveal' | 'cover' | null>(null);
 	/**
 	 * What the fog is cleared and covered with, on either kind of map: a
 	 * brush swept over it, round or square. The GM's choice stays from map
@@ -269,7 +248,6 @@
 	 */
 	let fogShape = $state<'round' | 'square'>('round');
 	let fogSize = $state(FOG_BRUSH.start);
-	let battleTool = $state<BattleTool>('pan');
 	/** The colour the pen draws in, text is written in and templates are laid down in. */
 	let ink = $state<string>(INK_COLORS[0]);
 	/** Which template the template tool lays down. */
@@ -330,8 +308,6 @@
 	let turnOrder = $state<ReturnType<typeof TableDock>>();
 	/** The GM is setting up the grid of this battle map. */
 	let setup = $state(false);
-	/** The box the GM dragged over the squares of the map's picture, to line the grid up by. */
-	let alignBox = $state.raw<Rect | null>(null);
 	/** How many of those squares the box covers, from its left edge to its right. */
 	let alignCount = $state(1);
 	/**
@@ -374,9 +350,54 @@
 	let regionsHidden = $state(false);
 	/** The pills that choose them are out, over the bar under the map. */
 	let filterOpen = $state(false);
-	// Raw, because a notice's step is looked up in the undo stack by identity,
-	// and deep state would hand out a proxy of it instead.
-	let notice = $state.raw<Notice | null>(null);
+	/** What is in hand on the map: the hand, or one of its tools. */
+	const belt = new Toolbelt({
+		battle: () => battle,
+		fogOn: () => world.map.fog.on,
+		pen: () => pen,
+		hasScale: () => miles !== null,
+		askScale: () => {
+			if (isGm) settings = 'scale';
+		},
+		letGo: () => letGo(),
+		unpin: () => {
+			selectedMarkerId = null;
+			selectedRegionId = null;
+		},
+		deselect: () => (selectedIds = []),
+		showRegions: () => (regionsHidden = false)
+	});
+	// What the belt holds, under the names the rest of this page reads them by.
+	const placing = $derived(belt.placing);
+	const drawing = $derived(belt.drawing);
+	const measuring = $derived(belt.measuring);
+	const pointing = $derived(belt.pointing);
+	const boxing = $derived(belt.boxing);
+	const fogTool = $derived(belt.fogTool);
+	const battleTool = $derived(belt.battleTool);
+	const alignBox = $derived(belt.alignBox);
+	const tool = $derived(belt.tool);
+	const fogging = $derived(belt.fogging);
+	const fogHand = $derived(belt.fogHand);
+	const {
+		startPlacing,
+		startMeasuring,
+		startPointing,
+		startBoxing,
+		startRegion,
+		take,
+		pick,
+		pickFog,
+		pickWorldFog,
+		takeFog,
+		swapFog,
+		putAway
+	} = belt;
+
+	/** The one line of news over the bottom of the map. */
+	const notices = new Notices();
+	const notice = $derived(notices.now);
+	const { say } = notices;
 
 	/**
 	 * A battle map is a table to play on: tokens, a ruler, a pen, and none of
@@ -384,36 +405,6 @@
 	 * further in.
 	 */
 	const battle = $derived(world.map.kind === 'battle');
-	const tool = $derived(
-		battle
-			? // To the map, the pen is three tools: one that follows the pointer,
-				// one that drags a shape out, and one that waits for a click to
-				// start writing at.
-				battleTool !== 'sketch'
-				? battleTool
-				: pen === 'line'
-					? 'sketch'
-					: pen === 'text'
-						? 'text'
-						: 'template'
-			: placing
-				? 'place'
-				: drawing
-					? 'draw'
-					: measuring
-						? 'measure'
-						: pointing
-							? 'point'
-							: boxing
-								? 'select'
-								: (fogTool ?? 'pan')
-	);
-	/** The GM has one of the two fog tools in hand on a battle map. */
-	const fogging = $derived(battleTool === 'reveal' || battleTool === 'cover');
-	/** Which of the two the GM has in hand, on either kind of map. */
-	const fogHand = $derived(
-		battle ? (battleTool === 'reveal' || battleTool === 'cover' ? battleTool : null) : fogTool
-	);
 	/** The grid that the box dragged over the map's squares makes, to try on before keeping it. */
 	const alignGrid = $derived(
 		battleTool === 'align' && alignBox
@@ -503,19 +494,12 @@
 	$effect(() => {
 		void mapId;
 		untrack(() => {
-			placing = null;
-			drawing = false;
-			measuring = false;
-			pointing = false;
-			boxing = false;
-			fogTool = null;
-			battleTool = 'pan';
+			belt.putAway();
 			form = null;
 			tokenForm = null;
 			visibilityOf = null;
 			filterOpen = false;
 			setup = false;
-			alignBox = null;
 			settings = null;
 			finding = false;
 			inviting = false;
@@ -536,22 +520,6 @@
 			if (marker) pinMarker(marker);
 		});
 	});
-
-	/** The border and background of a notice of each type. */
-	const NOTICE_COLORS: Record<NoticeType, string> = {
-		success: 'border-[#3f7d58] bg-[#1e3329]',
-		failure: 'border-[#9a4a44] bg-[#3b2224]',
-		info: 'border-[#4a5670] bg-[#2a3142]',
-		warning: 'border-[#96721f] bg-[#3a3018]'
-	};
-
-	function say(text: string, type: NoticeType, undo?: Step | null) {
-		const id = Date.now();
-		notice = { id, type, text, undo };
-		setTimeout(() => {
-			if (notice?.id === id) notice = null;
-		}, 7000);
-	}
 
 	/**
 	 * Sends a command and remembers it for undo. A refusal is reported to the
@@ -576,7 +544,7 @@
 	/** Takes back the last thing this person did here, or `step` in particular. */
 	async function undo(step?: Step) {
 		// A notice offering to undo something would now be offering the past.
-		if (notice?.undo) notice = null;
+		if (notice?.undo) notices.dismiss();
 		try {
 			if (!(await undos.undo(step))) say('Nothing to undo.', 'info');
 		} catch (err) {
@@ -594,15 +562,9 @@
 
 	// ------------------------------------------------------------- markers
 
-	function startPlacing(next: Placing) {
-		putAway();
-		letGo();
-		placing = next;
-	}
-
 	function placed(x: number, y: number) {
 		const target = placing;
-		placing = null;
+		belt.placing = null;
 		if (!target) return;
 		if ('move' in target) run({ t: 'marker.update', id: target.move.id, changes: { x, y } });
 		else form = { mode: 'create', kind: target.create, x, y };
@@ -681,53 +643,6 @@
 		}
 	}
 
-	// ------------------------------------------------- the scale and the ruler
-
-	/**
-	 * Takes the ruler out on a world map, or with it out already, puts it
-	 * away. One with no scale has nothing to tell: the GM is asked for it,
-	 * in the map's settings.
-	 */
-	function startMeasuring() {
-		if (miles === null) {
-			if (isGm) settings = 'scale';
-			return;
-		}
-		const out = measuring;
-		putAway();
-		if (out) return;
-		letGo();
-		measuring = true;
-	}
-
-	/**
-	 * Takes up the pointing tool on a world map: from then on the table is
-	 * shown where the pointer is whenever its button is held down, until the
-	 * tool is put away again, which a second click on it does.
-	 */
-	function startPointing() {
-		const out = pointing;
-		putAway();
-		if (out) return;
-		letGo();
-		pointing = true;
-	}
-
-	/**
-	 * Takes up the box that selects several markers of a world map, or with
-	 * it in hand already, puts it away. What it catches is moved by dragging
-	 * one of them, and has its buttons under it. What was selected together
-	 * before stays so: with Shift held, the box adds to it.
-	 */
-	function startBoxing() {
-		const out = boxing;
-		putAway();
-		if (out) return;
-		selectedMarkerId = null;
-		selectedRegionId = null;
-		boxing = true;
-	}
-
 	// ------------------------------------------------------ the date in the world
 
 	/**
@@ -749,17 +664,15 @@
 
 	// ----------------------------------------------------------------- seats
 
-	/** The GM answers someone asking for a seat: a new one, or the one they sat in before. */
+	/** The GM answers someone asking for a seat: one nobody sat in yet, or the one they sat in before. */
 	async function answerKnock(knock: Knock, grant: boolean) {
 		try {
 			await live.answer(knock, grant);
-			const said = knock.newcomer
-				? grant
-					? `${knock.name} has a seat at the table.`
-					: `Turned ${knock.name} away.`
-				: grant
+			const said = !grant
+				? `Turned away whoever asked for ${knock.name}’s seat.`
+				: knock.taken
 					? `${knock.name} is back in their seat.`
-					: `Turned away whoever asked for ${knock.name}’s seat.`;
+					: `${knock.name} has sat down at the table.`;
 			say(said, grant ? 'success' : 'info');
 		} catch (err) {
 			say((err as Error).message, 'failure');
@@ -797,71 +710,33 @@
 	 */
 	async function addToken(item: GalleryItem | null, drop: { x: number; y: number } | null) {
 		if (!canvas) return;
-		const here = world.tokens.map((token): Point => [token.x, token.y]);
 		const dropped = drop && canvas.spotAt(drop.x, drop.y);
 		// Let go anywhere but over the map, it goes back in the dock.
 		if (drop && !dropped) return;
-		// A picture may say what its tokens start out as: how big, and ringed in what.
-		const size = item?.tokenSize ?? 1;
-		const [x, y] = snapToGrid(
-			world.map,
-			dropped || freeCell(world.map, canvas.middle(), here),
-			size
-		);
-		// A token is called what its picture is. A plain one a player adds is
-		// most likely themself.
-		const name = (item?.name ?? (isGm ? 'Token' : data.me.name)).slice(0, LIMITS.tokenName);
+		// A plain one a player adds is most likely themself.
+		const look = { plain: isGm ? 'Token' : data.me.name, color: tokenColor };
+		const command = tokenFromDock(world.map, world.tokens, item, dropped || null, canvas.middle(), look);
 		const had = new Set(world.tokens.map((token) => token.id));
-		const made = await run({
-			t: 'token.create',
-			mapId: world.map.id,
-			name: name.trim() || 'Token',
-			image: item?.file ?? null,
-			color: tokenColor,
-			outline: item?.tokenOutline ?? null,
-			size,
-			x,
-			y
-		});
-		if (!made) return;
-		battleTool = 'pan';
+		if (!(await run(command))) return;
+		belt.battleTool = 'pan';
 		selectedIds = world.tokens.filter((token) => !had.has(token.id)).map((token) => token.id);
 	}
 
 	/**
 	 * An encounter out of the dock: every token of it, as it was made in the
 	 * gallery, around where it was dropped, or for a click, the middle of the
-	 * view. Hidden from the players, selected, and undone as one. The first of
-	 * them goes squarely on the grid and the rest keep their places from it,
-	 * so the encounter keeps its shape.
+	 * view. Hidden from the players, selected, and undone as one.
 	 */
 	async function addEncounter(encounter: Encounter, drop: { x: number; y: number } | null) {
 		if (!canvas || encounter.tokens.length === 0) return;
 		const dropped = drop && canvas.spotAt(drop.x, drop.y);
 		// Let go anywhere but over the map, it goes back in the dock.
 		if (drop && !dropped) return;
-		const { map } = world;
-		const [cx, cy] = dropped || canvas.middle();
-		const stepX = map.grid.size / map.width;
-		const stepY = map.grid.size / map.height;
-		const lead = encounter.tokens[0];
-		const from: Point = [cx + lead.dx * stepX, cy + lead.dy * stepY];
-		const onGrid = snapToGrid(map, from, lead.size);
-		const within = (at: number) => Math.min(1, Math.max(0, at));
-		const commands = encounter.tokens.map(
-			({ dx, dy, ...token }): Command => ({
-				t: 'token.create',
-				mapId: map.id,
-				...token,
-				hidden: true,
-				x: within(cx + dx * stepX + onGrid[0] - from[0]),
-				y: within(cy + dy * stepY + onGrid[1] - from[1])
-			})
-		);
+		const commands = encounterFromDock(world.map, encounter, dropped || canvas.middle());
 		const had = new Set(world.tokens.map((token) => token.id));
 		const note = `Put down “${encounter.name}”, hidden from the players.`;
 		if (!(await send(commands, note))) return;
-		battleTool = 'pan';
+		belt.battleTool = 'pan';
 		selectedIds = world.tokens.filter((token) => !had.has(token.id)).map((token) => token.id);
 	}
 
@@ -900,7 +775,7 @@
 	/** The GM would sooner drag the grid onto the map than type it in. */
 	function startAligning() {
 		setup = false;
-		alignBox = null;
+		belt.alignBox = null;
 		alignCount = 1;
 		take('align');
 	}
@@ -915,48 +790,7 @@
 		say('The grid is lined up.', 'success', step);
 	}
 
-	/** Takes a tool of the battle map in hand. */
-	function take(next: BattleTool) {
-		battleTool = next;
-		if (next !== 'align') alignBox = null;
-		// A box to select with keeps what is selected: Shift adds to it.
-		if (next !== 'pan' && next !== 'select') selectedIds = [];
-	}
-
-	/** A click on a tool picks it up, or with that one in hand, puts it down again. */
-	function pick(next: BattleTool) {
-		take(battleTool === next ? 'pan' : next);
-	}
-
 	// ----------------------------------------------------------------- fog
-
-	/**
-	 * The fog button takes up whichever of its two tools has something to
-	 * do: clearing where there is fog, covering where there is none yet.
-	 */
-	function pickFog() {
-		take(fogging ? 'pan' : world.map.fog.on ? 'reveal' : 'cover');
-	}
-
-	/**
-	 * Takes up the fog of a world map: whichever of its two tools has
-	 * something to do, clearing where there is fog, covering where there is
-	 * none yet. They come out beside the button while one is in hand, the
-	 * same ones a battle map has, and a second click puts them away.
-	 */
-	function pickWorldFog() {
-		const out = fogTool !== null;
-		putAway();
-		if (out) return;
-		letGo();
-		fogTool = world.map.fog.on ? 'reveal' : 'cover';
-	}
-
-	/** Takes one of the fog's two tools in hand, on either kind of map. */
-	function takeFog(next: 'reveal' | 'cover') {
-		if (battle) take(next);
-		else fogTool = next;
-	}
 
 	/**
 	 * Covers the whole map with fog, or where there is some, lifts all of it.
@@ -1078,24 +912,7 @@
 		ink = inks[(inks.indexOf(ink) + by + inks.length) % inks.length];
 	}
 
-	/** With one of the fog's two tools in hand, takes up the other. */
-	function swapFog() {
-		// Where there is no fog yet there is none to clear.
-		if (fogHand === 'cover' && !world.map.fog.on) return;
-		if (fogHand) takeFog(fogHand === 'reveal' ? 'cover' : 'reveal');
-	}
-
 	// ------------------------------------------------------ maps & regions
-
-	/** Starts the outline of a new region. */
-	function startRegion() {
-		putAway();
-		letGo();
-		// A region about to be drawn shouldn't vanish once it is
-		// done, nor be laid blind over the ones already there.
-		regionsHidden = false;
-		drawing = true;
-	}
 
 	/** Steps into the region that is selected. */
 	function enterSelected() {
@@ -1413,18 +1230,6 @@
 		selectedIds = [];
 	}
 
-	/** Back to the hand: whichever tool was waiting for the map is put away. */
-	function putAway() {
-		placing = null;
-		drawing = false;
-		measuring = false;
-		pointing = false;
-		boxing = false;
-		fogTool = null;
-		battleTool = 'pan';
-		alignBox = null;
-	}
-
 
 </script>
 
@@ -1526,16 +1331,16 @@
 					// hand, to move it or get on with the fight. The pen stays in
 					// hand after a line, which is seldom the only one. Either way
 					// it remembers what it last drew for the next time it is taken up.
-					battleTool = 'pan';
+					belt.battleTool = 'pan';
 					// On a world map, the box has caught its markers.
-					boxing = false;
+					belt.boxing = false;
 				}}
 				onplace={placed}
 				onnote={(x, y) => {
 					if (!display) form = { mode: 'create', kind: 'player', x, y };
 				}}
 				ondrawn={(points) => {
-					drawing = false;
+					belt.drawing = false;
 					prompt = { kind: 'region', points };
 				}}
 				onenter={enter}
@@ -1549,7 +1354,7 @@
 					(visibilityOf = { kind: 'marker', ids: markers.map((marker) => marker.id) })}
 				fresh={discoveries?.fresh ?? []}
 				onseen={(id) => discoveries?.seen(id)}
-				onalign={(box) => (alignBox = box)}
+				onalign={(box) => (belt.alignBox = box)}
 				onedittoken={(token) => (tokenForm = token)}
 				onpiecevisibility={(things) =>
 					(visibilityOf = { kind: 'piece', ids: things.map((thing) => thing.id) })}
@@ -1602,7 +1407,7 @@
 							bind:collapsed={turnsFolded}
 							{selectedIds}
 							onpick={(id) => {
-								battleTool = 'pan';
+								belt.battleTool = 'pan';
 								selectedIds = [id];
 							}}
 							onchange={setTurns}
@@ -1664,24 +1469,7 @@
 			>
 				<KnockBanner {isGm} knocks={live.knocks} {answerKnock} />
 
-				{#if notice}
-					<div
-						class={[
-							'pointer-events-auto flex max-w-[calc(100%-28px)] items-center gap-2 rounded-[10px] border py-2 pr-2 pl-3.5 text-sm shadow-pop',
-							NOTICE_COLORS[notice.type]
-						]}
-						role="status"
-					>
-						<span>{notice.text}</span>
-						{#if notice.undo}
-							{@const step = notice.undo}
-							<button class="btn btn-sm" onclick={() => undo(step)}>Undo</button>
-						{/if}
-						<button class="btn btn-sm btn-ghost" aria-label="Dismiss" onclick={() => (notice = null)}>
-							×
-						</button>
-					</div>
-				{/if}
+				<NoticeToast {notice} onundo={undo} ondismiss={notices.dismiss} />
 
 				{#if battle && battleTool === 'align'}
 					<!-- The grid is being lined up: once a box has been dragged over the
@@ -1805,7 +1593,7 @@
 		onsubmit={async (changes) => {
 			const saved = await run({ t: 'map.update', id: world.map.id, ...changes });
 			// With no scale left to go by, the ruler goes back in the drawer.
-			if (saved && changes.miles === null) measuring = false;
+			if (saved && changes.miles === null) belt.measuring = false;
 			return saved;
 		}}
 		onclose={() => {
@@ -1819,12 +1607,17 @@
 {#if inviting && data.invite}
 	<InviteDialog
 		invite={data.invite}
+		{campaignId}
 		campaignName={data.campaign.name}
 		displayUrl="/c/{campaignId}/m/{world.map.id}?display"
 		oncopied={(ok) =>
 			ok
 				? say('Invite link copied to the clipboard.', 'success')
 				: say('Copy the link from the box.', 'warning')}
+		onseats={() => {
+			inviting = false;
+			seating = true;
+		}}
 		onclose={() => (inviting = false)}
 	/>
 {/if}
@@ -1836,6 +1629,10 @@
 		{campaignId}
 		online={live.online}
 		onchange={() => refreshAll()}
+		oninvite={() => {
+			seating = false;
+			inviting = true;
+		}}
 		onclose={() => (seating = false)}
 	/>
 {/if}

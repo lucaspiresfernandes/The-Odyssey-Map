@@ -2,6 +2,7 @@ import { getInviteToken } from '#lib/server/campaigns.ts';
 import { getDb } from '#lib/server/db.ts';
 import { lanHosts, publicOrigins } from '#lib/server/network.ts';
 import { playersOf } from '#lib/server/queries.ts';
+import { freeSeats } from '#lib/server/seats.ts';
 import { requireMember } from '#lib/server/session.ts';
 import type { LayoutServerLoad } from './$types';
 
@@ -25,9 +26,12 @@ export const load: LayoutServerLoad = (event) => {
 		// Only the GM hands out invites: from their own screen, or on a table
 		// display they opened and asked to show it, with `invite` in its
 		// address, for the players to scan. A display is handed nothing a
-		// player would not be until then.
+		// player would not be until then, and nothing at all while there is no
+		// free seat to invite anyone to: the GM's own screen says so itself.
 		invite:
-			campaign.role === 'gm' && (!display || event.url.searchParams.has('invite'))
+			campaign.role === 'gm' &&
+			(!display ||
+				(event.url.searchParams.has('invite') && freeSeats(getDb(), campaign.id) > 0))
 				? {
 						path: `/join/${getInviteToken(getDb(), campaign.id)}`,
 						origins: publicOrigins(),

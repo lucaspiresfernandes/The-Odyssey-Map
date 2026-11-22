@@ -54,6 +54,9 @@ export function cookieOptions(event: RequestEvent) {
 }
 
 export function startSession(event: RequestEvent, user: User) {
+	// A browser holds one login. The one it had is given up, not left behind:
+	// a seat counts as taken for as long as some login of its player is good.
+	deleteSession(getDb(), event.cookies.get(SESSION_COOKIE));
 	const token = createSession(getDb(), user.id);
 	event.cookies.set(SESSION_COOKIE, token, { ...cookieOptions(event), maxAge: SESSION_MAX_AGE });
 	event.locals.user = user;

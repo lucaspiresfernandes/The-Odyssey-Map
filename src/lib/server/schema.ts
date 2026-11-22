@@ -154,9 +154,9 @@ export const regions = sqliteTable(
 	(t) => [index('regions_map').on(t.mapId)]
 );
 
-// Someone asking for a seat at a campaign's table: a new one, or the one
-// they sat in before, when their browser has forgotten them or they have
-// come on another device. The row is there while the GM has yet to answer,
+// Someone asking for a seat at a campaign's table: one the GM made for
+// them, or the one they sat in before, when their browser has forgotten
+// them or they have come on another device. The row is there while the GM has yet to answer,
 // and a little longer once they have, for the browser that asked to hear of
 // it. Only a hash of what that browser holds is kept, as with a login.
 export const seatClaims = sqliteTable(
@@ -167,12 +167,11 @@ export const seatClaims = sqliteTable(
 			.notNull()
 			.references(() => campaigns.id, { onDelete: 'cascade' }),
 		/**
-		 * The player whose seat is asked for, or whoever is logged in and asks
-		 * to join. Nobody yet for someone new with only a name: see `name`.
+		 * The player whose seat is asked for. Always someone: the column may
+		 * be empty only because it once could be, for someone new who asked
+		 * under a name of their own.
 		 */
 		userId: text('user_id').references(() => users.id, { onDelete: 'cascade' }),
-		/** What someone new wants to be called. They become a player on a yes. */
-		name: text('name'),
 		tokenHash: text('token_hash').notNull().unique(),
 		status: text('status', { enum: ['waiting', 'granted', 'refused'] })
 			.notNull()

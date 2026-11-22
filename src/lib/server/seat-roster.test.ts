@@ -88,8 +88,8 @@ describe('making a seat', () => {
 		const held = knock(db, campaignId, seat.id);
 		expect(seatAnswer(db, campaignId, held, true).status).toBe('waiting');
 		const [asking] = knocksOf(db, campaignId);
-		// They ask for a seat that is there, not for a new one.
-		expect(asking).toMatchObject({ userId: seat.id, name: 'Odo', newcomer: false });
+		// They ask for a seat nobody has sat in yet.
+		expect(asking).toMatchObject({ userId: seat.id, name: 'Odo', taken: false });
 		answerKnock(db, gm, asking.id, true);
 		const answer = seatAnswer(db, campaignId, held);
 		expect(answer.status).toBe('granted');
