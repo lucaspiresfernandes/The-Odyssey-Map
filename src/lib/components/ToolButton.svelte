@@ -47,6 +47,8 @@
 		// An hourglass: whose turn it is. And the way on to the next one.
 		turns: 'M6 2h12 M6 22h12 M7 2v4l5 6-5 6v4 M17 2v4l-5 6 5 6v4',
 		next: 'M5 4l10 8-10 8Z M19 5v14',
+		// The same, the other way round: back to the turn before.
+		previous: 'M19 4 9 12l10 8Z M5 5v14',
 		// A token with a pip on its rim.
 		mark: 'M4 13a7.5 7.5 0 1 0 15 0a7.5 7.5 0 1 0-15 0 M15 6.5a3 3 0 1 0 6 0a3 3 0 1 0-6 0',
 		// Rings spreading from a spot: pointing it out to the table.

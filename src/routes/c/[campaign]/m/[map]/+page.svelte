@@ -882,6 +882,15 @@
 		return run({ t: 'turn.next', mapId: world.map.id, from: world.map.turns.current });
 	}
 
+	/**
+	 * Goes back to the turn before: the GM's, for a turn ended by mistake.
+	 * The turn it goes back from goes along, as it does when one is ended.
+	 */
+	function backTurn() {
+		const from = world.map.turns.current;
+		if (from !== null) run({ t: 'turn.back', mapId: world.map.id, from });
+	}
+
 	// ------------------------------------------------------------- the grid
 
 	/** The GM would sooner drag the grid onto the map than type it in. */
@@ -1335,6 +1344,9 @@
 			// N moves the fight on to the next turn, for whoever may end this one.
 			case KEY.nextTurn:
 				return fighting ? () => turnOrder?.next() : null;
+			// Shift+N takes the GM back a turn, for one ended by mistake.
+			case KEY.prevTurn:
+				return isGm && fighting ? () => turnOrder?.back() : null;
 			// I puts the tokens selected in the turn order, or takes them out.
 			case KEY.turns:
 				return isGm ? () => turnOrder?.join() : null;
@@ -1910,6 +1922,7 @@
 							}}
 							onchange={setTurns}
 							onnext={passTurn}
+							onback={backTurn}
 						/>
 					</div>
 				{/if}

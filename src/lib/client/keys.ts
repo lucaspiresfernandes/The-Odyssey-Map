@@ -42,6 +42,8 @@ export const KEY = {
 	// A battle map.
 	mine: 'G',
 	nextTurn: 'N',
+	/** Its other way round: back to the turn before. */
+	prevTurn: 'Shift+N',
 	rolls: 'Shift+R',
 	endFight: 'Shift+E',
 	plainToken: 'A',
@@ -242,6 +244,7 @@ export const SHEET: SheetSection[] = [
 		kind: 'battle',
 		rows: [
 			{ keys: [KEY.nextTurn], does: 'End the turn and go on to the next' },
+			{ keys: [KEY.prevTurn], does: 'Go back to the turn before', gm: true },
 			{ keys: [KEY.turns], does: 'Put the selected tokens in the order, or take them out', gm: true },
 			{ keys: [KEY.rolls], does: 'Sort by what they rolled', gm: true },
 			{ keys: [KEY.endFight], does: 'End the fight', gm: true },

@@ -26,6 +26,28 @@ export function nextTurn(turns: Turns, onMap: Iterable<string>): Pick<Turns, 'cu
 }
 
 /**
+ * The turn before this one: where `nextTurn` came here from. It is what
+ * takes back a turn that was ended by mistake. Back over the top of the
+ * order is the round before, and back from the first turn of the first
+ * round is the fight not yet started. A token that is off the map is passed
+ * over this way too. Null when there is no turn to go back from.
+ */
+export function previousTurn(turns: Turns, onMap: Iterable<string>): Pick<Turns, 'current' | 'round'> | null {
+	const { order, current, round } = turns;
+	const from = current === null ? -1 : order.indexOf(current);
+	if (from === -1) return null;
+	const here = new Set(onMap);
+	for (let step = 1; step <= order.length; step++) {
+		const at = from - step;
+		const id = order[(at + order.length) % order.length];
+		if (!here.has(id)) continue;
+		if (at >= 0) return { current: id, round };
+		return round > 1 ? { current: id, round: round - 1 } : { current: null, round: 1 };
+	}
+	return null;
+}
+
+/**
  * The order with the tokens that show put in this sequence: what the GM
  * sorted them into by hand. The ones that are off the map don't show to be
  * sorted, and keep the places they had, for when they come back.

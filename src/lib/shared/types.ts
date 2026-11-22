@@ -826,6 +826,12 @@ export type Command =
    * is being ended keeps two people who press at once from skipping one.
    */
   | { t: "turn.next"; mapId: string; from: string | null }
+  /**
+   * Takes a battle map back from the turn of `from` to the one before it:
+   * the GM's, for a turn that was ended by mistake. Naming the turn it goes
+   * back from keeps a press that comes late from going back twice.
+   */
+  | { t: "turn.back"; mapId: string; from: string }
   /** Takes back the change with this sequence number by performing its opposite. */
   | { t: "history.revert"; seq: number }
   /**

@@ -4,7 +4,7 @@
 import { describe, expect, test } from 'bun:test';
 import { templateBox, templatePath, templateSpan } from './drawing';
 import { milesBetween, milesCount, pixelsToFeet, snapToHalfCell, templatePoints } from './grid';
-import { joinedTurns, nextTurn, reorderedTurns } from './turns';
+import { joinedTurns, nextTurn, previousTurn, reorderedTurns } from './turns';
 import { MARK_LOOKS, TOKEN_MARK_IDS, turnsAmong, type Point, type Turns } from './types';
 
 /** A map of twenty cells by ten, fifty pixels to the cell. */
@@ -28,6 +28,26 @@ describe('taking turns', () => {
 		expect(nextTurn(turns('a', 3), ['a'])).toEqual({ current: 'a', round: 4 });
 		expect(nextTurn(turns('a'), [])).toBeNull();
 		expect(nextTurn({ order: [], current: null, round: 1 }, ['a'])).toBeNull();
+	});
+
+	test('going back a turn is the way it came, to before the fight started', () => {
+		expect(previousTurn(turns('b'), ['a', 'b', 'c'])).toEqual({ current: 'a', round: 1 });
+		// Back over the top of the order is the round before.
+		expect(previousTurn(turns('a', 2), ['a', 'b', 'c'])).toEqual({ current: 'c', round: 1 });
+		expect(previousTurn(turns('a'), ['a', 'b', 'c'])).toEqual({ current: null, round: 1 });
+		expect(previousTurn(turns(null), ['a', 'b', 'c'])).toBeNull();
+		// A token that is off the map is passed over this way too.
+		expect(previousTurn(turns('c'), ['a', 'c'])).toEqual({ current: 'a', round: 1 });
+		expect(previousTurn(turns('b'), ['b', 'c'])).toEqual({ current: null, round: 1 });
+		expect(previousTurn(turns('b', 3), ['b', 'c'])).toEqual({ current: 'c', round: 2 });
+		expect(previousTurn(turns('a', 4), ['a'])).toEqual({ current: 'a', round: 3 });
+		expect(previousTurn(turns('a'), [])).toBeNull();
+		// It takes back what moving on did, wherever the fight stands.
+		for (const from of [turns(null), turns('a'), turns('c'), turns('c', 5)]) {
+			const { current, round } = from;
+			const on = { ...from, ...nextTurn(from, ['a', 'b', 'c'])! };
+			expect(previousTurn(on, ['a', 'b', 'c'])).toEqual({ current, round });
+		}
 	});
 
 	test('the tokens that show are sorted by hand, and the rest keep their places', () => {

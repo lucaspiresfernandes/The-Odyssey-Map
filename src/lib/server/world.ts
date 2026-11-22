@@ -39,7 +39,7 @@ import {
 	roleOf,
 	type Who
 } from '../shared/rules';
-import { nextTurn } from '../shared/turns';
+import { nextTurn, previousTurn } from '../shared/turns';
 import {
 	DEFAULT_MAP_SIZE,
 	DRAWING_SIZE,
@@ -1468,6 +1468,28 @@ function passTurn(db: Db, actor: Actor, raw: Record<string, unknown>): StoredEve
 	return writeMap(db, actor, map, { ...map, turns: { ...map.turns, ...next } });
 }
 
+/**
+ * Takes the fight back a turn, to the token that had the one before: the
+ * GM's alone, for a turn that was ended by mistake. The turn it goes back
+ * from is named, as it is when one is ended, so a press that comes late
+ * goes back no further than was meant.
+ */
+function backTurn(db: Db, actor: Actor, raw: Record<string, unknown>): StoredEvent[] {
+	const map = findMap(db, actor, asId(raw.mapId));
+	if (map.kind !== 'battle') fail('invalid', 'Turns are taken on battle maps.');
+	if (actor.role !== 'gm') fail('forbidden', 'Only the GM can go back a turn.');
+	if (map.turns.current !== asId(raw.from)) return [];
+
+	const here = db
+		.select({ id: tokens.id })
+		.from(tokens)
+		.where(and(eq(tokens.mapId, map.id), isNull(tokens.deletedAt)))
+		.all();
+	const back = previousTurn(map.turns, here.map((token) => token.id));
+	if (!back) return [];
+	return writeMap(db, actor, map, { ...map, turns: { ...map.turns, ...back } });
+}
+
 /** How many miles across a world map is, or null for no scale of its own. */
 function asMiles(value: unknown): number | null {
 	if (value === null) return null;
@@ -1855,6 +1877,8 @@ function run(db: Db, actor: Actor, input: unknown, nested = false): StoredEvent[
 			return updateMap(db, actor, asId(cmd.id), cmd);
 		case 'turn.next':
 			return passTurn(db, actor, cmd);
+		case 'turn.back':
+			return backTurn(db, actor, cmd);
 		case 'token.create':
 			return createToken(db, actor, cmd);
 		case 'token.update':

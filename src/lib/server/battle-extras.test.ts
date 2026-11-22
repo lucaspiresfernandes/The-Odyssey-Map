@@ -175,6 +175,30 @@ describe('ending a turn', () => {
 		expect(perform(db, gm, { t: 'turn.next', mapId: field, from: lurker.id })).toHaveLength(1);
 		expect(refusal(() => perform(db, gm, { t: 'turn.next', mapId, from: null }))).toBe('invalid');
 	});
+
+	test('the GM goes back a turn, once for each press, as far as before the fight', () => {
+		const [a, b] = [token('Ana'), token('Brute')];
+		perform(db, gm, { t: 'map.update', id: field, turns: { order: [a.id, b.id], current: a.id, round: 2 } });
+		// It is not the table's: a player ends turns, and never takes one back.
+		expect(refusal(() => perform(db, player, { t: 'turn.back', mapId: field, from: a.id }))).toBe('forbidden');
+
+		// Back over the top of the order is the round before.
+		const back = perform(db, gm, { t: 'turn.back', mapId: field, from: a.id });
+		expect(turns()).toMatchObject({ current: b.id, round: 1 });
+		expect(toLiveEvent(db, back[0], 'player')!.patch).toMatchObject({ t: 'map.upsert' });
+		// A second press that named the same turn goes back no further.
+		expect(perform(db, gm, { t: 'turn.back', mapId: field, from: a.id })).toHaveLength(0);
+		expect(turns().current).toBe(b.id);
+
+		perform(db, gm, { t: 'turn.back', mapId: field, from: b.id });
+		expect(turns()).toMatchObject({ current: a.id, round: 1 });
+		// Back from the first turn of all, the fight has not started.
+		perform(db, gm, { t: 'turn.back', mapId: field, from: a.id });
+		expect(turns()).toMatchObject({ order: [a.id, b.id], current: null, round: 1 });
+		// With no turn on, there is none to go back from.
+		expect(perform(db, gm, { t: 'turn.back', mapId: field, from: a.id })).toHaveLength(0);
+		expect(refusal(() => perform(db, gm, { t: 'turn.back', mapId, from: a.id }))).toBe('invalid');
+	});
 });
 
 describe('lining the grid up by a box', () => {

@@ -456,7 +456,10 @@ What is on a battle map:
   next round. Ending a turn is the table's: a player has the same button and the same
   key, for the turn of their own token, which is how they say they are done, and for the
   turn of a token that is nobody's, if they can see it.
-  Starting the fight is the GM's. The GM sorts the order by dragging a token up or down
+  Starting the fight is the GM's, and so is going back: **Back a turn**, or `Shift+N`,
+  is for a turn ended by mistake, a second press of the button most of all. It goes
+  back the way the fight came, over the top of the order into the round before, and
+  from the first turn of all to the fight not yet started. The GM sorts the order by dragging a token up or down
   the strip, and the others make room as it goes. With the focus on one, `Alt` and the
   up or down arrow key does the same. Or by what they rolled: the die opens a box
   beside each token, `Enter` goes from one to the next, and **Sort** puts the highest
@@ -583,6 +586,7 @@ On a battle map:
 | `A` | Put down a plain token |
 | `G` | Go to your own token, if one of the tokens there is yours |
 | `N` | End the turn and go on to the next. The GM always can, a player for their own token, and for one that is nobody's |
+| `Shift+N` | Go back to the turn before, as the GM |
 | `\` | Fold every palette away, or bring them back |
 | `#` | Set up the grid, as the GM |
 | `Shift+R`, `Shift+E` | Sort the turn order by what they rolled, end the fight, as the GM |
@@ -648,7 +652,7 @@ and the tools are in the corner.
 | A ping, and the finder | point a spot out, go to anything | point a spot out, go to anything not hidden |
 | A picture for the table | hold any picture up, for everyone or for some players, put it away | look, if it is held up for them, and close it on their own screen |
 | The date in the world | write it, change it, clear it | read |
-| The turn order, on battle maps | add tokens, sort by dragging or by rolls, start the fight, next turn, end the fight | see whose turn it is, among the tokens they can see, and end the turn of their own token, or of one that is nobody's |
+| The turn order, on battle maps | add tokens, sort by dragging or by rolls, start the fight, next turn, back a turn, end the fight | see whose turn it is, among the tokens they can see, and end the turn of their own token, or of one that is nobody's |
 | Fog of war, on battle maps | cover, clear, lift, see through | see what has been cleared |
 | Fog on a world map | cover the map or a part of it, clear a part, lift it, see through | see what has been cleared |
 | A seat at the table | let in whoever asks to join, or asks for their seat back, or not | ask for a seat on the invite link, or for their own seat back from another browser |
@@ -757,7 +761,8 @@ scripts/            run both servers, seed a demo, back up, end-to-end check
 - **Ending a turn is a command of its own.** Changing a map is the GM's, and the turn
   order is part of its map. `turn.next` is the one thing about it that a player may
   ask for: the server works out whose turn comes next, and the command names the turn
-  it ends, so two people pressing at once move on once.
+  it ends, so two people pressing at once move on once. `turn.back` is its other way
+  round, and the GM's alone.
 - **A campaign in one file is read as it arrives.** Export and import are streams: a
   tar archive is written a picture at a time and read the same way, so a campaign with
   big map images never has to fit in memory whole. An imported file is not trusted:

@@ -8,7 +8,8 @@
 	// tokens that take turns, in the order they take them, the one whose turn
 	// it is ringed in gold. Everyone sees it. The GM runs it: starts the
 	// fight, sorts the tokens by dragging them up and down the line, or by
-	// typing in what each rolled, and ends the fight. Ending a turn is the
+	// typing in what each rolled, goes back a turn when one was ended by
+	// mistake, and ends the fight. Ending a turn is the
 	// table's: a token that is some player's has its turn ended by them, and
 	// one that is nobody's by any player who can see it.
 	//
@@ -54,6 +55,8 @@
 		onchange: (turns: Partial<Turns>) => Promise<unknown>;
 		/** The turn is over: on to the next. The first time, for the GM, that is the first token's. */
 		onnext: () => void;
+		/** The GM takes the turn back: the one before it is on again. */
+		onback: () => void;
 	}
 
 	let {
@@ -68,7 +71,8 @@
 		selectedIds,
 		onpick,
 		onchange,
-		onnext
+		onnext,
+		onback
 	}: Props = $props();
 
 	/** The tab that is open, or while the dock is collapsed, the one that was open last. */
@@ -161,6 +165,15 @@
 	/** Moves on to the next turn, if that is this person's to do. */
 	export function next() {
 		if (canPass) onnext();
+	}
+
+	/**
+	 * Goes back to the turn before: the GM's, for a turn ended by mistake,
+	 * a second press of the button most of all. Back from the first turn of
+	 * all is the fight not yet started.
+	 */
+	export function back() {
+		if (runs && started) onback();
 	}
 
 	// ----------------------------------------------------------- initiative
@@ -515,6 +528,16 @@
 								<button class="btn btn-sm btn-primary grow" onclick={keepRolls}>Sort</button>
 								<button class="btn btn-sm btn-ghost" onclick={() => (rolling = null)}>Cancel</button>
 							{:else}
+								<ToolButton
+									tip="bottom-start"
+									icon="previous"
+									label="Back a turn"
+									hint="For a turn ended by mistake"
+									shortcut={KEY.prevTurn}
+									fill
+									disabled={!started}
+									onclick={back}
+								/>
 								<ToolButton
 									tip="bottom-start"
 									icon="next"
