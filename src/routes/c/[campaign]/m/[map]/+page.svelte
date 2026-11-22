@@ -32,7 +32,7 @@
 	import TokenDock from '#lib/components/TokenDock.svelte';
 	import TokenForm from '#lib/components/TokenForm.svelte';
 	import ToolButton, { type ToolIcon } from '#lib/components/ToolButton.svelte';
-	import TurnOrder from '#lib/components/TurnOrder.svelte';
+	import TableDock from '#lib/components/TableDock.svelte';
 	import VisibilityDialog from '#lib/components/VisibilityDialog.svelte';
 	import { freeCell, gridFromBox, milesCount, snapToGrid } from '#lib/shared/grid.ts';
 	import { canEditWorld } from '#lib/shared/rules.ts';
@@ -45,6 +45,7 @@
 		TOKEN_COLORS,
 		imageUrl,
 		type Command,
+		type Encounter,
 		type FindEntry,
 		type GalleryItem,
 		type Knock,
@@ -322,11 +323,12 @@
 	}
 	/** Goes up whenever the gallery may have changed, so the dock reads it again. */
 	let galleryStamp = $state(0);
-	// The palettes of a battle map fold away, and stay as they were left.
-	let dockFolded = $state(false);
+	// The palettes of a battle map fold away, and stay as they were left. The
+	// dock starts out as its buttons alone: a tray opens when one is clicked.
+	let dockFolded = $state(true);
 	let toolsFolded = $state(false);
 	let turnsFolded = $state(false);
-	let turnOrder = $state<ReturnType<typeof TurnOrder>>();
+	let turnOrder = $state<ReturnType<typeof TableDock>>();
 	/** The GM is setting up the grid of this battle map. */
 	let setup = $state(false);
 	/** The box the GM dragged over the squares of the map's picture, to line the grid up by. */
@@ -350,10 +352,11 @@
 	/** A marker the finder is taking this person to, on a map they are on their way to. */
 	let wanted: string | null = null;
 	/**
-	 * The GM is in the gallery, to look after the whole of it. An image for
-	 * this map is picked from the map's settings instead.
+	 * The GM is in the gallery, to look after the whole of it, and the shelf
+	 * it opened on: the encounters, when it was opened from their tab of the
+	 * dock. An image for this map is picked from the map's settings instead.
 	 */
-	let gallery = $state(false);
+	let gallery = $state<false | 'map' | 'encounter'>(false);
 	let prompt = $state<Prompt | null>(null);
 	/** The region the GM has asked to delete, while they are being asked if they mean it. */
 	let deleting = $state<Region | null>(null);
@@ -461,12 +464,12 @@
 					localStorage.setItem('odyssey:tools', folded.tools ? '1' : '0');
 					localStorage.setItem('odyssey:turns', folded.turns ? '1' : '0');
 				} else {
-					dockFolded = localStorage.getItem('odyssey:dock') === '1';
+					dockFolded = localStorage.getItem('odyssey:dock') !== '0';
 					toolsFolded = localStorage.getItem('odyssey:tools') === '1';
 					turnsFolded = localStorage.getItem('odyssey:turns') === '1';
 				}
 			} catch {
-				// A private window may refuse. The palettes then start unfolded.
+				// A private window may refuse. The palettes then start as they do the first time.
 			}
 			recalled = true;
 		});
@@ -819,6 +822,43 @@
 			y
 		});
 		if (!made) return;
+		battleTool = 'pan';
+		selectedIds = world.tokens.filter((token) => !had.has(token.id)).map((token) => token.id);
+	}
+
+	/**
+	 * An encounter out of the dock: every token of it, as it was made in the
+	 * gallery, around where it was dropped, or for a click, the middle of the
+	 * view. Hidden from the players, selected, and undone as one. The first of
+	 * them goes squarely on the grid and the rest keep their places from it,
+	 * so the encounter keeps its shape.
+	 */
+	async function addEncounter(encounter: Encounter, drop: { x: number; y: number } | null) {
+		if (!canvas || encounter.tokens.length === 0) return;
+		const dropped = drop && canvas.spotAt(drop.x, drop.y);
+		// Let go anywhere but over the map, it goes back in the dock.
+		if (drop && !dropped) return;
+		const { map } = world;
+		const [cx, cy] = dropped || canvas.middle();
+		const stepX = map.grid.size / map.width;
+		const stepY = map.grid.size / map.height;
+		const lead = encounter.tokens[0];
+		const from: Point = [cx + lead.dx * stepX, cy + lead.dy * stepY];
+		const onGrid = snapToGrid(map, from, lead.size);
+		const within = (at: number) => Math.min(1, Math.max(0, at));
+		const commands = encounter.tokens.map(
+			({ dx, dy, ...token }): Command => ({
+				t: 'token.create',
+				mapId: map.id,
+				...token,
+				hidden: true,
+				x: within(cx + dx * stepX + onGrid[0] - from[0]),
+				y: within(cy + dy * stepY + onGrid[1] - from[1])
+			})
+		);
+		const had = new Set(world.tokens.map((token) => token.id));
+		const note = `Put down “${encounter.name}”, hidden from the players.`;
+		if (!(await send(commands, note))) return;
 		battleTool = 'pan';
 		selectedIds = world.tokens.filter((token) => !had.has(token.id)).map((token) => token.id);
 	}
@@ -1257,7 +1297,7 @@
 			case KEY.settings:
 				return () => (settings = 'name');
 			case KEY.gallery:
-				return () => (gallery = true);
+				return () => (gallery = 'map');
 			case KEY.invite:
 				return data.invite ? () => (inviting = true) : null;
 			case KEY.display:
@@ -1646,7 +1686,7 @@
 					aria-keyshortcuts={ariaKey(KEY.gallery)}
 					title="The campaign's pictures, for its maps and tokens ({keyLabel(KEY.gallery)})"
 					onclick={() => {
-						gallery = true;
+						gallery = 'map';
 					}}>Gallery</button
 				>
 				<button
@@ -1778,11 +1818,12 @@
 			{/if}
 
 			<!-- What floats in the upper left corner of the map, one under the
-			     other: the date, who is at the table, and on a battle map the turn
-			     order. Only the boxes take the pointer, so the map between and
-			     under them still does. A table display has the turn order alone,
-			     under the name of the map. A narrow screen keeps its Fit button in
-			     that corner, so there they start lower. -->
+			     other: the date, and who is at the table. On a battle map that
+			     second box is a dock of two tabs, the turn order and who is at
+			     the table. Only the boxes take the pointer, so the map between
+			     and under them still does. A table display has the turn order
+			     alone, under the name of the map. A narrow screen keeps its Fit
+			     button in that corner, so there they start lower. -->
 			<div
 				class={[
 					'pointer-events-none absolute bottom-40 left-3.5 z-1 flex flex-col items-start gap-2',
@@ -1829,7 +1870,7 @@
 							{date}
 						</span>
 					{/if}
-					{#if live.online.length}
+					{#if live.online.length && !battle}
 						<ul class="pointer-events-auto flex shrink-0 p-1.5 {floating}" aria-label="At the table now">
 							{#each live.online as person (person.id)}
 								<li
@@ -1848,16 +1889,16 @@
 					{/if}
 				{/if}
 				{#if battle}
-					<!-- Whose turn it is, down the left side of a battle map. It is there
-					     once a token has been put in the order, for everyone: until then
-					     the GM has the button that puts one in. It has what is left of
-					     the height, and scrolls inside that. -->
+					<!-- Whose turn it is and who is at the table, in one dock down the
+					     left side of a battle map. It has what is left of the height,
+					     and scrolls inside that. -->
 					<div class="pointer-events-auto flex min-h-0 flex-col">
-						<TurnOrder
+						<TableDock
 							bind:this={turnOrder}
 							{campaignId}
 							tokens={world.tokens}
 							turns={world.map.turns}
+							online={live.online}
 							gm={isGm}
 							userId={data.me.id}
 							passive={display}
@@ -2162,6 +2203,8 @@
 						stamp={galleryStamp}
 						bind:collapsed={dockFolded}
 						onadd={addToken}
+						onencounter={addEncounter}
+						onencounters={() => (gallery = 'encounter')}
 						onerror={(text) => say(text, 'failure')}
 					/>
 				{:else}
@@ -2352,9 +2395,11 @@
 {#if gallery}
 	<Gallery
 		{campaignId}
+		start={gallery}
 		onclose={() => {
 			gallery = false;
-			// What was added, revealed or taken out shows in the dock of tokens.
+			// What was added, revealed or taken out shows in the dock of tokens,
+			// and so do the encounters that were made or changed.
 			galleryStamp++;
 		}}
 	/>

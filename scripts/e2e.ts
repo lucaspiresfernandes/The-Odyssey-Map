@@ -920,25 +920,27 @@ async function run() {
 	const guessed = await player.command(campaign, { t: 'token.update', id: bruteId, changes: { count: 31 } });
 	check('nor can a player set it, right or wrong', guessed.status === 403 && (await player.command(campaign, { t: 'token.update', id: bruteId, changes: { count: 5 } })).status === 403);
 
-	// A group saved from tokens on the map, put down again hidden, and thrown away.
-	const groups = (who: Visitor, method = 'GET', body?: unknown) =>
-		who.request(`/c/${campaign}/groups`, {
+	// An encounter saved from tokens on the map, put down again hidden, and thrown away.
+	const encounters = (who: Visitor, method = 'GET', body?: unknown, id = '') =>
+		who.request(`/c/${campaign}/encounters${id && `/${id}`}`, {
 			method,
 			headers: body ? { 'content-type': 'application/json' } : {},
 			body: body ? JSON.stringify(body) : undefined
 		});
-	const savedGroup = await (await groups(gm, 'POST', { name: 'Bridge guard', tokens: [bruteId, fighterId] })).json();
-	const guard = savedGroup.items?.[0];
+	const savedEncounter = await (await encounters(gm, 'POST', { name: 'Bridge guard', from: [bruteId, fighterId] })).json();
+	const guard = savedEncounter.items?.[0];
 	check(
-		'the GM saves tokens as a group, kept number and all',
-		savedGroup.ok && savedGroup.items.length === 1 && guard.name === 'Bridge guard' && guard.tokens.length === 2 && guard.tokens.some((t: any) => t.count === 31 && t.countHidden),
-		JSON.stringify(savedGroup)
+		'the GM saves tokens as an encounter, kept number and all',
+		savedEncounter.ok && savedEncounter.items.length === 1 && savedEncounter.made === guard.id && guard.name === 'Bridge guard' && guard.tokens.length === 2 && guard.tokens.some((t: any) => t.count === 31 && t.countHidden),
+		JSON.stringify(savedEncounter)
 	);
 	check(
-		'saved groups are nothing a player sees, saves or throws away',
-		(await groups(player)).status === 403 &&
-			(await groups(player, 'POST', { name: 'Mine', tokens: [fighterId] })).status === 403 &&
-			(await groups(player, 'DELETE', { id: guard?.id })).status === 403
+		'encounters are nothing a player sees, makes, changes or throws away',
+		(await encounters(player)).status === 403 &&
+			(await encounters(player, 'POST', { name: 'Mine' })).status === 403 &&
+			(await encounters(player, 'POST', { name: 'Mine', from: [fighterId] })).status === 403 &&
+			(await encounters(player, 'PATCH', { name: 'Mine' }, guard?.id)).status === 403 &&
+			(await encounters(player, 'DELETE', undefined, guard?.id)).status === 403
 	);
 	const heardBefore = playerSocket.messages.length;
 	const putDown = await gm.command(campaign, {
@@ -958,8 +960,21 @@ async function run() {
 		putDown.status === 200 && putDown.body.events?.length === 2 && putDown.body.events.every((e: any) => e.patch.token.hidden) && playerSocket.messages.length === heardBefore,
 		JSON.stringify(putDown.body).slice(0, 300)
 	);
-	const thrown = await (await groups(gm, 'DELETE', { id: guard?.id })).json();
-	check('and thrown away, it is gone', thrown.ok && thrown.items.length === 0 && (await groups(gm, 'DELETE', { id: guard?.id })).status === 404);
+	// One made in the gallery: empty at first, then filled, its tokens side by side.
+	const fresh = await (await encounters(gm, 'POST', { name: 'Wolf pack' })).json();
+	const filled = await (
+		await encounters(gm, 'PATCH', { name: 'Wolves', tokens: [{ name: 'Wolf' }, { name: 'Wolf', size: 2 }] }, fresh.made)
+	).json();
+	const pack = filled.items?.find((each: any) => each.id === fresh.made);
+	check(
+		'the GM makes an encounter with nothing on a map, and fills it',
+		fresh.ok && fresh.items.length === 2 && pack?.name === 'Wolves' && pack.tokens.length === 2 && pack.tokens[1].size === 2 && pack.tokens[0].dx < pack.tokens[1].dx,
+		JSON.stringify(filled)
+	);
+	check('and one that is not there is not changed', (await encounters(gm, 'PATCH', { name: 'Ghost' }, 'nothing')).status === 404);
+	await encounters(gm, 'DELETE', undefined, fresh.made);
+	const thrown = await (await encounters(gm, 'DELETE', undefined, guard?.id)).json();
+	check('and thrown away, it is gone', thrown.ok && thrown.items.length === 0 && (await encounters(gm, 'DELETE', undefined, guard?.id)).status === 404);
 
 	// A whole campaign out to one file, and back in as a new one.
 	const exported = await gm.request(`/c/${campaign}/export`);

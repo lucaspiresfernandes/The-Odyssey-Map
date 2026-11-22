@@ -346,7 +346,7 @@ export const IMAGE_FILE_PATTERN = /^[A-Za-z0-9]+-[A-Za-z0-9]+\.(png|jpg|gif|webp
  * token picture to put on a token. Null takes one off either, which is what
  * the card of a marker shows.
  */
-function findPicture(
+export function findPicture(
 	db: Db,
 	actor: Actor,
 	file: string,
@@ -593,7 +593,7 @@ export function asCount(value: unknown): number | null {
 }
 
 /** Validates whichever token fields are present and drops everything else. */
-function asTokenChanges(db: Db, actor: Actor, value: unknown): Partial<TokenInput> {
+export function asTokenChanges(db: Db, actor: Actor, value: unknown): Partial<TokenInput> {
 	const raw = asRecord(value);
 	const out: Partial<TokenInput> = {};
 	if (raw.name !== undefined) out.name = asText(raw.name, 'The name', LIMITS.tokenName, true);

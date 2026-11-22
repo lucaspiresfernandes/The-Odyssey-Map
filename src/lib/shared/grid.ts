@@ -183,6 +183,50 @@ export function freeCell(map: Sheet, at: Point, taken: Point[]): Point {
 }
 
 /**
+ * Where tokens of these sizes stand when they are put down together: side
+ * by side in rows, in the order given, about as many rows as there are
+ * tokens in one. Each is told as how far its middle is from the middle of
+ * them all, in cells, right and down.
+ *
+ * Every token gets a box of whole cells to itself, and stands in the middle
+ * of it. A token an even number of cells across gets a box as wide, and any
+ * other the next odd number up. So once one of them sits squarely on a
+ * grid, they all do: see `snapToGrid`.
+ */
+export function arrangeInCells(sizes: number[]): Point[] {
+	const box = (size: number) => {
+		if (sitsOnCorner(size)) return size;
+		const whole = Math.ceil(size);
+		return whole % 2 === 1 ? whole : whole + 1;
+	};
+	const boxes = sizes.map(box);
+	const area = boxes.reduce((sum, side) => sum + side * side, 0);
+	// As wide as a square that would hold them all, and as the widest of them.
+	const wide = Math.max(Math.ceil(Math.sqrt(area)), ...boxes, 1);
+
+	const spots: Point[] = [];
+	let x = 0;
+	let y = 0;
+	let tall = 0;
+	let right = 0;
+	for (const side of boxes) {
+		// One that doesn't fit beside the last starts the next row.
+		if (x > 0 && x + side > wide) {
+			x = 0;
+			y += tall;
+			tall = 0;
+		}
+		spots.push([x + side / 2, y + side / 2]);
+		x += side;
+		tall = Math.max(tall, side);
+		right = Math.max(right, x);
+	}
+	const bottom = y + tall;
+	// Halves of a cell are exact, so nothing is left over to round away.
+	return spots.map(([sx, sy]): Point => [sx - right / 2, sy - bottom / 2]);
+}
+
+/**
  * How many feet apart two spots are, counting a diagonal step as one cell:
  * the way most tabletop games count movement on squares. To one decimal
  * place.

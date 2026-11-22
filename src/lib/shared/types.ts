@@ -500,40 +500,51 @@ export interface MapInfo {
 }
 
 /**
- * One token of a saved group: what a token put down from it starts out as,
- * and where it stands from the middle of the group, in cells. So a group
- * keeps its shape on a map whose grid is another size.
+ * What a token of an encounter is, apart from where it stands: what a token
+ * put down from it starts out as.
  */
-export interface GroupToken {
+export interface EncounterPiece {
   name: string;
   color: string;
   outline: string | null;
+  /** File name of a token picture out of the gallery. Null for a plain disc. */
   image: string | null;
   size: number;
   rotation: number;
   marks: TokenMark[];
   count: number | null;
   countHidden: boolean;
+}
+
+/**
+ * One token of an encounter, and where it stands from the middle of the
+ * encounter, in cells. So an encounter keeps its shape on a map whose grid
+ * is another size. The server says where: see `arrangeInCells`.
+ */
+export interface EncounterToken extends EncounterPiece {
   dx: number;
   dy: number;
 }
 
 /**
- * Tokens the GM saved together, to put down again on any battle map in one
- * go: the ambush, the patrol, the party itself. It is the campaign's, and
- * only the GM ever sees it.
+ * An encounter: tokens made ahead of time, to put down on any battle map in
+ * one go. The ambush, the patrol, the dragon and its cultists. It is put
+ * together in the gallery, it is the campaign's, and only the GM ever sees
+ * it.
  */
-export interface TokenGroup {
+export interface Encounter {
   id: string;
   name: string;
-  tokens: GroupToken[];
+  tokens: EncounterToken[];
 }
 
-/** What the endpoints for saved groups answer with: the groups as they are now. */
-export interface GroupsResponse {
+/** What the endpoints for encounters answer with: the encounters as they are now. */
+export interface EncountersResponse {
   ok: boolean;
   error?: string;
-  items?: TokenGroup[];
+  items?: Encounter[];
+  /** The one that was just made, by its id. */
+  made?: string;
 }
 
 /** What a picture in the gallery is for: to lay under a map, or to put on a token. */
@@ -1118,11 +1129,11 @@ export const LIMITS = {
   /** The most marks made by hand on the fog of one map, and the most spots in the sweep of one. */
   fogMarks: 400,
   fogPath: 48,
-  /** The most groups of tokens a campaign keeps saved, and the most tokens in one. */
-  groups: 60,
-  groupTokens: 40,
-  /** How far from the middle of its group a saved token can stand, in cells. */
-  groupReach: 200,
+  /** The most encounters a campaign keeps, and the most tokens in one. */
+  encounters: 60,
+  encounterTokens: 40,
+  /** How far from the middle of its encounter a token can stand, in cells. */
+  encounterReach: 200,
   /** The least and the most a token's number can be. */
   countMin: -999,
   countMax: 9999,

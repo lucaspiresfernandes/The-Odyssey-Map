@@ -10,6 +10,9 @@
 	// Opened on its own, with no `kind`, it is the GM's storeroom: both
 	// shelves, to stock and tidy ahead of the session. Nothing is picked.
 	// From there a picture can be held up for the whole table to look at.
+	// The storeroom has a third shelf, which holds no pictures: the
+	// encounters, each a handful of tokens made ahead of time out of the token
+	// pictures. See EncounterShelf.svelte.
 	//
 	// With no `kind` and something to do with a pick, both shelves are there
 	// to pick from: the card of a marker shows a picture off either.
@@ -17,13 +20,19 @@
 	import {
 		LIMITS,
 		imageUrl,
+		type Encounter,
+		type EncountersResponse,
 		type GalleryItem,
 		type GalleryKind,
 		type GalleryResponse,
 		type Player
 	} from '#lib/shared/types.ts';
+	import EncounterShelf from './EncounterShelf.svelte';
 	import Modal from './Modal.svelte';
 	import PlayerPicker from './PlayerPicker.svelte';
+
+	/** A shelf of the storeroom: one of pictures, or the encounters. */
+	type Shelf = GalleryKind | 'encounter';
 
 	interface Props {
 		campaignId: string;
@@ -33,6 +42,8 @@
 		current?: string | null;
 		/** For a player: the shelf is there to pick from, and nothing on it can be changed. */
 		readonly?: boolean;
+		/** With both shelves open, the one to start on. The map images, unless it says otherwise. */
+		start?: Shelf;
 		/**
 		 * What to do with the picture that is picked. With a `kind` it is picked
 		 * from that shelf, and without one from either.
@@ -46,6 +57,7 @@
 		kind,
 		current = null,
 		readonly = false,
+		start = 'map',
 		onpick,
 		onclose
 	}: Props = $props();
@@ -54,18 +66,29 @@
 	let audience = $state<string[]>([]);
 
 	const ACCEPT = 'image/png,image/jpeg,image/webp,image/gif,image/avif';
-	const SHELVES: { kind: GalleryKind; title: string }[] = [
+	/**
+	 * With nothing to pick and everything to look after, this is the GM's
+	 * storeroom: the only place the encounters are.
+	 */
+	const storeroom = $derived(!kind && !onpick && !readonly);
+	const SHELVES = $derived<{ kind: Shelf; title: string }[]>([
 		{ kind: 'map', title: 'Map images' },
-		{ kind: 'token', title: 'Token pictures' }
-	];
+		{ kind: 'token', title: 'Token pictures' },
+		...(storeroom ? [{ kind: 'encounter' as const, title: 'Encounters' }] : [])
+	]);
 
 	/** The shelf on show while both are open. */
-	let tab = $state<GalleryKind>('map');
-	const shown = $derived(kind ?? tab);
+	// Deliberately a one-time copy: the shelf to start on, and the GM's to change.
+	// svelte-ignore state_referenced_locally
+	let tab = $state<Shelf>(start);
+	const shown = $derived<Shelf>(kind ?? (tab === 'encounter' && !storeroom ? 'map' : tab));
 	const maps = $derived(shown === 'map');
+	const encountering = $derived(shown === 'encounter');
 
 	/** Null until the gallery has been read. */
 	let items = $state<GalleryItem[] | null>(null);
+	/** The encounters, for the storeroom. Null until they have been read. */
+	let encounters = $state<Encounter[] | null>(null);
 	let error = $state('');
 	/** How far a batch of uploads has come. */
 	let uploading = $state<{ done: number; of: number } | null>(null);
@@ -97,11 +120,28 @@
 		ask('');
 	});
 
-	async function upload(files: File[]) {
-		if (readonly || uploading || files.length === 0) return;
+	// The encounters are read along with the pictures, so their shelf can say
+	// how many there are before it is opened.
+	$effect(() => {
+		if (!storeroom) return;
+		fetch(`/c/${campaignId}/encounters`)
+			.then((response) => response.json())
+			.then((result: EncountersResponse) => {
+				if (result.ok && result.items) encounters ??= result.items;
+			})
+			.catch(() => {
+				// The shelf says so when it is opened and asked for something.
+			});
+	});
+
+	/**
+	 * Puts pictures on a shelf: the one that is open, unless another is named.
+	 * Answers with the ones that went in.
+	 */
+	async function upload(files: File[], onto: GalleryKind = maps ? 'map' : 'token') {
+		if (readonly || uploading || files.length === 0) return [];
 		error = '';
-		// The whole batch goes on the shelf that was open when it was dropped.
-		const onto = shown;
+		const had = new Set(items?.map((item) => item.id));
 		const most = onto === 'map' ? LIMITS.imageBytes : LIMITS.tokenImageBytes;
 		uploading = { done: 0, of: files.length };
 		for (const file of files) {
@@ -118,6 +158,7 @@
 		}
 		uploading = null;
 		if (fileInput) fileInput.value = '';
+		return items?.filter((item) => item.kind === onto && !had.has(item.id)) ?? [];
 	}
 
 	async function rename(item: GalleryItem, input: HTMLInputElement) {
@@ -158,6 +199,8 @@
 	function dropped(event: DragEvent) {
 		event.preventDefault();
 		over = false;
+		// The encounters take pictures through the plus on their own page.
+		if (encountering) return;
 		upload([...(event.dataTransfer?.files ?? [])].filter((file) => file.type.startsWith('image/')));
 	}
 </script>
@@ -172,7 +215,7 @@
 		class="grid gap-4"
 		ondragover={(e) => {
 			e.preventDefault();
-			over = !readonly;
+			over = !readonly && !encountering;
 		}}
 		ondragleave={() => (over = false)}
 		ondrop={dropped}
@@ -181,16 +224,19 @@
 			<div class="-mt-1 flex gap-1.5" role="tablist" aria-label="Shelves of the gallery">
 				{#each SHELVES as each (each.kind)}
 					<button
-						class={['btn btn-sm', tab === each.kind && 'btn-active']}
+						class={['btn btn-sm', shown === each.kind && 'btn-active']}
 						role="tab"
-						aria-selected={tab === each.kind}
+						aria-selected={shown === each.kind}
 						onclick={() => {
 							tab = each.kind;
 							removing = null;
+							error = '';
 						}}
 					>
 						{each.title}
-						{#if items}
+						{#if each.kind === 'encounter'}
+							{#if encounters}<span class="text-muted">{encounters.length}</span>{/if}
+						{:else if items}
 							<span class="text-muted">
 								{items.filter((item) => item.kind === each.kind).length}
 							</span>
@@ -200,6 +246,22 @@
 			</div>
 		{/if}
 
+		{#if error}
+			<p class="rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-sm" role="alert">
+				{error}
+			</p>
+		{/if}
+
+		{#if encountering}
+			<EncounterShelf
+				{campaignId}
+				pictures={items?.filter((item) => item.kind === 'token') ?? []}
+				bind:encounters
+				uploading={uploading !== null}
+				onupload={(files) => upload(files, 'token')}
+				onerror={(text) => (error = text)}
+			/>
+		{:else}
 		<p class={['text-[13px] text-muted', kind && '-mt-2']}>
 			{#if readonly}
 				Pick a picture for your token, from the ones the GM has shared with the table.
@@ -215,12 +277,6 @@
 				see none of it until you reveal a picture with its eye: those they can pick for their own tokens.
 			{/if}
 		</p>
-
-		{#if error}
-			<p class="rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-sm" role="alert">
-				{error}
-			</p>
-		{/if}
 
 		<ul
 			class={[
@@ -399,6 +455,7 @@
 			hidden
 			onchange={(e) => upload([...(e.currentTarget.files ?? [])])}
 		/>
+		{/if}
 
 		<div class="flex justify-end">
 			<button class="btn" onclick={onclose}>Close</button>

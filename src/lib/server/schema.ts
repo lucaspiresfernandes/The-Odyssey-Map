@@ -19,13 +19,13 @@ import {
 	DEFAULT_GRID,
 	NO_FOG,
 	NO_TURNS,
+	type EncounterToken,
 	type Entity,
 	type EntityType,
 	type EventAction,
 	type Fog,
 	type GalleryKind,
 	type Grid,
-	type GroupToken,
 	type MarkerType,
 	type Point,
 	type TokenMark,
@@ -174,11 +174,14 @@ export const seatClaims = sqliteTable(
 	(t) => [index('seat_claims_campaign').on(t.campaignId)]
 );
 
-// Tokens the GM saved together, to put down again in one go on any battle
-// map of the campaign. Each is kept as what a token starts out as and where
-// it stands from the middle of the group, in cells. Like the gallery, it is
-// no part of the world's history.
-export const tokenGroups = sqliteTable(
+// Encounters: tokens made ahead of time, to put down in one go on any
+// battle map of the campaign. Each token is kept as what it starts out as
+// and where it stands from the middle of the encounter, in cells. Like the
+// gallery, where they are put together, it is no part of the world's history.
+//
+// The table is still called `token_groups`, from when these were groups
+// saved off a map: the rows are the same, so there was nothing to migrate.
+export const encounters = sqliteTable(
 	'token_groups',
 	{
 		id: text('id').primaryKey(),
@@ -186,7 +189,7 @@ export const tokenGroups = sqliteTable(
 			.notNull()
 			.references(() => campaigns.id, { onDelete: 'cascade' }),
 		name: text('name').notNull(),
-		tokens: text('tokens', { mode: 'json' }).$type<GroupToken[]>().notNull(),
+		tokens: text('tokens', { mode: 'json' }).$type<EncounterToken[]>().notNull(),
 		createdAt: integer('created_at').notNull()
 	},
 	(t) => [index('token_groups_campaign').on(t.campaignId)]

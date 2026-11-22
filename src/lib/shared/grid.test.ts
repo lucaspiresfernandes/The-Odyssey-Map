@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+	arrangeInCells,
 	cellsAcross,
 	cellsToFeet,
 	feetBetween,
@@ -103,5 +104,45 @@ describe('a free cell', () => {
 		const corner = freeCell(map, [0.05, 0.05], [[0.05, 0.05]]);
 		expect(corner[0]).toBeGreaterThanOrEqual(0);
 		expect(corner[1]).toBeGreaterThanOrEqual(0);
+	});
+});
+
+describe('tokens put down together', () => {
+	test('stand side by side in rows, around the middle of them all', () => {
+		expect(arrangeInCells([])).toEqual([]);
+		expect(arrangeInCells([1])).toEqual([[0, 0]]);
+		expect(arrangeInCells([1, 1])).toEqual([[-0.5, 0], [0.5, 0]]);
+		expect(arrangeInCells([1, 1, 1, 1])).toEqual([[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]]);
+		// Five make a row of three and a row of two.
+		expect(arrangeInCells([1, 1, 1, 1, 1])).toEqual([[-1, -0.5], [0, -0.5], [1, -0.5], [-1, 0.5], [0, 0.5]]);
+	});
+
+	test('a big one takes the cells it covers, and the next row starts under it', () => {
+		expect(arrangeInCells([2, 1, 1])).toEqual([[-0.5, -0.5], [1, -1], [-1, 1]]);
+		// A half size gets whole cells to stand in the middle of.
+		expect(arrangeInCells([1.5, 0.5])).toEqual([[-0.5, 0], [1.5, -1]]);
+	});
+
+	test('once one of them sits squarely on a grid, they all do', () => {
+		const sizes = [1, 2, 0.5, 3, 1.5, 4, 2.5, 1, 6, 1];
+		const spots = arrangeInCells(sizes);
+		// A hundred cells each way, so there is room for them all. Put the first
+		// where a token of its size rests, and see where the rest come to.
+		const wide = { ...shifted, width: 10000, height: 10000 };
+		const [x0, y0] = snapToGrid(wide, [0.5, 0.5], sizes[0]);
+		spots.forEach(([dx, dy], i) => {
+			const at: [number, number] = [x0 + (dx - spots[0][0]) * 0.01, y0 + (dy - spots[0][1]) * 0.01];
+			const [sx, sy] = snapToGrid(wide, at, sizes[i]);
+			expect(sx).toBeCloseTo(at[0], 6);
+			expect(sy).toBeCloseTo(at[1], 6);
+		});
+		// And no two of them share a cell.
+		const half = (size: number) => Math.max(size, 1) / 2;
+		for (let a = 0; a < sizes.length; a++) {
+			for (let b = a + 1; b < sizes.length; b++) {
+				const apart = Math.max(Math.abs(spots[a][0] - spots[b][0]), Math.abs(spots[a][1] - spots[b][1]));
+				expect(apart).toBeGreaterThanOrEqual(half(sizes[a]) + half(sizes[b]));
+			}
+		}
 	});
 });

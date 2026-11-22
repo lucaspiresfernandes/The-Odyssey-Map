@@ -224,7 +224,7 @@ are everyone's. The rest are the GM's.
   lettered before it, fainter. Click one to step back out to it, or press `Backspace`
   to go back one map. Names are
   lettered larger on it, to be read from across the room, and on a battle map it shows
-  the turn order down its side. It shows the picture you are holding up. It asks the
+  the turn order down its side, each token by name. It shows the picture you are holding up. It asks the
   screen to stay awake, which browsers allow on the machine the app runs on and over
   https. Any map's address with `?display` on the end is a display, so a player's tablet
   in the middle of the table can be one too.
@@ -256,7 +256,7 @@ Who a player is, is their browser: see [Known limits](#known-limits).
 ### A campaign in one file
 
 **Export**, beside a campaign you run on the first page, downloads all of it as one
-file: every map, region, marker, note, token and drawing, the turn orders and the fog,
+file: every map, region, marker, note, token, drawing and encounter, the turn orders and the fog,
 the date in the world, and the pictures in the gallery as they were uploaded. It is a `.tar` archive that any
 archive tool opens: `campaign.json`, and an `uploads` folder.
 
@@ -273,11 +273,13 @@ that undo works from. Hidden and closed things arrive hidden and closed.
 ### The gallery
 
 Every campaign has a gallery: the pictures it keeps, to use as often as you like. It has
-two shelves, map images and token pictures.
+two shelves of pictures, map images and token pictures, and for the GM a third that is
+made out of the second: encounters.
 
-**Gallery**, at the top of any map, opens both for the GM. That is the place to stock up
+**Gallery**, at the top of any map, opens all of it for the GM. That is the place to stock up
 before a session: add, rename, reveal and take out pictures, with no map or token
-waiting for one. Each shelf also opens from where it is used, to pick from.
+waiting for one, and put encounters together. Each shelf of pictures also opens from
+where it is used, to pick from.
 
 - **Map images.** The image button in **Map Settings** opens them. Add images with the
   first tile, or drop files on the dialog, then click one: it is laid under the map when
@@ -289,6 +291,16 @@ waiting for one. Each shelf also opens from where it is used, to pick from.
   remember how its tokens start out: set one ogre up on the map, two cells across with
   a red ring, open its form and click **Start new tokens with this picture like this
   one**. Every ogre out of the dock after that is as big, with the same ring.
+- **Encounters.** An encounter is tokens made ahead of time, to put down on a battle map
+  in one go: the ambush on the road, the dragon and its cultists. **New encounter** makes
+  one and opens it, with its name ready to be typed over. Under the name are the tokens
+  in it, and under those everything a token can be made of: a plain disc, every token
+  picture in the gallery, and a **+** for a picture that isn't there yet, which goes on
+  the token shelf as well. Click one and the encounter has one more of it: three clicks
+  on the goblin for three goblins. Each token is named after its picture and starts out
+  as that picture says, as big and with the same ring. Click a token's name to change
+  it, and its **×** to take it out. Every change is kept as you make it. An encounter is
+  put down from [the dock of a battle map](#battle-maps), and only the GM ever sees it.
 
 A picture is named after the file it came in. Click the name to change it. The **×** on a
 picture takes it out of the gallery: the maps and tokens that already show it keep it,
@@ -353,20 +365,33 @@ own and keeps its plain grid until you give it an image.
 A map is a world map or a battle map. A world map is for finding your way: markers,
 notes, and regions that lead further in. A battle map is a table to play on, and the end
 of the way down. It holds no markers, no notes and no regions, and none of the tools for
-them. It has two palettes of its own, and each folds away with the arrow at its end:
+them. It has three palettes of its own, and each folds away:
 
-- **The dock of tokens**, along the bottom. It shows every token that can be put on the
-  map: a plain disc first, then the token pictures in the gallery (for a player, the ones
-  the GM has revealed). Click one and it goes down in the free cell nearest the middle of
-  the view. Drag one and it goes down where you let go. The GM's **+** adds pictures to
-  the gallery straight from here.
+- **The dock**, along the bottom, in two levels. At the bottom are its buttons, one for
+  each kind of thing that goes on the map: **Tokens**, and for the GM **Encounters**.
+  Click one and its tray slides open on top of it. Click it again and the tray is put
+  away, and the map has its room back. The dock is as you left it the next time.
+  - The tray of tokens shows every token that can be put on the map: a plain disc first,
+    then the token pictures in the gallery (for a player, the ones the GM has revealed).
+    Click one and it goes down in the free cell nearest the middle of the view. Drag one
+    and it goes down where you let go. The GM's **+** adds pictures to the gallery
+    straight from here.
+  - The tray of encounters shows the ones made in [the gallery](#the-gallery), each with
+    the first few of its tokens, its name and how many it holds. Click or drag one like
+    a token and all its tokens go down together, side by side on the grid, selected, and
+    hidden from the players until you reveal them. `Ctrl+Z` takes the whole encounter
+    back off. The pencil at the end of the tray opens the gallery on its encounters.
 - **The tools**, in the upper right corner: select and move, select several, measure,
-  draw, point. Each has a key: `Q`, `W`, `E`, `R` and `T`, in that order. The pen draws lines,
+  draw, point. They fold away with the arrow at their end. Each has a key: `Q`, `W`, `E`, `R` and `T`, in that order. The pen draws lines,
   shapes and text: which of them is picked beside it. The GM's also has the map image, the name, the grid and the fog
   of war. A tool stays in hand until you click it again,
   take another or press `Esc`.
-- **The turn order**, down the left side: see below. Until a token has been put in it,
-  it is one button, and only the GM has it.
+- **The table's dock**, in the upper left corner, under the date: one box with two
+  tabs, a button each at its top. The hourglass is the **turn order**, and is the one
+  that is open: see below. The heads are **who is at the table** now, each by name,
+  with the GM marked. Click the tab that is lit and the box is put away, down to its two
+  buttons. On a world map, which has no turn order, who is at the table stays a row of
+  initials.
 
 What is on a battle map:
 
@@ -422,11 +447,11 @@ What is on a battle map:
   for poisoned, the eye for whoever is concentrating, the arrow down for prone. Click
   one to put it on, again to take it off. A token wears as many as it is given, and
   with several tokens selected a mark goes on all of them.
-- **The turn order.** It is run from its own box, in the upper left corner of the map,
-  and from nowhere else. Until a fight starts the GM has an hourglass button there: with
-  tokens selected on the map, it puts them in the turn order, and so does `I`. A strip
-  then appears down the left side of the map for everyone: each
-  token in the order it acts, the one whose turn it is ringed in gold, there and on the
+- **The turn order.** It is run from its own tab of the dock in the upper left corner
+  of the map, and from nowhere else. Until a fight starts the tab says so, and the GM has
+  a **+** there: with tokens selected on the map, it puts them in the turn order, and so
+  does `I`. A strip then runs down the tab for everyone: each
+  token with its name, in the order it acts, the one whose turn it is ringed in gold, there and on the
   map. **Next turn**, or `N`, moves on, and coming round to the top again starts the
   next round. Ending a turn is the table's: a player has the same button and the same
   key, for the turn of their own token, which is how they say they are done, and for the
@@ -606,8 +631,8 @@ others is what they have in hand, a token being dragged or a ruler, the spots th
 ping, and where they point while they hold the button down with the pointing tool.
 
 It works on a phone too: a tap is a click and a double-tap a double-click, and the tools
-sit in a bar along the bottom of the screen. On a battle map that bar is the dock of
-tokens, and the tools are in the corner.
+sit in a bar along the bottom of the screen. On a battle map that bar is the dock,
+and the tools are in the corner.
 
 ## Who can do what
 
@@ -617,6 +642,7 @@ tokens, and the tools are in the corner.
 | Table notes, on world maps | create, edit, delete, anyone's | create, edit anyone's, delete their own |
 | Maps, regions | create, edit, hide, reveal, show to some players, close, open, delete | read (never the hidden ones they are not let in on), step into the ones that are open |
 | The gallery | add, rename, reveal, hide, take out, lay an image under a map | look through what the GM has revealed, pick one of those for a token |
+| Encounters | make, fill, rename, throw away, put down on a battle map | nothing: they see the tokens once the GM reveals them |
 | Battle maps and grids | make one behind a new region, set up the grid | read |
 | The scale of a world map | say how many miles across it is | measure, once a map on the way has one |
 | A ping, and the finder | point a spot out, go to anything | point a spot out, go to anything not hidden |
@@ -671,6 +697,7 @@ src/lib/server/     database, sessions, and the modules that matter most:
   schema.ts           the tables, as a Drizzle schema
   world.ts            every change: validate, check permission, write, log an event
   gallery.ts          the campaign's pictures, and who may load which
+  encounters.ts       tokens made ahead of time, to put down together
   visibility.ts       the only path from the event log to a client, filtered by who it is
   archive.ts, tar.ts  a campaign out to one file and back in, as a stream
   db.ts, drivers/     where the database is kept: one driver per kind of place
@@ -800,14 +827,20 @@ scripts/            run both servers, seed a demo, back up, end-to-end check
   that changes only what a player isn't sent is not sent to them at all:
   `visibility.ts`. A player's `count` on such a token is refused whatever it is, so a
   right guess can't be told from a wrong one.
-- **A saved group is rows of its own, and the browser has no buttons for it.**
-  `token_groups` keeps, for each group, what each token starts out as and where it
-  stands from the middle of the group, in cells: `server/groups.ts`, behind
-  `/c/<campaign>/groups`. Like the gallery it is no part of the event log. A picture
-  taken out of the gallery is kept for as long as a group has a token that wears it.
-  Groups go into a campaign's file and come back out of it. The buttons that saved a
-  group and put one down were taken out of the app, ahead of a new design: the groups
-  already saved are still in the database.
+- **An encounter is rows of its own.** The table is still called `token_groups`, from
+  when encounters were groups saved off a map: the rows are the same, so nothing was
+  migrated. It keeps, for each encounter, what each token starts out as and where it
+  stands from the middle of the encounter, in cells: `server/encounters.ts`, behind
+  `/c/<campaign>/encounters`. Where each token stands is worked out on the server
+  whenever the encounter's tokens change, by `arrangeInCells` in `shared/grid.ts`:
+  rows of whole cells, so that once the first token sits squarely on a grid they all
+  do. Putting one down is a batch of `token.create` from the browser, like any other
+  change to a map. Like the gallery it is no part of the event log. A picture taken out
+  of the gallery is kept for as long as an encounter has a token that wears it.
+  Encounters go into a campaign's file and come back out of it, and a file from before
+  them brings its saved groups in as encounters. The server can still make an encounter
+  of tokens that stand on a map, keeping their places (`encounterFromMap`, `from` in a
+  `POST`): the browser has no button for it.
 - **A mark is an id in a list.** A token keeps the ids of the marks it wears. How each
   looks, a colour or an icon, is one table: `TOKEN_MARKS` in `shared/types.ts`. A
   new mark is one more line there, and nothing in the database changes.
@@ -904,7 +937,7 @@ shapes, the scale of a world map, the finder, a picture held
 up for the table, and what a token picture starts its tokens out as.
 And for what is kept from some and not from others: closed regions, secrets shared with
 some players and what each of them is sent, and the fog of a world map. And the number on a token, one the GM keeps, shapes that pick their targets,
-groups of tokens saved on the server, initiative rolls, ending a turn, lining up a grid,
+encounters and how their tokens are stood side by side, initiative rolls, ending a turn, lining up a grid,
 and a campaign going out to a file and coming back.
 And for what a real session leans on: a seat asked for and given, new or back, whose token is
 whose and whose turn that makes it, a picture on a marker and who may load it, how long

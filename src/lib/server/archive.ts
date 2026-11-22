@@ -1,7 +1,7 @@
 // A whole campaign in one file, and back out of one.
 //
 // The file is a tar archive: `campaign.json`, which lists every map, region,
-// marker, note, token, drawing and saved group and says what is in the gallery, followed
+// marker, note, token, drawing and encounter and says what is in the gallery, followed
 // by the gallery's pictures as they were uploaded. It is a backup that the
 // app itself can restore, and a way to hand a prepared world to another GM.
 //
@@ -26,12 +26,12 @@ import { fogOf } from '../shared/fog';
 import {
 	campaigns,
 	drawings,
+	encounters,
 	gallery,
 	maps,
 	markers,
 	members,
 	regions,
-	tokenGroups,
 	tokens
 } from './schema';
 import { getStorage } from './storage';
@@ -50,11 +50,11 @@ import {
 	TOKEN_SIZE_STEP,
 	isTemplate,
 	type DrawingKind,
+	type EncounterToken,
 	type Fog,
 	type FogMark,
 	type GalleryKind,
 	type Grid,
-	type GroupToken,
 	type MapKind,
 	type MarkerKind,
 	type MarkerType,
@@ -143,14 +143,14 @@ function manifestOf(db: Db, campaignId: string) {
 					// One taken out of the gallery, and kept for the maps and tokens that still show it.
 					removed: deletedAt !== null
 				})),
-			// The groups of tokens the GM saved, to put down again.
-			groups: tx
+			// The encounters the GM made ahead of time, to put down in one go.
+			encounters: tx
 				.select()
-				.from(tokenGroups)
-				.where(eq(tokenGroups.campaignId, campaignId))
-				.orderBy(tokenGroups.createdAt)
+				.from(encounters)
+				.where(eq(encounters.campaignId, campaignId))
+				.orderBy(encounters.createdAt)
 				.all()
-				.map(({ campaignId: _, ...group }) => group)
+				.map(({ campaignId: _, ...encounter }) => encounter)
 		};
 	});
 }
@@ -595,12 +595,14 @@ function build(
 					.run();
 			}
 
-			// The saved groups, from files that have them. A token of one whose
-			// picture the file didn't bring is a plain disc, as on a map.
-			for (const group of list(manifest.groups ?? [], LIMITS.groups).map(record)) {
-				const saved = list(group.tokens, LIMITS.groupTokens)
+			// The encounters, from files that have them: an older file calls them
+			// `groups`. A token of one whose picture the file didn't bring is a
+			// plain disc, as on a map.
+			const kept = manifest.encounters ?? manifest.groups ?? [];
+			for (const encounter of list(kept, LIMITS.encounters).map(record)) {
+				const saved = list(encounter.tokens, LIMITS.encounterTokens)
 					.map(record)
-					.map((token): GroupToken => {
+					.map((token): EncounterToken => {
 						const size = number(token.size ?? 1, TOKEN_SIZE_STEP, LIMITS.tokenSize);
 						return {
 							name: text(token.name, LIMITS.tokenName),
@@ -619,18 +621,17 @@ function build(
 							count:
 								token.count == null ? null : whole(token.count, LIMITS.countMin, LIMITS.countMax),
 							countHidden: flag(token.countHidden),
-							dx: number(token.dx ?? 0, -LIMITS.groupReach, LIMITS.groupReach),
-							dy: number(token.dy ?? 0, -LIMITS.groupReach, LIMITS.groupReach)
+							dx: number(token.dx ?? 0, -LIMITS.encounterReach, LIMITS.encounterReach),
+							dy: number(token.dy ?? 0, -LIMITS.encounterReach, LIMITS.encounterReach)
 						};
 					});
-				if (saved.length === 0) continue;
-				tx.insert(tokenGroups)
+				tx.insert(encounters)
 					.values({
 						id: newId(),
 						campaignId,
-						name: text(group.name, LIMITS.name),
+						name: text(encounter.name, LIMITS.name),
 						tokens: saved,
-						createdAt: time(group.createdAt)
+						createdAt: time(encounter.createdAt)
 					})
 					.run();
 			}

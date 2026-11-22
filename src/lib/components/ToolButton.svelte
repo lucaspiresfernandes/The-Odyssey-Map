@@ -58,11 +58,17 @@
 			'M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0 M7 10a2 2 0 1 0 4 0a2 2 0 1 0-4 0 M13 14.5a2 2 0 1 0 4 0a2 2 0 1 0-4 0',
 		// One head: a player's own token.
 		person: 'M8 7a4 4 0 1 0 8 0a4 4 0 1 0-8 0 M5 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1',
+		// Several heads: who is at the table.
+		people:
+			'M5 7a4 4 0 1 0 8 0a4 4 0 1 0-8 0 M2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1 M16 3.13a4 4 0 0 1 0 7.75 M22 21v-1a6 6 0 0 0-3.5-5.45',
 		// A die: what each token rolled for its place in the turn order.
 		dice: 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z M8.5 8.5h.01 M15.5 8.5h.01 M12 12h.01 M8.5 15.5h.01 M15.5 15.5h.01',
 		search: 'M4 11a7 7 0 1 0 14 0a7 7 0 1 0-14 0 M21 21l-4.3-4.3',
 		// A keyboard: the sheet of what each key does.
 		keys: 'M4 6h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z M6 10h.01 M10 10h.01 M14 10h.01 M18 10h.01 M8 14h8',
+		// Two swords, crossed: an encounter.
+		encounter:
+			'M14.5 17.5 3 6V3h3l11.5 11.5 M13 19l6-6 M16 16l4 4 M19 21l2-2 M14.5 6.5 18 3h3v3l-3.5 3.5 M5 14l4 4 M7 17l-3 3 M3 19l2 2',
 		// Three stripes, one under the other: the menu.
 		menu: 'M4 6h16 M4 12h16 M4 18h16',
 		// A screen on a stand: something held up for the whole table.
@@ -110,8 +116,14 @@
 		popup?: 'menu';
 		/** A smaller button, for the ones that float over the map beside what they act on. */
 		small?: boolean;
+		/**
+		 * Takes its share of the row it is in, for a row that is wider than its
+		 * buttons: they then fill it between them. Otherwise a button is as wide
+		 * as it is tall.
+		 */
+		fill?: boolean;
 		/** Which side the tooltip comes out on. Above, unless the button is docked where that has no room. */
-		tip?: 'top' | 'bottom' | 'bottom-start' | 'bottom-end' | 'left';
+		tip?: 'top' | 'bottom' | 'bottom-start' | 'bottom-end' | 'left' | 'right';
 		onclick: () => void;
 	}
 
@@ -127,6 +139,7 @@
 		expanded,
 		popup,
 		small = false,
+		fill = false,
 		tip = 'top',
 		onclick
 	}: Props = $props();
@@ -139,18 +152,23 @@
 		// And the same at the left edge.
 		'bottom-start': 'top-[calc(100%+10px)] left-0',
 		'bottom-end': 'top-[calc(100%+10px)] right-0',
-		left: 'top-1/2 right-[calc(100%+10px)] -translate-y-1/2'
+		left: 'top-1/2 right-[calc(100%+10px)] -translate-y-1/2',
+		right: 'top-1/2 left-[calc(100%+10px)] -translate-y-1/2'
 	};
 </script>
 
 <!-- The tooltip hangs off this wrapper and not the button, because a disabled
      button is the one that most needs explaining. -->
-<span class="group relative flex">
+<span class={['group relative flex', fill && 'min-w-0 flex-1']}>
 	<button
 		class={[
 			'btn',
 			small && 'btn-sm',
-			!named && (small ? 'w-7 px-0 touch:w-9' : 'w-9 px-0 touch:w-11'),
+			// A square, unless it fills its row: then a square is the least it is.
+			!named && 'px-0',
+			!named && !fill && (small ? 'w-7 touch:w-9' : 'w-9 touch:w-11'),
+			!named && fill && (small ? 'min-w-7 touch:min-w-9' : 'min-w-9 touch:min-w-11'),
+			fill && 'grow',
 			danger && 'btn-danger',
 			active && 'btn-active'
 		]}
