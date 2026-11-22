@@ -3,13 +3,14 @@
 // The server enforces these in `server/world.ts` and `server/visibility.ts`.
 // The browser imports the same functions only to decide which buttons to show.
 
-import { isFogged, middleOf } from './fog';
+import { isFogged, isOutOfSight, middleOf, type Sight } from './fog';
 import {
 	NO_FOG,
 	type Drawing,
 	type Fog,
 	type Marker,
 	type MarkerKind,
+	type Point,
 	type Region,
 	type Role,
 	type StoredEvent,
@@ -181,15 +182,46 @@ export function canChangeDrawing(
  * Hidden tokens exist only for the GM: the ambush waiting behind the door.
  * And for the players one is a secret with: the familiar only its master
  * sees. So do the ones standing under the fog of war, which is the fog of
- * the map the token is on.
+ * the map the token is on. And where the fog follows the tokens, the ones
+ * further off than any of the players' tokens sees: `sight` is what those
+ * see between them, as the tokens stand now.
  */
 export function canSeeToken(
 	who: Who,
 	token: Pick<Token, 'hidden' | 'x' | 'y'> & Partial<Pick<Token, 'seenBy'>>,
-	fog: Fog = NO_FOG
+	fog: Fog = NO_FOG,
+	sight: Sight | null = null
 ): boolean {
 	if (roleOf(who) === 'gm') return true;
-	return (!token.hidden || letIn(who, token)) && !isFogged(fog, [token.x, token.y]);
+	if (token.hidden && !letIn(who, token)) return false;
+	const at: Point = [token.x, token.y];
+	return !isFogged(fog, at) && !isOutOfSight(sight, at);
+}
+
+/**
+ * A drawing is in plain sight of everyone who can open its map, unless the
+ * GM drew it out of theirs: the trap marked ahead of time, the wall of
+ * fire to come. A hidden one exists for the GM, and the players it is a
+ * secret with. Ones from before drawings could be hidden are not.
+ */
+export function canSeeDrawing(
+	who: Who,
+	drawing: Partial<Pick<Drawing, 'hidden' | 'seenBy'>>
+): boolean {
+	return roleOf(who) === 'gm' || !drawing.hidden || letIn(who, drawing);
+}
+
+/** Hiding a drawing from the players, and revealing it to them, are the GM's. */
+export function canHideDrawing(role: Role): boolean {
+	return role === 'gm';
+}
+
+/**
+ * A drawing as this person is sent it: on top of what `forEyes` keeps back,
+ * one from before drawings could be hidden is said outright not to be.
+ */
+export function drawingForEyes(who: Who, drawing: Drawing): Drawing {
+	return forEyes(who, { ...drawing, hidden: drawing.hidden ?? false });
 }
 
 /**

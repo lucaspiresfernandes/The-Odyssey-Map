@@ -82,6 +82,18 @@ export function knocked(db: Db, campaignId: string): Promise<void> {
 	return send({ campaignId, events: [], knocks: knocksOf(db, campaignId) });
 }
 
+/**
+ * Tells the table of seats the GM has changed: what a player is called now,
+ * or with null for a name, that the seat was taken away. The browsers that
+ * sat in a seat that is gone are shown out.
+ */
+export function seated(
+	campaignId: string,
+	seats: { id: string; name: string | null }[]
+): Promise<void> {
+	return send({ campaignId, events: [], seats });
+}
+
 /** Tells everyone what date it is in the world now, or with nothing, that there is none. */
 export function dated(campaignId: string, date: string): Promise<void> {
 	return send({ campaignId, events: [], date });

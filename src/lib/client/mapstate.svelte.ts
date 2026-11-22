@@ -4,13 +4,15 @@
 import type {
 	Backdrop,
 	Crumb,
+	Diagonal,
 	Drawing,
 	LiveEvent,
 	MapInfo,
 	MapSnapshot,
 	Marker,
 	Region,
-	Token
+	Token,
+	Units
 } from '#lib/shared/types.ts';
 
 export class MapState {
@@ -34,6 +36,12 @@ export class MapState {
 	readonly miles: number | null;
 	/** How many miles a day's travel covers here: worked out by the server too, and as old as the snapshot. */
 	readonly dayMiles: number;
+	/**
+	 * What distances are told in on the maps further out, and how a diagonal
+	 * step is counted there: what this map goes by while it says nothing itself.
+	 */
+	readonly units: Units;
+	readonly diagonal: Diagonal;
 
 	/** Events up to this sequence number are already part of the snapshot. */
 	readonly lastSeq: number;
@@ -48,6 +56,8 @@ export class MapState {
 		this.drawings = snapshot.drawings;
 		this.miles = snapshot.miles;
 		this.dayMiles = snapshot.dayMiles;
+		this.units = snapshot.units;
+		this.diagonal = snapshot.diagonal;
 		this.lastSeq = snapshot.lastSeq;
 	}
 
@@ -67,12 +77,14 @@ export class MapState {
 			// the turn order they are shown: it comes along then.
 			case 'token.upsert':
 				if (patch.token.mapId !== here) break;
-				this.tokens = upsert(this.tokens, patch.token);
+				// Where the fog follows the tokens, one of the players' tokens
+				// moving changes what they all see: the lot comes along then.
+				this.tokens = patch.tokens ?? upsert(this.tokens, patch.token);
 				if (patch.turns) this.map = { ...this.map, turns: patch.turns };
 				break;
 			case 'token.remove':
 				if (patch.mapId !== here) break;
-				this.tokens = this.tokens.filter((t) => t.id !== patch.id);
+				this.tokens = patch.tokens ?? this.tokens.filter((t) => t.id !== patch.id);
 				if (patch.turns) this.map = { ...this.map, turns: patch.turns };
 				break;
 			case 'drawing.upsert':

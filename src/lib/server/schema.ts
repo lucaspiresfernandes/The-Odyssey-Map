@@ -17,8 +17,10 @@ import {
 import {
 	DEFAULT_CELL_FEET,
 	DEFAULT_GRID,
+	DIAGONALS,
 	NO_FOG,
 	NO_TURNS,
+	UNITS,
 	type EncounterToken,
 	type Entity,
 	type EntityType,
@@ -115,6 +117,12 @@ export const maps = sqliteTable(
 		miles: real('miles'),
 		/** How many miles a day's travel covers on a world map, when the GM has said so. */
 		dayMiles: real('day_miles'),
+		/** What distances are told in, when the GM has said so: null goes by the maps further out. */
+		units: text('units', { enum: UNITS }),
+		/** How a diagonal step is counted, when the GM has said so: null goes by the maps further out. */
+		diagonal: text('diagonal', { enum: DIAGONALS }),
+		/** How many feet a player's token sees, on a battle map where the fog follows the tokens. */
+		sight: real('sight'),
 		imageFile: text('image_file'),
 		width: integer('width').notNull(),
 		height: integer('height').notNull(),
@@ -291,6 +299,9 @@ export const drawings = sqliteTable(
 		color: text('color').notNull(),
 		/** In cells: the thickness of a line, the height of a text's letters. */
 		size: real('size').notNull(),
+		hidden: integer('hidden', { mode: 'boolean' }).notNull().default(false),
+		/** The players a hidden drawing is shown to all the same, by user id. */
+		seenBy: text('seen_by', { mode: 'json' }).$type<string[]>().notNull().default([]),
 		authorId: text('author_id').notNull(),
 		authorName: text('author_name').notNull(),
 		createdAt: integer('created_at').notNull(),

@@ -14,15 +14,34 @@
 // invite link alone must be enough neither to sit down nor to become
 // someone else.
 
-import { and, eq, gt, isNull, lt, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 import { AuthError, cleanName, createGuest, hashToken, type User } from './auth';
 import { joinCampaign } from './campaigns';
 import type { Db } from './db';
 import { newId, newToken } from './ids';
-import { members, seatClaims, users } from './schema';
-import { ActionError, type Actor } from './world';
+import {
+	campaigns,
+	drawings,
+	maps,
+	markers,
+	members,
+	regions,
+	seatClaims,
+	sessions,
+	tokens,
+	users
+} from './schema';
+import { ActionError, perform, type Actor } from './world';
 import { canEditWorld } from '../shared/rules';
-import { LIMITS, type Knock, type Player, type SeatStatus } from '../shared/types';
+import {
+	LIMITS,
+	type Command,
+	type Knock,
+	type Player,
+	type Seat,
+	type SeatStatus,
+	type StoredEvent
+} from '../shared/types';
 
 /** How long a knock waits for the GM, and how long its answer waits to be heard: in milliseconds. */
 export const KNOCK_LASTS = 10 * 60 * 1000;
@@ -250,4 +269,227 @@ export function seatAnswer(
 /** The browser that asked has changed its mind. */
 export function forgetKnock(db: Db, token: string | undefined | null): void {
 	if (token) db.delete(seatClaims).where(eq(seatClaims.tokenHash, hashToken(token))).run();
+}
+
+// ------------------------------------------------------ looking after seats
+
+// The seats are the GM's to look after: to make one ahead of the session,
+// for someone to sit down in when they come, to change what a player is
+// called, and to take one away. A seat is a player of the campaign: a name
+// and nothing else, with no login and no password. None of this is a
+// change to the world, so none of it is an event and there is no undo.
+
+function requireKeeper(actor: Actor) {
+	if (!canEditWorld(actor.role)) {
+		throw new ActionError('forbidden', 'Only the GM looks after the seats.');
+	}
+}
+
+/** Every seat at a campaign's table: its players, in the order they joined. */
+export function rosterOf(db: Db, campaignId: string): Seat[] {
+	return db
+		.select({
+			id: users.id,
+			name: users.name,
+			guest: sql<boolean>`${users.passwordHash} IS NULL`.mapWith(Boolean),
+			taken: sql<boolean>`EXISTS (
+				SELECT 1 FROM ${sessions}
+				WHERE ${sessions.userId} = ${users.id} AND ${sessions.expiresAt} > ${Date.now()}
+			)`.mapWith(Boolean)
+		})
+		.from(members)
+		.innerJoin(users, eq(users.id, members.userId))
+		.where(and(eq(members.campaignId, campaignId), eq(members.role, 'player')))
+		.orderBy(members.joinedAt, sql`${members}.rowid`)
+		.all();
+}
+
+/** A name for a seat, tidied: one that no other seat at the table has. */
+function seatName(db: Db, campaignId: string, raw: unknown, but?: string): string {
+	let name: string;
+	try {
+		name = cleanName(raw);
+	} catch (err) {
+		if (err instanceof AuthError) throw new ActionError('invalid', err.message);
+		throw err;
+	}
+	// Two seats by one name could not be told apart by whoever comes back for theirs.
+	const same = rosterOf(db, campaignId).some(
+		(seat) => seat.id !== but && seat.name.toLowerCase() === name.toLowerCase()
+	);
+	if (same) throw new ActionError('conflict', `There is a seat for “${name}” already.`);
+	return name;
+}
+
+/** A player of this campaign, by user id, who is not its GM. */
+function findSeat(db: Db, actor: Actor, id: unknown): Seat {
+	const seat =
+		typeof id === 'string' ? rosterOf(db, actor.campaignId).find((each) => each.id === id) : null;
+	if (!seat) throw new ActionError('not_found', 'That seat is not at this table.');
+	return seat;
+}
+
+/**
+ * Makes a seat with nobody in it yet: a player by that name, for someone
+ * to sit down in when they come. They ask for it on the invite link, under
+ * the seats that are taken, and the GM lets them in.
+ */
+export function createSeat(db: Db, actor: Actor, rawName: unknown): Seat {
+	requireKeeper(actor);
+	return db.transaction(
+		(tx) => {
+			if (rosterOf(tx, actor.campaignId).length >= LIMITS.seats) {
+				throw new ActionError('conflict', `A table has at most ${LIMITS.seats} seats.`);
+			}
+			const guest = createGuest(tx, seatName(tx, actor.campaignId, rawName));
+			joinCampaign(tx, actor.campaignId, guest.id);
+			return { id: guest.id, name: guest.name, guest: true, taken: false };
+		},
+		{ behavior: 'immediate' }
+	);
+}
+
+/**
+ * Changes what the player in a seat is called. Their name is written on
+ * what they made, so that is brought along: the tokens that are theirs,
+ * their notes and their drawings. A player with an account of their own is
+ * called what they chose, and is not the GM's to rename.
+ */
+export function renameSeat(db: Db, actor: Actor, id: unknown, rawName: unknown): Seat {
+	requireKeeper(actor);
+	return db.transaction(
+		(tx) => {
+			const seat = findSeat(tx, actor, id);
+			if (!seat.guest) {
+				throw new ActionError(
+					'conflict',
+					`${seat.name} has an account of their own, and is called what they chose.`
+				);
+			}
+			const name = seatName(tx, actor.campaignId, rawName, seat.id);
+			if (name === seat.name) return seat;
+			tx.update(users).set({ name }).where(eq(users.id, seat.id)).run();
+			tx.update(tokens).set({ ownerName: name }).where(eq(tokens.ownerId, seat.id)).run();
+			tx.update(markers).set({ authorName: name }).where(eq(markers.authorId, seat.id)).run();
+			tx.update(drawings).set({ authorName: name }).where(eq(drawings.authorId, seat.id)).run();
+			return { ...seat, name };
+		},
+		{ behavior: 'immediate' }
+	);
+}
+
+/**
+ * Takes a seat away: whoever sat in it is no longer a player of the
+ * campaign. What they made stays on the maps, under their name. The tokens
+ * that were theirs are nobody's from now on, which is a change to the
+ * world like any other: its events are returned, for whoever called this
+ * to hand to the table. They are no longer in on any secret.
+ *
+ * A seat with no account behind it is gone for good, and with it the login
+ * of every browser that sat in it. A player with an account of their own
+ * keeps the account, and can ask to join again.
+ */
+export function removeSeat(db: Db, actor: Actor, id: unknown): StoredEvent[] {
+	requireKeeper(actor);
+	const seat = findSeat(db, actor, id);
+	const inCampaign = db
+		.select({ id: maps.id })
+		.from(maps)
+		.where(eq(maps.campaignId, actor.campaignId));
+
+	// Their tokens are handed back first, as the GM would by hand, so that
+	// everyone at the table hears of it: where the fog follows the tokens,
+	// what the players see hangs on whose a token is.
+	const theirs = db
+		.select({ id: tokens.id })
+		.from(tokens)
+		.where(
+			and(eq(tokens.ownerId, seat.id), isNull(tokens.deletedAt), inArray(tokens.mapId, inCampaign))
+		)
+		.all();
+	const events: StoredEvent[] = [];
+	for (let i = 0; i < theirs.length; i += LIMITS.batch) {
+		const cmds = theirs
+			.slice(i, i + LIMITS.batch)
+			.map(({ id }): Command => ({ t: 'token.update', id, changes: { ownerId: null } }));
+		events.push(...perform(db, actor, { t: 'batch', cmds }));
+	}
+
+	db.transaction(
+		(tx) => {
+			// The ones that were taken off the map are nobody's as well, for when one comes back.
+			tx.update(tokens)
+				.set({ ownerId: null, ownerName: null })
+				.where(and(eq(tokens.ownerId, seat.id), inArray(tokens.mapId, inCampaign)))
+				.run();
+
+			// Whatever was a secret with them is a secret with one fewer.
+			const named = `%"${seat.id}"%`;
+			const without = (seenBy: string[]) => seenBy.filter((each) => each !== seat.id);
+			for (const row of tx
+				.select({ id: markers.id, seenBy: markers.seenBy })
+				.from(markers)
+				.where(and(inArray(markers.mapId, inCampaign), sql`${markers.seenBy} LIKE ${named}`))
+				.all()) {
+				tx.update(markers).set({ seenBy: without(row.seenBy) }).where(eq(markers.id, row.id)).run();
+			}
+			for (const row of tx
+				.select({ id: tokens.id, seenBy: tokens.seenBy })
+				.from(tokens)
+				.where(and(inArray(tokens.mapId, inCampaign), sql`${tokens.seenBy} LIKE ${named}`))
+				.all()) {
+				tx.update(tokens).set({ seenBy: without(row.seenBy) }).where(eq(tokens.id, row.id)).run();
+			}
+			for (const row of tx
+				.select({ id: drawings.id, seenBy: drawings.seenBy })
+				.from(drawings)
+				.where(and(inArray(drawings.mapId, inCampaign), sql`${drawings.seenBy} LIKE ${named}`))
+				.all()) {
+				tx.update(drawings).set({ seenBy: without(row.seenBy) }).where(eq(drawings.id, row.id)).run();
+			}
+			for (const row of tx
+				.select({ id: regions.id, seenBy: regions.seenBy })
+				.from(regions)
+				.where(and(inArray(regions.mapId, inCampaign), sql`${regions.seenBy} LIKE ${named}`))
+				.all()) {
+				tx.update(regions).set({ seenBy: without(row.seenBy) }).where(eq(regions.id, row.id)).run();
+			}
+			// And a picture held up for them is held up for one fewer. One held
+			// up for them alone is put away: with nobody named it would go up
+			// for the whole table.
+			const held = tx
+				.select({ file: campaigns.shownFile, to: campaigns.shownTo })
+				.from(campaigns)
+				.where(eq(campaigns.id, actor.campaignId))
+				.get();
+			if (held?.to.includes(seat.id)) {
+				const to = without(held.to);
+				tx.update(campaigns)
+					.set(to.length ? { shownTo: to } : { shownFile: null, shownTo: [] })
+					.where(eq(campaigns.id, actor.campaignId))
+					.run();
+			}
+
+			tx.delete(seatClaims)
+				.where(and(eq(seatClaims.campaignId, actor.campaignId), eq(seatClaims.userId, seat.id)))
+				.run();
+			tx.delete(members)
+				.where(and(eq(members.campaignId, actor.campaignId), eq(members.userId, seat.id)))
+				.run();
+
+			// A seat with no account behind it was only ever this: with no table
+			// left to sit at, there is nobody to keep.
+			const elsewhere = tx
+				.select({ campaignId: members.campaignId })
+				.from(members)
+				.where(and(eq(members.userId, seat.id), ne(members.campaignId, actor.campaignId)))
+				.get();
+			if (seat.guest && !elsewhere) {
+				tx.delete(sessions).where(eq(sessions.userId, seat.id)).run();
+				tx.delete(users).where(eq(users.id, seat.id)).run();
+			}
+		},
+		{ behavior: 'immediate' }
+	);
+	return events;
 }

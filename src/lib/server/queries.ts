@@ -5,11 +5,14 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { Db } from './db';
 import { drawings, maps, markers, members, regions, tokens, users } from './schema';
 import { boxAround, boxWithin, partOf } from '../shared/backdrop';
+import { sightOf } from '../shared/fog';
 import {
 	canEnterRegion,
+	canSeeDrawing,
 	canSeeMarker,
 	canSeeRegion,
 	canSeeToken,
+	drawingForEyes,
 	forEyes,
 	tokenForEyes,
 	roleOf,
@@ -20,6 +23,7 @@ import {
 	turnsAmong,
 	type Backdrop,
 	type Crumb,
+	type Diagonal,
 	type FindEntry,
 	type Fog,
 	type MapInfo,
@@ -28,7 +32,8 @@ import {
 	type Player,
 	type Rect,
 	type Region,
-	type Token
+	type Token,
+	type Units
 } from '../shared/types';
 
 import {
@@ -44,17 +49,20 @@ import {
 
 /**
  * The tokens on a map that someone may see. For a player that leaves out
- * the hidden ones they are not let in on, and the ones standing under the
- * map's fog.
+ * the hidden ones they are not let in on, the ones standing under the
+ * map's fog, and where the fog follows the tokens, the ones further off
+ * than any of the players' tokens sees.
  */
-export function tokensOn(db: Db, map: Pick<MapInfo, 'id' | 'fog'>, who: Who): Token[] {
-	return db
+export function tokensOn(db: Db, map: MapInfo, who: Who): Token[] {
+	const all = db
 		.select(tokenColumns)
 		.from(tokens)
 		.where(and(eq(tokens.mapId, map.id), isNull(tokens.deletedAt)))
 		.orderBy(tokens.createdAt)
-		.all()
-		.filter((token) => canSeeToken(who, token, map.fog))
+		.all();
+	const sight = roleOf(who) === 'gm' ? null : sightOf(map, all);
+	return all
+		.filter((token) => canSeeToken(who, token, map.fog, sight))
 		.map((token) => tokenForEyes(who, token));
 }
 
@@ -137,23 +145,55 @@ export function milesOf(db: Db, map: Pick<MapInfo, 'id' | 'kind' | 'miles'>): nu
 	return null;
 }
 
+/** What a map with none of its own takes from the maps further out. */
+type HandedDown = 'dayMiles' | 'units' | 'diagonal';
+
+/**
+ * What the GM has said of a map, or of the nearest map further out that
+ * says. Null when no map on the way does. So a thing is said once, on the
+ * first map of a campaign, and again only on a map where it is different.
+ */
+function handedDown<K extends HandedDown>(
+	db: Db,
+	map: Pick<MapInfo, K | 'parentId'>,
+	key: K
+): NonNullable<MapInfo[K]> | null {
+	let step: Pick<MapInfo, HandedDown | 'parentId'> | Pick<MapInfo, K | 'parentId'> | undefined = map;
+	for (let depth = 0; step && depth < 64; depth++) {
+		const own = (step as Pick<MapInfo, K>)[key];
+		if (own != null) return own;
+		if (!step.parentId) break;
+		step = db
+			.select({
+				dayMiles: maps.dayMiles,
+				units: maps.units,
+				diagonal: maps.diagonal,
+				parentId: maps.parentId
+			})
+			.from(maps)
+			.where(eq(maps.id, step.parentId))
+			.get();
+	}
+	return null;
+}
+
 /**
  * How many miles a day's travel covers on a map: what the GM has said of
  * it, or of the nearest map further out that has a pace of its own. With
  * none on the way, a day on foot.
  */
 export function dayMilesOf(db: Db, map: Pick<MapInfo, 'id' | 'dayMiles' | 'parentId'>): number {
-	let step: { dayMiles: number | null; parentId: string | null } | undefined = map;
-	for (let depth = 0; step && depth < 64; depth++) {
-		if (step.dayMiles != null) return step.dayMiles;
-		if (!step.parentId) break;
-		step = db
-			.select({ dayMiles: maps.dayMiles, parentId: maps.parentId })
-			.from(maps)
-			.where(eq(maps.id, step.parentId))
-			.get();
-	}
-	return DEFAULT_DAY_MILES;
+	return handedDown(db, map, 'dayMiles') ?? DEFAULT_DAY_MILES;
+}
+
+/** What distances are told in on a map, worked out the same way. With no map saying, feet and miles. */
+export function unitsOf(db: Db, map: Pick<MapInfo, 'units' | 'parentId'>): Units {
+	return handedDown(db, map, 'units') ?? 'imperial';
+}
+
+/** How a diagonal step is counted on a map, likewise. With no map saying, as one cell. */
+export function diagonalOf(db: Db, map: Pick<MapInfo, 'diagonal' | 'parentId'>): Diagonal {
+	return handedDown(db, map, 'diagonal') ?? 'one';
 }
 
 /**
@@ -245,6 +285,7 @@ export function findable(db: Db, campaignId: string, who: Who): FindEntry[] {
 			id: marker.id,
 			mapId: marker.mapId,
 			name: marker.title,
+			...(marker.description ? { text: marker.description } : {}),
 			path: way.path,
 			type: marker.type,
 			hidden: gm && (marker.hidden || way.shut)
@@ -322,7 +363,10 @@ export function getMapSnapshot(
 			.from(drawings)
 			.where(and(eq(drawings.mapId, mapId), isNull(drawings.deletedAt)))
 			.orderBy(drawings.createdAt)
-			.all();
+			.all()
+			// What the GM drew out of the players' sight is not sent to them.
+			.filter((drawing) => canSeeDrawing(who, drawing))
+			.map((drawing) => drawingForEyes(who, drawing));
 
 		const tokenList = tokensOn(tx, map, who);
 
@@ -336,6 +380,10 @@ export function getMapSnapshot(
 			drawings: drawingList,
 			miles: milesOf(tx, map),
 			dayMiles: dayMilesOf(tx, map),
+			// What the maps further out say: the map's own word, when it has
+			// one, is on the map itself, and is news the moment it changes.
+			units: unitsOf(tx, { units: null, parentId: map.parentId }),
+			diagonal: diagonalOf(tx, { diagonal: null, parentId: map.parentId }),
 			lastSeq: latestSeq(tx, campaignId)
 		};
 	});

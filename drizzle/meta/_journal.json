@@ -127,6 +127,13 @@
       "when": 1795214723127,
       "tag": "0017_remove_party",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1795318220315,
+      "tag": "0018_units_sight_hidden_drawings",
+      "breakpoints": true
     }
   ]
 }

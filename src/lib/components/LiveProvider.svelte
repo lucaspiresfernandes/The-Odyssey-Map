@@ -32,7 +32,11 @@
 			// connection was down for a while. Fetch a fresh snapshot.
 			const snapshot = (page.data as { snapshot?: MapSnapshot }).snapshot;
 			if (snapshot && seq > snapshot.lastSeq) refreshAll();
-		}
+		},
+		// The GM has taken this browser's seat away: back to the first page,
+		// which is all that is left for it. Loaded afresh, since who this
+		// browser is may have gone with the seat.
+		onBye: () => location.assign('/')
 	});
 	setLive(live);
 
@@ -41,7 +45,31 @@
 	// a refresh hands over a fresh copy of them, hanging up for good.
 	onMount(() => {
 		live.connect();
-		return () => live.stop();
+
+		// A phone that was locked, a tab that was behind another: the moment it
+		// is looked at again, the connection is seen to, and not whenever its
+		// own timer would have got round to it.
+		let hiddenAt: number | null = document.hidden ? Date.now() : null;
+		const looked = () => {
+			if (document.hidden) {
+				hiddenAt = Date.now();
+				return;
+			}
+			const away = hiddenAt === null ? 0 : Date.now() - hiddenAt;
+			hiddenAt = null;
+			live.wake(away);
+		};
+		// The network is back, which may be another network: whatever socket
+		// there was is not to be trusted.
+		const back = () => live.wake(Infinity);
+		document.addEventListener('visibilitychange', looked);
+		window.addEventListener('online', back);
+
+		return () => {
+			document.removeEventListener('visibilitychange', looked);
+			window.removeEventListener('online', back);
+			live.stop();
+		};
 	});
 </script>
 

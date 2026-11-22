@@ -78,6 +78,62 @@ export function isFogged(fog: Fog | undefined, at: Point): boolean {
 	return !fog.clear.some((box) => inBox(box, at));
 }
 
+// ------------------------------------------------- fog that follows tokens
+
+/**
+ * What the players' tokens see between them, on a battle map where the fog
+ * follows the tokens: where each of them stands, and how far it sees
+ * across the map and down it, in map space. That is two numbers because
+ * what a token sees is round on the map's picture, and map space is not
+ * square. Everything out of reach of all of them is under the fog.
+ *
+ * It is worked out from the tokens as they stand, whenever it is asked
+ * for, and never kept: move a token and what it saw is under the fog again.
+ */
+export interface Sight {
+	eyes: Point[];
+	r: [number, number];
+}
+
+/** What gives the table sight on such a map: a token that is some player's, and that the table can see. */
+export function isEye(token: { ownerId?: string | null; hidden?: boolean } | null | undefined): boolean {
+	return !!token && !!token.ownerId && !token.hidden;
+}
+
+/**
+ * How far a token sees across a map and down it, in map space, on a map
+ * where the fog follows the tokens. Null where it doesn't.
+ */
+export function sightReach(
+	map: Pick<MapInfo, 'kind' | 'sight' | 'cellFeet' | 'grid' | 'width' | 'height'>
+): [number, number] | null {
+	if (map.kind !== 'battle' || map.sight == null) return null;
+	const pixels = (map.sight / map.cellFeet) * map.grid.size;
+	return [pixels / map.width, pixels / map.height];
+}
+
+/**
+ * What the players' tokens among these see, on a map where the fog follows
+ * the tokens. Null on any other map: there, nothing is out of sight.
+ */
+export function sightOf(
+	map: Pick<MapInfo, 'kind' | 'sight' | 'cellFeet' | 'grid' | 'width' | 'height'>,
+	tokens: Iterable<{ x: number; y: number; ownerId?: string | null; hidden?: boolean }>
+): Sight | null {
+	const r = sightReach(map);
+	if (!r) return null;
+	const eyes: Point[] = [];
+	for (const token of tokens) if (isEye(token)) eyes.push([token.x, token.y]);
+	return { eyes, r };
+}
+
+/** True when a spot is further than any of the players' tokens sees. With no sight to go by, nothing is. */
+export function isOutOfSight(sight: Sight | null | undefined, [x, y]: Point): boolean {
+	if (!sight) return false;
+	const [rx, ry] = sight.r;
+	return !sight.eyes.some(([ex, ey]) => ((x - ex) / rx) ** 2 + ((y - ey) / ry) ** 2 <= 1);
+}
+
 /** The middle of the box around some corners: where a region is taken to be, for the fog. */
 export function middleOf(points: Point[]): Point {
 	const xs = points.map((point) => point[0]);

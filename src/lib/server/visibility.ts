@@ -1,8 +1,9 @@
 // The only path from the event log to a client.
 //
 // Stored events hold full before/after snapshots, including hidden world
-// markers, hidden tokens, tokens under the fog, hidden regions, and turn
-// orders that name tokens a player can't see. Nothing leaves the app
+// markers, hidden tokens and drawings, tokens under the fog or out of the
+// players' sight, hidden regions, and turn orders that name tokens a player
+// can't see. Nothing leaves the app
 // without passing through the functions below, which decide what a given
 // person is allowed to receive. That includes what is handed to
 // the WebSocket server to deliver.
@@ -14,11 +15,14 @@ import { eq } from 'drizzle-orm';
 import type { Db } from './db';
 import { mapFor, markersOn, regionsOn, tokensOn } from './queries';
 import { maps, regions } from './schema';
-import { isConcealed, mapColumns, regionColumns, targetMap } from './world';
+import { isConcealed, mapColumns, regionColumns, sightOn, targetMap } from './world';
+import { isEye, type Sight } from '../shared/fog';
 import {
+	canSeeDrawing,
 	canSeeMarker,
 	canSeeRegion,
 	canSeeToken,
+	drawingForEyes,
 	forEyes,
 	roleOf,
 	tokenForEyes,
@@ -54,9 +58,16 @@ function sameToSee(a: Token, b: Token): boolean {
  * delete, and one being revealed looks exactly like a create. So does a
  * token going under the fog and coming out of it, and a secret being shared
  * with them or taken back. `fog` is the fog on the map the thing is on,
- * which decides the first of those.
+ * which decides the first of those. `sight` is what the players' tokens see
+ * there now, where the fog follows the tokens: a token that walks out of
+ * it is gone the same way.
  */
-export function projectEvent(event: StoredEvent, who: Who, fog: Fog = NO_FOG): Patch | null {
+export function projectEvent(
+	event: StoredEvent,
+	who: Who,
+	fog: Fog = NO_FOG,
+	sight: Sight | null = null
+): Patch | null {
 	if (event.entity === 'marker') {
 		const before = event.before as Marker | null;
 		const after = event.after as Marker | null;
@@ -72,7 +83,10 @@ export function projectEvent(event: StoredEvent, who: Who, fog: Fog = NO_FOG): P
 	if (event.entity === 'token') {
 		const before = event.before as Token | null;
 		const after = event.after as Token | null;
-		if (after && canSeeToken(who, after, fog)) {
+		// A token that gives the table its sight is never out of it: not where
+		// it stands now, and not where it stood before it was taken away.
+		const seen = (token: Token) => canSeeToken(who, token, fog, isEye(token) ? null : sight);
+		if (after && seen(after)) {
 			const token = tokenForEyes(who, after);
 			// A number the GM keeps changing is no news to a player: the token
 			// they would be sent is the one they have.
@@ -80,25 +94,31 @@ export function projectEvent(event: StoredEvent, who: Who, fog: Fog = NO_FOG): P
 				roleOf(who) !== 'gm' &&
 				event.action === 'update' &&
 				before &&
-				canSeeToken(who, before, fog) &&
+				seen(before) &&
 				sameToSee(tokenForEyes(who, before), token)
 			) {
 				return null;
 			}
 			return { t: 'token.upsert', token };
 		}
-		if (before && canSeeToken(who, before, fog)) {
+		if (before && seen(before)) {
 			return { t: 'token.remove', id: event.entityId, mapId: event.mapId };
 		}
 		return null;
 	}
 
-	// A drawing is in plain sight of everyone who can open its map.
+	// A drawing is in plain sight of everyone who can open its map, unless
+	// the GM drew it out of theirs.
 	if (event.entity === 'drawing') {
+		const before = event.before as Drawing | null;
 		const after = event.after as Drawing | null;
-		return after
-			? { t: 'drawing.upsert', drawing: after }
-			: { t: 'drawing.remove', id: event.entityId, mapId: event.mapId };
+		if (after && canSeeDrawing(who, after)) {
+			return { t: 'drawing.upsert', drawing: drawingForEyes(who, after) };
+		}
+		if (before && canSeeDrawing(who, before)) {
+			return { t: 'drawing.remove', id: event.entityId, mapId: event.mapId };
+		}
+		return null;
 	}
 
 	if (event.entity === 'region') {
@@ -124,10 +144,31 @@ export function projectEvent(event: StoredEvent, who: Who, fog: Fog = NO_FOG): P
 	return map && { t: 'map.upsert', map };
 }
 
-const fogChanged = (event: StoredEvent) =>
-	event.entity === 'map' &&
-	event.action === 'update' &&
-	JSON.stringify((event.before as MapInfo).fog) !== JSON.stringify((event.after as MapInfo).fog);
+/**
+ * A change to a map moved what covers it: its fog, or where the fog follows
+ * the tokens, how far they see, which hangs on the size of a cell as well.
+ */
+function coverChanged(event: StoredEvent): boolean {
+	if (event.entity !== 'map' || event.action !== 'update') return false;
+	const before = event.before as MapInfo;
+	const after = event.after as MapInfo;
+	if (JSON.stringify(before.fog) !== JSON.stringify(after.fog)) return true;
+	if ((before.sight ?? null) !== (after.sight ?? null)) return true;
+	return (
+		after.sight != null &&
+		(before.cellFeet !== after.cellFeet || before.grid?.size !== after.grid?.size)
+	);
+}
+
+/**
+ * A change to a token moved what the players' tokens see between them: one
+ * of theirs walked, came onto the map or left it, or a token became some
+ * player's or stopped being one.
+ */
+function eyesMoved(before: Token | null, after: Token | null): boolean {
+	if (isEye(before) !== isEye(after)) return true;
+	return isEye(after) && (before!.x !== after!.x || before!.y !== after!.y);
+}
 
 /**
  * A map someone is kept out of was renamed. If they can see the region that
@@ -176,13 +217,15 @@ export function toLiveEvent(db: Db, event: StoredEvent, who: Who): LiveEvent | n
 	if (!gm && (event.entity === 'token' || event.entity === 'marker' || event.entity === 'region')) {
 		home = db.select(mapColumns).from(maps).where(eq(maps.id, event.mapId)).get();
 	}
-	const patch = projectEvent(event, who, home?.fog);
+	// Where the fog follows the tokens: what the players' tokens see, as they stand now.
+	const sight = home ? sightOn(db, home) : null;
+	const patch = projectEvent(event, who, home?.fog, sight);
 	if (!patch) return null;
 	if (!gm && patch.t === 'map.upsert') {
 		const seen = tokensOn(db, patch.map, who);
 		// Fog that moved has uncovered some things for the players and covered
 		// others. They are sent the lot as they may see it now.
-		if (fogChanged(event)) {
+		if (coverChanged(event)) {
 			if (patch.map.kind === 'battle') patch.tokens = seen;
 			else {
 				patch.markers = markersOn(db, patch.map, who);
@@ -196,9 +239,19 @@ export function toLiveEvent(db: Db, event: StoredEvent, who: Who): LiveEvent | n
 	// of it: the turn order they are shown changes with that.
 	if (home && (patch.t === 'token.upsert' || patch.t === 'token.remove')) {
 		const before = event.before as Token | null;
-		const wasSeen = !!before && canSeeToken(who, before, home.fog);
-		if ((patch.t === 'token.remove' || !wasSeen) && home.turns.order.includes(event.entityId)) {
-			patch.turns = mapFor(db, home, who).turns;
+		if (sight && eyesMoved(before, event.after as Token | null)) {
+			// One of the players' tokens moved, and what they all see moved with
+			// it: other tokens came into sight, and others went out of it. They
+			// are sent the lot as they may see it now, and the turn order to match.
+			const seen = tokensOn(db, home, who);
+			patch.tokens = seen;
+			patch.turns = mapFor(db, home, who, seen).turns;
+		} else {
+			const wasSeen =
+				!!before && canSeeToken(who, before, home.fog, isEye(before) ? null : sight);
+			if ((patch.t === 'token.remove' || !wasSeen) && home.turns.order.includes(event.entityId)) {
+				patch.turns = mapFor(db, home, who).turns;
+			}
 		}
 	}
 	return live(patch);

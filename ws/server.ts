@@ -395,8 +395,27 @@ async function publish(request: Request): Promise<Response> {
 	if (request.method !== 'POST' || request.headers.get('authorization') !== `Bearer ${SECRET}`) {
 		return new Response('Forbidden', { status: 403 });
 	}
-	const { campaignId, events, show, knocks, date } = (await request.json()) as Broadcast;
+	const { campaignId, events, show, knocks, date, seats } = (await request.json()) as Broadcast;
 	const room = rooms.get(campaignId) ?? [];
+	// Seats the GM has changed. A player who was renamed is called the new
+	// name from here on, by everyone who is told who is at the table. One
+	// whose seat was taken away is told so and hung up on: the app would
+	// refuse whatever they sent next, and they are owed nothing more of
+	// what happens here.
+	if (seats?.length) {
+		for (const ws of [...room]) {
+			const seat = seats.find((each) => each.id === ws.data.user.id);
+			if (!seat || ws.data.role !== 'player') continue;
+			if (seat.name === null) {
+				send(ws, { t: 'bye' });
+				ws.close(4403, 'Seat taken away');
+			} else {
+				ws.data.user = { ...ws.data.user, name: seat.name };
+				if (ws.data.hand) ws.data.hand = { ...ws.data.hand, name: seat.name };
+			}
+		}
+		announcePresence(campaignId);
+	}
 	// Who is asking for a seat they sat in before: the GM's to know, on
 	// every screen of theirs but a table display, which listens as a player.
 	if (knocks) {
@@ -535,6 +554,8 @@ const server = Bun.serve({
 			} catch {
 				return;
 			}
+			// A browser that was asleep asking whether this connection still lives.
+			if (message?.t === 'hi') return send(ws, { t: 'hi' });
 			if (message?.t === 'hand') return hold(ws, message.at);
 			if (message?.t === 'ping') return ping(ws, message.at);
 			if (message?.t !== 'cmd' || typeof message.id !== 'number') return;

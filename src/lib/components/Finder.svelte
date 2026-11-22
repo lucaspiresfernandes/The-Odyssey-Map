@@ -46,15 +46,52 @@
 			.replace(/[̀-ͯ]/g, '')
 			.toLowerCase();
 
+	/** One thing that was found. `words` is the part of a marker's description that matched. */
+	interface Found {
+		entry: FindEntry;
+		rank: number;
+		words?: string;
+	}
+
+	/** How much of a description is shown before the words that were found in it. */
+	const LEAD = 24;
+
+	/**
+	 * The stretch of a description around what was found in it, cut at a
+	 * word where it doesn't start at the beginning. Taking the accents off a
+	 * text can change how long it is, so each plain letter remembers where
+	 * it stood in the text as it was written.
+	 */
+	function around(text: string, wanted: string): string {
+		let flat = '';
+		const stood: number[] = [];
+		let i = 0;
+		for (const letter of text) {
+			const bare = plain(letter);
+			flat += bare;
+			for (let n = 0; n < bare.length; n++) stood.push(i);
+			i += letter.length;
+		}
+		const at = stood[flat.indexOf(wanted)] ?? 0;
+		let from = Math.max(0, at - LEAD);
+		if (from > 0) {
+			const gap = text.slice(from, at).search(/\s/);
+			from = gap === -1 ? at : from + gap + 1;
+		}
+		const words = text.slice(from).replace(/\s+/g, ' ').trim();
+		return from > 0 ? `…${words}` : words;
+	}
+
 	/**
 	 * What matches, the best first: a name that starts with what was typed,
-	 * then one with a word that does, then one that has it anywhere. Maps
-	 * come before markers. Before anything is typed, the maps are listed.
+	 * then one with a word that does, then one that has it anywhere, and
+	 * last a marker whose description has it. Maps come before markers.
+	 * Before anything is typed, the maps are listed.
 	 */
-	const results = $derived.by(() => {
+	const results = $derived.by((): Found[] => {
 		if (!entries) return [];
 		const wanted = plain(query.trim());
-		const ranked: { entry: FindEntry; rank: number }[] = [];
+		const ranked: Found[] = [];
 		for (const entry of entries) {
 			if (entry.kind === 'map' && entry.id === here) continue;
 			if (!wanted) {
@@ -63,14 +100,18 @@
 			}
 			const name = plain(entry.name);
 			const found = name.indexOf(wanted);
-			if (found === -1) continue;
-			const rank = found === 0 ? 0 : /\s/.test(name[found - 1]) ? 1 : 2;
-			ranked.push({ entry, rank: rank * 2 + (entry.kind === 'map' ? 0 : 1) });
+			if (found !== -1) {
+				const rank = found === 0 ? 0 : /\s/.test(name[found - 1]) ? 1 : 2;
+				ranked.push({ entry, rank: rank * 2 + (entry.kind === 'map' ? 0 : 1) });
+			} else if (entry.text && plain(entry.text).includes(wanted)) {
+				ranked.push({ entry, rank: 6, words: entry.text });
+			}
 		}
+		// Only what is shown has its words cut out: there may be a great many markers.
 		return ranked
 			.sort((a, b) => a.rank - b.rank)
 			.slice(0, MOST)
-			.map((each) => each.entry);
+			.map((found) => (found.words ? { ...found, words: around(found.words, wanted) } : found));
 	});
 
 	$effect(() => {
@@ -86,8 +127,8 @@
 			}
 		} else if (e.key === 'Enter') {
 			e.preventDefault();
-			const entry = results[at];
-			if (entry) onpick(entry);
+			const found = results[at];
+			if (found) onpick(found.entry);
 		}
 	}
 </script>
@@ -98,8 +139,8 @@
 		<input
 			class="input"
 			type="search"
-			placeholder="Type a name…"
-			aria-label="Name of a map or a marker"
+			placeholder="Type a name, or a word from a marker…"
+			aria-label="Name of a map or a marker, or words from a marker"
 			aria-controls="finder-results"
 			autocomplete="off"
 			autofocus
@@ -113,11 +154,11 @@
 			<p class="text-sm text-muted">Reading the campaign…</p>
 		{:else if results.length === 0}
 			<p class="text-sm text-muted">
-				{query.trim() ? 'Nothing by that name.' : 'This campaign has no other maps yet.'}
+				{query.trim() ? 'Nothing by that name, and no marker that says it.' : 'This campaign has no other maps yet.'}
 			</p>
 		{:else}
 			<ul id="finder-results" class="grid gap-0.5" role="listbox" aria-label="What was found">
-				{#each results as entry, i (entry.kind + entry.id)}
+				{#each results as { entry, words }, i (entry.kind + entry.id)}
 					<li role="option" aria-selected={i === at}>
 						<button
 							class={[
@@ -163,6 +204,9 @@
 										<span class="text-xs font-semibold text-[#f2c14e]">· hidden</span>
 									{/if}
 								</span>
+								{#if words}
+									<span class="truncate text-xs">{words}</span>
+								{/if}
 								{#if entry.path.length}
 									<span class="truncate text-xs text-muted">{entry.path.join(' › ')}</span>
 								{/if}

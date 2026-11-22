@@ -3,7 +3,16 @@
 // grid is in the map's pixels, distances are told in feet, and these
 // functions go between them.
 
-import type { Grid, MapInfo, Point, TemplateKind } from './types';
+import {
+	KM_A_MILE,
+	METRES_A_FOOT,
+	type Diagonal,
+	type Grid,
+	type MapInfo,
+	type Point,
+	type TemplateKind,
+	type Units
+} from './types';
 
 type Sheet = Pick<MapInfo, 'width' | 'height' | 'grid'>;
 type Scale = Pick<MapInfo, 'cellFeet'>;
@@ -149,10 +158,46 @@ export function travelTime(miles: number, dayMiles: number): string {
 	return `about ${whole}${halves % 2 ? '½' : ''} days`;
 }
 
-/** "0.4 mi", "7.5 mi", "120 mi": as fine as a distance that size is worth telling. */
-export function milesCount(miles: number): string {
-	const shown = miles >= 100 ? Math.round(miles) : Math.round(miles * 10) / 10;
-	return `${shown.toLocaleString('en')} mi`;
+/**
+ * "0.4 mi", "7.5 mi", "120 mi": as fine as a distance that size is worth
+ * telling. In kilometres where the map is metric: "180 km".
+ */
+export function milesCount(miles: number, units: Units = 'imperial'): string {
+	const far = longIn(miles, units);
+	const shown = far >= 100 ? Math.round(far) : Math.round(far * 10) / 10;
+	return `${shown.toLocaleString('en')} ${units === 'metric' ? 'km' : 'mi'}`;
+}
+
+// Distances are kept in feet and miles whatever they are told in. These go
+// between what is kept and what someone reads or types.
+
+/** What the two lengths are called in each: the short one of a battle map, the long one of a world map. */
+export const UNIT_NAMES: Record<Units, { short: string; long: string }> = {
+	imperial: { short: 'feet', long: 'miles' },
+	metric: { short: 'metres', long: 'kilometres' }
+};
+
+/** Six decimal places are finer than anything typed, and take the dust off a division. */
+const tidy = (n: number) => Math.round(n * 1e6) / 1e6;
+
+/** A length kept in feet, as a number of feet or of metres. */
+export function shortIn(feet: number, units: Units): number {
+	return units === 'metric' ? tidy(feet * METRES_A_FOOT) : feet;
+}
+
+/** The feet that a number of feet or of metres is kept as. */
+export function shortFrom(value: number, units: Units): number {
+	return units === 'metric' ? tidy(value / METRES_A_FOOT) : value;
+}
+
+/** A length kept in miles, as a number of miles or of kilometres. */
+export function longIn(miles: number, units: Units): number {
+	return units === 'metric' ? tidy(miles * KM_A_MILE) : miles;
+}
+
+/** The miles that a number of miles or of kilometres is kept as. */
+export function longFrom(value: number, units: Units): number {
+	return units === 'metric' ? tidy(value / KM_A_MILE) : value;
 }
 
 /**
@@ -227,20 +272,47 @@ export function arrangeInCells(sizes: number[]): Point[] {
 }
 
 /**
- * How many feet apart two spots are, counting a diagonal step as one cell:
- * the way most tabletop games count movement on squares. To one decimal
- * place.
+ * How many cells it is from one spot to another that is `dx` cells across
+ * from it and `dy` down, by the map's way of counting a diagonal step. As
+ * `one` cell, it is the longer of the two: the way most tabletop games
+ * count movement on squares. With `alternate`, every second diagonal step
+ * counts as two, so it is that and half the shorter, rounded down. With
+ * `true` it is as the crow flies.
  */
-export function feetBetween(map: Sheet & Scale, a: Point, b: Point): number {
-	const dx = Math.abs(a[0] - b[0]) * map.width;
-	const dy = Math.abs(a[1] - b[1]) * map.height;
-	return Math.round((Math.max(dx, dy) / map.grid.size) * map.cellFeet * 10) / 10;
+export function cellsApart(dx: number, dy: number, diagonal: Diagonal = 'one'): number {
+	const long = Math.max(Math.abs(dx), Math.abs(dy));
+	const short = Math.min(Math.abs(dx), Math.abs(dy));
+	if (diagonal === 'true') return Math.hypot(long, short);
+	// A hair is added before rounding down, so two steps counted in pixels are still two.
+	if (diagonal === 'alternate') return long + Math.floor(short / 2 + 1e-6);
+	return long;
 }
 
-/** The same along a way with bends in it: every stretch of it counted in cells, and added up. */
-export function feetAlong(map: Sheet & Scale, points: Point[]): number {
+/**
+ * How many feet apart two spots are, with a diagonal step counted the way
+ * the map says: as one cell unless it says otherwise. To one decimal place.
+ */
+export function feetBetween(
+	map: Sheet & Scale,
+	a: Point,
+	b: Point,
+	diagonal: Diagonal = 'one'
+): number {
+	const dx = (Math.abs(a[0] - b[0]) * map.width) / map.grid.size;
+	const dy = (Math.abs(a[1] - b[1]) * map.height) / map.grid.size;
+	return Math.round(cellsApart(dx, dy, diagonal) * map.cellFeet * 10) / 10;
+}
+
+/**
+ * The same along a way with bends in it: every stretch of it counted in
+ * cells, and added up. Each stretch is counted on its own: where every
+ * second diagonal step counts as two, the count starts over at each bend.
+ */
+export function feetAlong(map: Sheet & Scale, points: Point[], diagonal: Diagonal = 'one'): number {
 	let far = 0;
-	for (let i = 1; i < points.length; i++) far += feetBetween(map, points[i - 1], points[i]);
+	for (let i = 1; i < points.length; i++) {
+		far += feetBetween(map, points[i - 1], points[i], diagonal);
+	}
 	return Math.round(far * 10) / 10;
 }
 
@@ -249,9 +321,10 @@ export function cellsToFeet(map: Scale, cells: number): number {
 	return Math.round(cells * map.cellFeet * 100) / 100;
 }
 
-/** "8 ft", "24 ft", "12.5 ft". */
-export function feetCount(feet: number): string {
-	return `${feet} ft`;
+/** "8 ft", "24 ft", "12.5 ft". In metres where the map is metric: "2.4 m", "7.5 m". */
+export function feetCount(feet: number, units: Units = 'imperial'): string {
+	if (units !== 'metric') return `${feet} ft`;
+	return `${Math.round(feet * METRES_A_FOOT * 100) / 100} m`;
 }
 
 /** How many whole cells fit across and down a map. */

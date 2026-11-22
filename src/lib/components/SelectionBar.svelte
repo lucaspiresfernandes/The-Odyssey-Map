@@ -5,7 +5,8 @@
 	//
 	// A token is the whole table's: its label, its lock, its marks, the number
 	// it carries, its look, copying it, and taking it off the map. Who sees it
-	// is the GM's: one button, which opens the dialog that says so. So is
+	// is the GM's: one button, which opens the dialog that says so, for the
+	// tokens and the drawings selected alike. So is
 	// whether its number is kept from the table. Turning and resizing it are
 	// not done from here: the map has handles for those on the token itself. Nor is who
 	// takes turns: that is the turn order's own, in its corner of the map. A
@@ -52,8 +53,8 @@
 		onclear: () => void;
 		/** These tokens are to be what is selected, in place of what is. */
 		onpick: (tokens: Token[]) => void;
-		/** The GM is to say who sees these tokens. */
-		onvisibility: (tokens: Token[]) => void;
+		/** The GM is to say who sees these tokens and drawings. */
+		onvisibility: (things: (Token | Drawing)[]) => void;
 	}
 
 	let {
@@ -81,8 +82,10 @@
 		tokens.length === 0 && drawings.length === 1 && erasable[0]?.kind === 'text' ? erasable[0] : null
 	);
 	const allLocked = $derived(tokens.length > 0 && tokens.every((t) => t.locked));
-	const allHidden = $derived(tokens.length > 0 && tokens.every((t) => t.hidden));
-	const someHidden = $derived(tokens.some((t) => t.hidden));
+	/** What of the selection the GM can hide from the players: its tokens, and its drawings. */
+	const hideable = $derived<(Token | Drawing)[]>(gm ? [...tokens, ...drawings] : []);
+	const allHidden = $derived(hideable.length > 0 && hideable.every((t) => t.hidden));
+	const someHidden = $derived(hideable.some((t) => t.hidden));
 	const several = $derived(tokens.length > 1);
 	/** Every token selected has its number kept from the table. */
 	const allKept = $derived(tokens.length > 0 && tokens.every((t) => t.countHidden));
@@ -103,13 +106,15 @@
 	let count = $state('');
 	/** What was typed for it is no number. */
 	let miscounted = $state(false);
-	/** How many players every token selected is a secret with. */
+	/** How many players everything selected is a secret with. */
 	const sharedWith = $derived(
-		allHidden ? tokens[0].seenBy.filter((id) => tokens.every((t) => t.seenBy.includes(id))).length : 0
+		allHidden
+			? hideable[0].seenBy.filter((id) => hideable.every((t) => t.seenBy.includes(id))).length
+			: 0
 	);
 	/** Who sees what is selected, for the tooltip of the button that changes it. */
 	const seen = $derived.by(() => {
-		const them = several ? 'them' : 'it';
+		const them = hideable.length > 1 ? 'them' : 'it';
 		if (!someHidden) return `Everyone sees ${them}`;
 		if (!allHidden) return 'Some of them are hidden';
 		if (!sharedWith) return `Only you see ${them}`;
@@ -180,9 +185,19 @@
 		send(tokens.filter((t) => t.locked !== locked).map((t) => update(t, { locked })));
 	}
 
+	/** Hides what is selected from the players, or with all of it hidden, shows it again. */
 	function hide() {
 		const hidden = !allHidden;
-		send(tokens.filter((t) => t.hidden !== hidden).map((t) => update(t, { hidden })));
+		send(
+			hideable
+				.filter((thing) => thing.hidden !== hidden)
+				.map(
+					(thing): Command =>
+						'points' in thing
+							? { t: 'drawing.update', id: thing.id, changes: { hidden } }
+							: update(thing, { hidden })
+				)
+		);
 	}
 
 	/** Whether every token selected wears this mark. */
@@ -263,6 +278,11 @@
 			if (one) return () => startLabel(one);
 			return text ? () => onwrite(text) : null;
 		}
+		if (hideable.length) {
+			// The quick way, with no button of its own: hidden from everyone, or back.
+			if (pressed === KEY.hide) return hide;
+			if (pressed === KEY.share) return () => onvisibility(hideable);
+		}
 		if (tokens.length === 0) return null;
 		switch (pressed) {
 			case KEY.lock:
@@ -276,14 +296,6 @@
 				return duplicate;
 			case KEY.look:
 				return one ? () => onedit(one) : null;
-		}
-		if (!gm) return null;
-		switch (pressed) {
-			// The quick way, with no button of its own: hidden from everyone, or back.
-			case KEY.hide:
-				return hide;
-			case KEY.share:
-				return () => onvisibility(tokens);
 		}
 		return null;
 	}
@@ -496,8 +508,10 @@
 					onclick={() => onpick(caught)}
 				/>
 			{/if}
-			{#if gm && tokens.length}
-				<span class="w-px self-stretch bg-line"></span>
+			{#if hideable.length}
+				{#if tokens.length || text || caught.length}
+					<span class="w-px self-stretch bg-line"></span>
+				{/if}
 				<ToolButton
 					small
 					{tip}
@@ -506,7 +520,7 @@
 					hint={seen}
 					shortcut={KEY.share}
 					active={someHidden}
-					onclick={() => onvisibility(tokens)}
+					onclick={() => onvisibility(hideable)}
 				/>
 			{/if}
 			{#if removable}

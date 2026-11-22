@@ -21,7 +21,7 @@ import {
 	tokens,
 	users
 } from './schema';
-import { fogOf, isFogged } from '../shared/fog';
+import { fogOf, isEye, isFogged, sightOf, type Sight } from '../shared/fog';
 import { wrapOffset } from '../shared/grid';
 import {
 	canChangeDrawing,
@@ -30,9 +30,11 @@ import {
 	canEndTurn,
 	canEnterRegion,
 	canCountToken,
+	canHideDrawing,
 	canHideToken,
 	canRemoveMarker,
 	canRestoreToken,
+	canSeeDrawing,
 	canSeeEvent,
 	canSeeMarker,
 	canSeeToken,
@@ -42,6 +44,7 @@ import {
 import { nextTurn, previousTurn } from '../shared/turns';
 import {
 	DEFAULT_MAP_SIZE,
+	DIAGONALS,
 	DRAWING_SIZE,
 	INK_COLORS,
 	LIMITS,
@@ -50,8 +53,10 @@ import {
 	TOKEN_COLORS,
 	TOKEN_MARK_IDS,
 	TOKEN_SIZE_STEP,
+	UNITS,
 	isTemplate,
 	type Command,
+	type Diagonal,
 	type Drawing,
 	type DrawingKind,
 	type EntityType,
@@ -75,6 +80,7 @@ import {
 	type TokenInput,
 	type TokenMark,
 	type Turns,
+	type Units,
 	type Viewer
 } from '../shared/types';
 
@@ -163,6 +169,9 @@ export const mapColumns = {
 	turns: maps.turns,
 	miles: maps.miles,
 	dayMiles: maps.dayMiles,
+	units: maps.units,
+	diagonal: maps.diagonal,
+	sight: maps.sight,
 	imageFile: maps.imageFile,
 	width: maps.width,
 	height: maps.height
@@ -198,6 +207,8 @@ export const drawingColumns = {
 	text: drawings.text,
 	color: drawings.color,
 	size: drawings.size,
+	hidden: drawings.hidden,
+	seenBy: drawings.seenBy,
 	authorId: drawings.authorId,
 	authorName: drawings.authorName,
 	updatedAt: drawings.updatedAt
@@ -287,25 +298,51 @@ function findMarker(
 	return { marker: row.marker, deletedAt: row.deletedAt };
 }
 
+/**
+ * What the players' tokens see between them on a map where the fog follows
+ * the tokens, as they stand now. Null on any other map.
+ */
+export function sightOn(db: Db, map: MapInfo): Sight | null {
+	if (map.kind !== 'battle' || map.sight == null) return null;
+	const here = db
+		.select({ x: tokens.x, y: tokens.y, ownerId: tokens.ownerId, hidden: tokens.hidden })
+		.from(tokens)
+		.where(and(eq(tokens.mapId, map.id), isNull(tokens.deletedAt)))
+		.all();
+	return sightOf(map, here);
+}
+
 function findToken(db: Db, actor: Actor, id: string): { token: Token; deletedAt: number | null } {
 	const row = db
-		.select({ token: tokenColumns, deletedAt: tokens.deletedAt, fog: maps.fog })
+		.select({ token: tokenColumns, deletedAt: tokens.deletedAt, map: mapColumns })
 		.from(tokens)
 		.innerJoin(maps, eq(maps.id, tokens.mapId))
 		.where(and(eq(tokens.id, id), eq(maps.campaignId, actor.campaignId)))
 		.get();
 	// As with a hidden marker: to a player, a token they cannot see was never
-	// there. That goes for one under the fog as well.
+	// there. That goes for one under the fog as well, and for one out of
+	// sight where the fog follows the tokens. A token that gives the table
+	// its sight is never out of it, on the map or just taken off it.
 	const viewer = viewerOf(actor);
 	const secret =
-		row && (!canSeeToken(viewer, row.token, row.fog) || isConcealed(db, row.token.mapId, viewer));
+		row &&
+		actor.role !== 'gm' &&
+		(!canSeeToken(
+			viewer,
+			row.token,
+			row.map.fog,
+			isEye(row.token) ? null : sightOn(db, row.map)
+		) ||
+			isConcealed(db, row.token.mapId, viewer));
 	if (!row || secret) fail('not_found', 'That token does not exist.');
 	return { token: row.token, deletedAt: row.deletedAt };
 }
 
 /**
  * A player puts a token only where they can see: one that went under the
- * fog would be lost to them. The GM puts them anywhere.
+ * fog would be lost to them. The GM puts them anywhere. This is the fog the
+ * GM laid by hand. Where the fog follows the tokens, a player's token goes
+ * anywhere, and sees around itself where it lands.
  */
 function requireInSight(actor: Actor, fog: Fog, x: number, y: number) {
 	if (actor.role !== 'gm' && isFogged(fog, [x, y])) {
@@ -324,7 +361,10 @@ function findDrawing(
 		.innerJoin(maps, eq(maps.id, drawings.mapId))
 		.where(and(eq(drawings.id, id), eq(maps.campaignId, actor.campaignId)))
 		.get();
-	const secret = row && isConcealed(db, row.drawing.mapId, viewerOf(actor));
+	// To a player, a drawing the GM keeps out of their sight was never drawn.
+	const viewer = viewerOf(actor);
+	const secret =
+		row && (!canSeeDrawing(viewer, row.drawing) || isConcealed(db, row.drawing.mapId, viewer));
 	if (!row || secret) fail('not_found', 'That drawing does not exist.');
 	return row;
 }
@@ -1151,6 +1191,8 @@ function createDrawing(db: Db, actor: Actor, raw: Record<string, unknown>): Stor
 			text: kind === 'text' ? asDrawingText(raw.text) : '',
 			color: raw.color === undefined ? INK_COLORS[0] : asInk(raw.color),
 			size,
+			// Only the GM has anything to hide.
+			hidden: canHideDrawing(actor.role) && raw.hidden === true,
 			authorId: actor.userId,
 			authorName: actor.name,
 			createdAt: now,
@@ -1161,16 +1203,27 @@ function createDrawing(db: Db, actor: Actor, raw: Record<string, unknown>): Stor
 }
 
 function writeDrawing(db: Db, actor: Actor, before: Drawing, after: Drawing): StoredEvent[] {
+	// Revealed to everyone, it is a secret with nobody.
+	if (!after.hidden) after.seenBy = [];
 	if (
 		before.text === after.text &&
 		before.color === after.color &&
-		samePoints(before.points, after.points)
+		samePoints(before.points, after.points) &&
+		Boolean(before.hidden) === Boolean(after.hidden) &&
+		sameList(before.seenBy, after.seenBy)
 	) {
 		return [];
 	}
 	after.updatedAt = Date.now();
 	db.update(drawings)
-		.set({ points: after.points, text: after.text, color: after.color, updatedAt: after.updatedAt })
+		.set({
+			points: after.points,
+			text: after.text,
+			color: after.color,
+			hidden: Boolean(after.hidden),
+			seenBy: after.seenBy ?? [],
+			updatedAt: after.updatedAt
+		})
 		.where(eq(drawings.id, after.id))
 		.run();
 	return [record(db, actor, before.mapId, 'drawing', 'update', before, after)];
@@ -1184,7 +1237,11 @@ function drawingToChange(db: Db, actor: Actor, id: string): Drawing {
 	return drawing;
 }
 
-/** Rewords a text, recolours a drawing, slides it across the map: whichever are asked for. */
+/**
+ * Rewords a text, recolours a drawing, slides it across the map, hides it
+ * from the players or says which of them see it all the same: whichever
+ * are asked for.
+ */
 function updateDrawing(db: Db, actor: Actor, id: string, rawChanges: unknown): StoredEvent[] {
 	const before = drawingToChange(db, actor, id);
 	const changes = asRecord(rawChanges);
@@ -1195,6 +1252,11 @@ function updateDrawing(db: Db, actor: Actor, id: string, rawChanges: unknown): S
 	}
 	if (changes.color !== undefined) after.color = asInk(changes.color);
 	if (changes.move !== undefined) after.points = slid(before.points, changes.move);
+	if (changes.hidden !== undefined || changes.seenBy !== undefined) {
+		if (!canHideDrawing(actor.role)) fail('forbidden', 'Only the GM can hide a drawing.');
+		if (changes.hidden !== undefined) after.hidden = asBool(changes.hidden);
+		if (changes.seenBy !== undefined) after.seenBy = asSeenBy(db, actor, changes.seenBy);
+	}
 	return writeDrawing(db, actor, before, after);
 }
 
@@ -1455,7 +1517,7 @@ function passTurn(db: Db, actor: Actor, raw: Record<string, unknown>): StoredEve
 		.all();
 	if (actor.role !== 'gm') {
 		const whose = here.find((token) => token.id === from);
-		if (!whose || !canSeeToken(viewerOf(actor), whose, map.fog)) {
+		if (!whose || !canSeeToken(viewerOf(actor), whose, map.fog, sightOf(map, here))) {
 			fail('forbidden', 'Only the GM can move on from this turn.');
 		}
 		// A token that is someone's has its turn ended by them.
@@ -1517,6 +1579,36 @@ function asDayMiles(value: unknown): number | null {
 			'invalid',
 			`A day's travel is between ${LIMITS.dayMilesMin} and ${LIMITS.dayMilesMax} miles.`
 		);
+	}
+	return value;
+}
+
+/** What distances are told in, or null for as the maps further out have it. */
+function asUnits(value: unknown): Units | null {
+	if (value === null) return null;
+	if (!(UNITS as readonly unknown[]).includes(value)) fail('invalid', 'Unknown units.');
+	return value as Units;
+}
+
+/** How a diagonal step is counted, or null for as the maps further out have it. */
+function asDiagonal(value: unknown): Diagonal | null {
+	if (value === null) return null;
+	if (!(DIAGONALS as readonly unknown[]).includes(value)) {
+		fail('invalid', 'Unknown way of counting a diagonal.');
+	}
+	return value as Diagonal;
+}
+
+/** How many feet a player's token sees, or null where the fog doesn't follow the tokens. */
+function asSight(value: unknown): number | null {
+	if (value === null) return null;
+	if (
+		typeof value !== 'number' ||
+		!Number.isFinite(value) ||
+		value < LIMITS.sightMin ||
+		value > LIMITS.sightMax
+	) {
+		fail('invalid', `A token sees between ${LIMITS.sightMin} and ${LIMITS.sightMax} feet.`);
 	}
 	return value;
 }
@@ -1585,6 +1677,9 @@ function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): Stored
 		sameTurns(before.turns, after.turns) &&
 		before.miles === after.miles &&
 		(before.dayMiles ?? null) === (after.dayMiles ?? null) &&
+		(before.units ?? null) === (after.units ?? null) &&
+		(before.diagonal ?? null) === (after.diagonal ?? null) &&
+		(before.sight ?? null) === (after.sight ?? null) &&
 		before.imageFile === after.imageFile &&
 		before.width === after.width &&
 		before.height === after.height
@@ -1606,6 +1701,9 @@ function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): Stored
 			turns: after.turns,
 			miles: after.miles,
 			dayMiles: after.dayMiles ?? null,
+			units: after.units ?? null,
+			diagonal: after.diagonal ?? null,
+			sight: after.sight ?? null,
 			imageFile: after.imageFile,
 			width: after.width,
 			height: after.height
@@ -1618,9 +1716,10 @@ function writeMap(db: Db, actor: Actor, before: MapInfo, after: MapInfo): Stored
 /**
  * Renames a map, sets up its grid, says how many feet a cell stands for,
  * lays an image from the gallery under it, covers it with fog or clears
- * some, says whose turn it is, or how many miles across it is: whichever
- * are asked for. What kind of map it is was settled when its region was
- * drawn, and stays so.
+ * some, says whose turn it is, how many miles across it is, what distances
+ * are told in, how a diagonal is counted, or how far the tokens of players
+ * see where the fog follows them: whichever are asked for. What kind of map
+ * it is was settled when its region was drawn, and stays so.
  */
 function updateMap(
 	db: Db,
@@ -1636,16 +1735,22 @@ function updateMap(
 		turns?: unknown;
 		miles?: unknown;
 		dayMiles?: unknown;
+		units?: unknown;
+		diagonal?: unknown;
+		sight?: unknown;
 	}
 ): StoredEvent[] {
 	requireWorldEdit(actor);
 	const before = findMap(db, actor, id);
 	const { name, kind, grid, cellFeet, image, fog, turns, miles, dayMiles } = changes;
+	const { units, diagonal, sight } = changes;
 	if (kind !== undefined) {
 		fail('invalid', 'A map stays the kind it was made as. Draw a region for the other kind.');
 	}
 	if (
-		[name, grid, cellFeet, image, fog, turns, miles, dayMiles].every((change) => change === undefined)
+		[name, grid, cellFeet, image, fog, turns, miles, dayMiles, units, diagonal, sight].every(
+			(change) => change === undefined
+		)
 	) {
 		fail('invalid', 'Malformed request.');
 	}
@@ -1666,6 +1771,12 @@ function updateMap(
 	if (dayMiles !== undefined) {
 		if (before.kind !== 'world') fail('invalid', 'A battle map has no days of travel.');
 		after.dayMiles = asDayMiles(dayMiles);
+	}
+	if (units !== undefined) after.units = asUnits(units);
+	if (diagonal !== undefined) after.diagonal = asDiagonal(diagonal);
+	if (sight !== undefined) {
+		if (before.kind !== 'battle') fail('invalid', 'The fog follows tokens on battle maps.');
+		after.sight = asSight(sight);
 	}
 	if (image !== undefined) {
 		// The map takes the size of its picture. Everything on it is placed
@@ -1748,11 +1859,14 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 		const before = event.before as Drawing;
 		const after = event.after as Drawing;
 		const current = drawingToChange(db, actor, id);
+		const hid = Boolean(before.hidden) !== Boolean(after.hidden);
 		return writeDrawing(db, actor, current, {
 			...current,
 			text: before.text === after.text ? current.text : before.text,
 			color: before.color === after.color ? current.color : before.color,
-			points: samePoints(before.points, after.points) ? current.points : before.points
+			points: samePoints(before.points, after.points) ? current.points : before.points,
+			hidden: hid ? Boolean(before.hidden) : current.hidden,
+			seenBy: sameList(before.seenBy, after.seenBy) ? current.seenBy : (before.seenBy ?? [])
 		});
 	}
 
@@ -1815,8 +1929,16 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 	const turned = old.turns && made.turns && !sameTurns(old.turns, made.turns);
 	const scaled = old.miles !== undefined && old.miles !== made.miles;
 	const paced = (old.dayMiles ?? null) !== (made.dayMiles ?? null);
+	// And for what distances are told in, how a diagonal is counted, and how
+	// far the tokens see. Changes from before there were any of those have none.
+	const united = (old.units ?? null) !== (made.units ?? null);
+	const stepped = (old.diagonal ?? null) !== (made.diagonal ?? null);
+	const sighted = (old.sight ?? null) !== (made.sight ?? null);
 	return writeMap(db, actor, current, {
 		...current,
+		units: united ? (old.units ?? null) : current.units,
+		diagonal: stepped ? (old.diagonal ?? null) : current.diagonal,
+		sight: sighted ? (old.sight ?? null) : current.sight,
 		turns: turned ? old.turns : current.turns,
 		miles: scaled ? old.miles : current.miles,
 		dayMiles: paced ? (old.dayMiles ?? null) : current.dayMiles,

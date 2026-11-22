@@ -69,6 +69,7 @@ export const KEY = {
 	settings: 'Shift+S',
 	gallery: 'Shift+G',
 	invite: 'Shift+I',
+	seats: 'Shift+P',
 	display: 'Shift+D',
 
 	// What is selected: tokens, drawings, a marker, a region.
@@ -310,6 +311,7 @@ export const SHEET: SheetSection[] = [
 			{ keys: [KEY.settings], does: 'Map settings' },
 			{ keys: [KEY.gallery], does: 'Gallery' },
 			{ keys: [KEY.invite], does: 'Invite' },
+			{ keys: [KEY.seats], does: 'Seats: the players of the campaign' },
 			{ keys: [KEY.display], does: 'Open the table display' }
 		]
 	}

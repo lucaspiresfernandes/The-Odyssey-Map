@@ -41,6 +41,7 @@ import { IMAGE_FILE_PATTERN } from './world';
 import {
 	DEFAULT_CELL_FEET,
 	DEFAULT_GRID,
+	DIAGONALS,
 	INK_COLORS,
 	LIMITS,
 	MARKER_TYPE_IDS,
@@ -48,6 +49,7 @@ import {
 	TOKEN_COLORS,
 	TOKEN_MARK_IDS,
 	TOKEN_SIZE_STEP,
+	UNITS,
 	isTemplate,
 	type DrawingKind,
 	type EncounterToken,
@@ -131,7 +133,7 @@ function manifestOf(db: Db, campaignId: string) {
 					.where(and(inArray(drawings.mapId, list), isNull(drawings.deletedAt)))
 					.orderBy(drawings.createdAt)
 					.all()
-			).map(({ authorId: _, deletedAt: __, ...drawing }) => drawing),
+			).map(({ seenBy: _, authorId: __, deletedAt: ___, ...drawing }) => drawing),
 			gallery: tx
 				.select()
 				.from(gallery)
@@ -446,6 +448,13 @@ function build(
 							kind === 'world' && map.dayMiles != null
 								? number(map.dayMiles, LIMITS.dayMilesMin, LIMITS.dayMilesMax)
 								: null,
+						// A file from before maps said any of these says none of them.
+						units: map.units == null ? null : oneOf(map.units, UNITS),
+						diagonal: map.diagonal == null ? null : oneOf(map.diagonal, DIAGONALS),
+						sight:
+							kind === 'battle' && map.sight != null
+								? number(map.sight, LIMITS.sightMin, LIMITS.sightMax)
+								: null,
 						imageFile: image?.file ?? null,
 						// A map with an image is the size of it.
 						width: image?.width ?? side(map.width),
@@ -557,6 +566,7 @@ function build(
 						text: kind === 'text' ? text(drawing.text, LIMITS.drawingText) : '',
 						color: oneOf(drawing.color, INK_COLORS, INK_COLORS[0]),
 						size: number(drawing.size, LIMITS.drawingSizeMin, LIMITS.drawingSizeMax),
+						hidden: flag(drawing.hidden),
 						authorId: owner.id,
 						authorName: text(drawing.authorName ?? owner.name, 40, false) || owner.name,
 						createdAt: time(drawing.createdAt),

@@ -36,6 +36,8 @@ interface Options {
 	campaignId: string;
 	/** Called when the server says hello, with the newest sequence number it has. */
 	onHello: (seq: number) => void;
+	/** Called when the server says this browser's seat at the table was taken away. */
+	onBye: () => void;
 }
 
 interface Pending {
@@ -48,6 +50,15 @@ const KEY = Symbol('live');
 
 /** The least time between two reports of what this browser has in hand, in milliseconds. */
 const HAND_INTERVAL = 50;
+
+/**
+ * How long a page can be out of sight, in milliseconds, before its socket is
+ * no longer taken at its word: a phone that slept that long may have lost it.
+ */
+const STALE_AFTER = 5000;
+
+/** How long the server has to say it is there, once it is asked, in milliseconds. */
+const ANSWER_WITHIN = 2500;
 
 /** How long a ping stays on the map, in milliseconds. */
 export const PING_LASTS = 2600;
@@ -89,6 +100,8 @@ export class Live {
 	#nextId = 1;
 	#attempt = 0;
 	#retry: ReturnType<typeof setTimeout> | undefined;
+	/** Running while the server has been asked whether it is there, and has yet to say. */
+	#asked: ReturnType<typeof setTimeout> | undefined;
 	#stopped = false;
 	/** What this browser has in hand, and what the server was last told about it. */
 	#spot: HandSpot | null = null;
@@ -108,29 +121,81 @@ export class Live {
 		ws.onmessage = (message) => this.#receive(JSON.parse(message.data) as ServerMessage);
 		ws.onclose = () => {
 			if (this.#ws !== ws) return;
+			this.#heard();
 			this.#ws = null;
 			this.status = 'offline';
-			this.hands = [];
-			for (const [id, pending] of this.#pending) {
-				clearTimeout(pending.timer);
-				pending.reject(new Error('The connection dropped. Check the map and try again.'));
-				this.#pending.delete(id);
-			}
+			this.#dropped();
 			if (this.#stopped) return;
 			const delay = Math.min(15000, 500 * 2 ** this.#attempt++);
 			this.#retry = setTimeout(() => this.connect(), delay);
 		};
 	}
 
+	/** A socket is gone: so is what came over it, and what was waiting on it. */
+	#dropped() {
+		this.hands = [];
+		for (const [id, pending] of this.#pending) {
+			clearTimeout(pending.timer);
+			pending.reject(new Error('The connection dropped. Check the map and try again.'));
+			this.#pending.delete(id);
+		}
+	}
+
 	stop() {
 		this.#stopped = true;
 		clearTimeout(this.#retry);
 		clearTimeout(this.#telling);
+		this.#heard();
 		this.#ws?.close();
 	}
 
+	/** The server has said something, or the socket has closed: nothing is being waited on. */
+	#heard() {
+		clearTimeout(this.#asked);
+		this.#asked = undefined;
+	}
+
+	/**
+	 * The page is in front of someone again, or the network is back: a phone
+	 * unlocked, a laptop opened. `away` is how long the page was out of sight,
+	 * in milliseconds.
+	 *
+	 * A connection that was waiting to try again tries now, and not when its
+	 * timer comes round. One that was open through a sleep may be dead without
+	 * knowing it, and the browser can take a long while to say so. So the
+	 * server is asked whether it is there. If it answers, the connection is
+	 * good and nothing was missed. If it doesn't, the socket is hung up on
+	 * and made anew: the server's hello then says whether anything was
+	 * missed, and until it comes commands go over HTTP, as they do offline.
+	 */
+	wake(away: number) {
+		if (this.#stopped) return;
+		const ws = this.#ws;
+		if (!ws) {
+			clearTimeout(this.#retry);
+			this.#attempt = 0;
+			this.connect();
+			return;
+		}
+		if (away < STALE_AFTER || ws.readyState !== WebSocket.OPEN || this.#asked) return;
+		ws.send(JSON.stringify({ t: 'hi' } satisfies ClientMessage));
+		this.#asked = setTimeout(() => {
+			this.#asked = undefined;
+			if (this.#ws !== ws || this.#stopped) return;
+			// Not a word: its close is no news once another socket has its place.
+			this.#ws = null;
+			ws.close();
+			this.#dropped();
+			this.connect();
+		}, ANSWER_WITHIN);
+	}
+
 	#receive(message: ServerMessage) {
+		// Anything at all from the server says the connection lives.
+		this.#heard();
 		switch (message.t) {
+			case 'hi':
+				break;
 			case 'hello':
 				this.#attempt = 0;
 				this.status = 'open';
@@ -166,6 +231,12 @@ export class Live {
 				break;
 			case 'date':
 				this.date = message.date;
+				break;
+			case 'bye':
+				// The GM has taken this seat away. There is nothing to come back
+				// to, so the connection is not tried again.
+				this.stop();
+				this.#options.onBye();
 				break;
 			case 'event':
 				this.#dispatch(message.event);

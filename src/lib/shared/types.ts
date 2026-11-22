@@ -129,6 +129,31 @@ export const DEFAULT_GRID: Grid = { size: 50, x: 0, y: 0, shown: true };
 /** How many feet a cell stands for until the GM says otherwise. */
 export const DEFAULT_CELL_FEET = 8;
 
+/**
+ * What distances are told in: feet and miles, or metres and kilometres.
+ * Whichever it is, they are kept in feet and miles: see `METRES_A_FOOT`.
+ */
+export const UNITS = ["imperial", "metric"] as const;
+export type Units = (typeof UNITS)[number];
+
+/**
+ * How metric distances are worked out from the feet and miles they are
+ * kept in. These are the round numbers tabletop games go by, not a
+ * surveyor's: five feet is a metre and a half, and a mile a kilometre and
+ * a half. So a cell of five feet is one of 1.5 m, and thirty feet is 9 m.
+ */
+export const METRES_A_FOOT = 0.3;
+export const KM_A_MILE = 1.5;
+
+/**
+ * How a step from one cell to the one diagonally next to it is counted on
+ * a battle map: as `one` cell, like any other step; `alternate`, where
+ * every second one counts as two; or `true`, where the ruler tells the
+ * distance as the crow flies.
+ */
+export const DIAGONALS = ["one", "alternate", "true"] as const;
+export type Diagonal = (typeof DIAGONALS)[number];
+
 /** A box on a map, in map space: its left, top, right and bottom. */
 export type Rect = [number, number, number, number];
 
@@ -170,6 +195,9 @@ export interface Fog {
  * what it is until the GM changes it.
  */
 export const FOG_BRUSH = { min: 0.004, max: 0.3, start: 0.04 };
+
+/** How far a token sees when the fog is first made to follow the tokens, in feet. */
+export const DEFAULT_SIGHT = 30;
 
 /** How many miles a day's travel covers until the GM says otherwise: a day on foot, on a road. */
 export const DEFAULT_DAY_MILES = 24;
@@ -462,6 +490,13 @@ export interface Drawing {
   color: string;
   /** In cells, like a token's: how thick a line is, how tall a text's letters are. */
   size: number;
+  /**
+   * The GM's to set: a hidden drawing is, to the players, not on the map,
+   * but for the ones named in `seenBy`. The trap drawn ahead of time.
+   */
+  hidden: boolean;
+  /** The players a hidden drawing is shown to all the same, by id. A player is only ever sent it empty. */
+  seenBy: string[];
   authorId: string;
   authorName: string;
   updatedAt: number;
@@ -493,6 +528,24 @@ export interface MapInfo {
    * `MapSnapshot.dayMiles`.
    */
   dayMiles: number | null;
+  /**
+   * What distances are told in on this map, when the GM has said so. Null
+   * leaves it to the maps further out: see `MapSnapshot.units`.
+   */
+  units: Units | null;
+  /**
+   * How a diagonal step is counted on this map, or on the battle maps
+   * inside it, when the GM has said so. Null leaves it to the maps further
+   * out: see `MapSnapshot.diagonal`.
+   */
+  diagonal: Diagonal | null;
+  /**
+   * On a battle map where the fog follows the tokens: how many feet the
+   * token of a player sees around itself. Everything further from all of
+   * them is under the fog, to the players. Null where the fog doesn't
+   * follow tokens.
+   */
+  sight: number | null;
   /** File name of the map image, out of the gallery, or null for a blank map. */
   imageFile: string | null;
   width: number;
@@ -607,6 +660,8 @@ export interface FindEntry {
   /** The map to go to: itself, or the one the marker is on. */
   mapId: string;
   name: string;
+  /** What a marker's card says under its title, to be searched as well. Left out where it says nothing. */
+  text?: string;
   /** The maps on the way there, by name, the first map of the campaign first. */
   path: string[];
   /** What kind of map it is, or what type of marker. */
@@ -693,6 +748,14 @@ export interface MapSnapshot {
    * `DEFAULT_DAY_MILES` when none has.
    */
   dayMiles: number;
+  /**
+   * What distances are told in on the maps further out: what the GM said of
+   * the nearest of them that says, or feet and miles when none does. It is
+   * what this map goes by while it says nothing itself: see `MapInfo.units`.
+   */
+  units: Units;
+  /** How a diagonal step is counted out there, worked out the same way: as one cell when no map says. */
+  diagonal: Diagonal;
   /** Sequence number of the newest event already reflected in this snapshot. */
   lastSeq: number;
 }
@@ -745,12 +808,18 @@ export interface DrawingInput {
   text: string;
   color: string;
   size: number;
+  /** The GM's to set: drawn out of the players' sight. */
+  hidden: boolean;
 }
 
 /** What can be changed about a drawing once it is made. */
 export interface DrawingChanges {
   text?: string;
   color?: string;
+  /** The GM's to set. */
+  hidden?: boolean;
+  /** The GM's to set: the players a hidden drawing is a secret with. */
+  seenBy?: string[];
   /** Slides the whole drawing this far across the map, in map space. */
   move?: Point;
 }
@@ -804,7 +873,10 @@ export type Command =
    * Renames a map, sets up its grid, says how many feet a cell stands for,
    * lays an image under it, covers it with fog or clears some, says whose
    * turn it is, how many miles across it is, or how many miles a day's
-   * travel covers on it (null for none of its own): whichever are given.
+   * travel covers on it (null for none of its own), what distances are told
+   * in and how a diagonal is counted (null for as the maps further out
+   * have it), or how far the tokens of players see where the fog follows
+   * them (null for where it doesn't): whichever are given.
    * `image` is the file name of a map image in the gallery. A map's kind is
    * not here: it is chosen when its region is drawn, and stays.
    */
@@ -819,6 +891,9 @@ export type Command =
       turns?: Partial<Turns>;
       miles?: number | null;
       dayMiles?: number | null;
+      units?: Units | null;
+      diagonal?: Diagonal | null;
+      sight?: number | null;
     }
   /**
    * Ends the turn of `from` on a battle map and moves on to the next.
@@ -891,10 +966,19 @@ export type Patch =
     }
   /**
    * `turns` comes along when a token that takes turns came into a player's
-   * sight or went out of it: the turn order as they may see it now.
+   * sight or went out of it: the turn order as they may see it now. On a
+   * map where the fog follows the tokens, `tokens` comes along when what
+   * the players' tokens see has moved: every token they can see now, in
+   * place of what they had.
    */
-  | { t: "token.upsert"; token: Token; turns?: Turns }
-  | { t: "token.remove"; id: string; mapId: string; turns?: Turns }
+  | { t: "token.upsert"; token: Token; turns?: Turns; tokens?: Token[] }
+  | {
+      t: "token.remove";
+      id: string;
+      mapId: string;
+      turns?: Turns;
+      tokens?: Token[];
+    }
   | { t: "drawing.upsert"; drawing: Drawing }
   | { t: "drawing.remove"; id: string; mapId: string };
 
@@ -989,6 +1073,33 @@ export interface SeatResponse {
 }
 
 /**
+ * A seat at a campaign's table, as the GM looks after them: one of its
+ * players. Most are a name and nothing else, with no login and no
+ * password: who sits in one is a browser the GM let in.
+ */
+export interface Seat extends Player {
+  /**
+   * There is no account behind the seat: it was asked for on the invite
+   * link, or made by the GM. Only such a seat is the GM's to rename. A
+   * player with an account of their own is called what they chose.
+   */
+  guest: boolean;
+  /**
+   * Some browser is logged in as this player. A seat the GM made ahead of
+   * the session has nobody in it until someone asks for it on the invite
+   * link, and is let in.
+   */
+  taken: boolean;
+}
+
+/** What the endpoints for seats answer with: the seats as they are now. */
+export interface SeatsResponse {
+  ok: boolean;
+  error?: string;
+  seats?: Seat[];
+}
+
+/**
  * How it stands with a seat this browser asked for: still `waiting` on the
  * GM, `granted`, which seats this browser as that player, `refused`, or
  * `gone` when the asking has lapsed or was never made.
@@ -1004,7 +1115,12 @@ export type ClientMessage =
   /** What this browser has in hand, or null once it has let go. */
   | { t: "hand"; at: HandSpot | null }
   /** A spot this person wants the table to look at. */
-  | { t: "ping"; at: PingSpot };
+  | { t: "ping"; at: PingSpot }
+  /**
+   * Asks the server to say it is there: how a browser that was asleep tells
+   * a connection that is still good from one that died without a word.
+   */
+  | { t: "hi" };
 
 export type ServerMessage =
   | {
@@ -1032,6 +1148,10 @@ export type ServerMessage =
   | { t: "show"; shown: Shown | null }
   /** The GM has said what date it is in the world, or with nothing, that there is none. */
   | { t: "date"; date: string }
+  /** The GM has taken this browser's seat away: it is no longer at the table. */
+  | { t: "bye" }
+  /** The answer to a browser that asked whether the server is there. */
+  | { t: "hi" }
   | { t: "ack"; id: number; ok: true; undo: number[] }
   | { t: "ack"; id: number; ok: false; error: string };
 
@@ -1091,6 +1211,11 @@ export interface Broadcast {
   knocks?: Knock[];
   /** The date it is in the world now, for everyone. Empty once there is none. */
   date?: string;
+  /**
+   * Seats the GM has changed, by user id: what the player is called now,
+   * or null for one that was taken away, whose browsers are shown out.
+   */
+  seats?: { id: string; name: string | null }[];
 }
 
 export const LIMITS = {
@@ -1124,10 +1249,15 @@ export const LIMITS = {
   /** The fewest and the most miles a day's travel can cover. */
   dayMilesMin: 0.1,
   dayMilesMax: 10000,
+  /** The least and the most feet a token can see, where the fog follows the tokens. */
+  sightMin: 1,
+  sightMax: 10000,
   /** The most spots a ruler runs through: its two ends and the bends between. */
   rulerPoints: 32,
   /** The most people who can be asking for a seat in one campaign at once. */
   knocks: 8,
+  /** The most players a campaign has seats for. */
+  seats: 64,
   /** The most tokens that take turns on one map. */
   turns: 100,
   /** The most boxes the fog on one map starts out cleared by. */

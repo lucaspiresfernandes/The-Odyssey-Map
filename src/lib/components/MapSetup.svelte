@@ -1,6 +1,13 @@
 <script lang="ts">
-	import { cellsAcross, cellsToFeet, feetCount } from '#lib/shared/grid.ts';
-	import { LIMITS, type Grid, type MapInfo } from '#lib/shared/types.ts';
+	import {
+		UNIT_NAMES,
+		cellsAcross,
+		cellsToFeet,
+		feetCount,
+		shortFrom,
+		shortIn
+	} from '#lib/shared/grid.ts';
+	import { LIMITS, type Grid, type MapInfo, type Units } from '#lib/shared/types.ts';
 	import Modal from './Modal.svelte';
 
 	// The grid of a battle map. What kind of map this is isn't asked here: that
@@ -8,6 +15,8 @@
 
 	interface Props {
 		map: MapInfo;
+		/** What distances are told in on this map: the cell is typed in the short one of them. */
+		units: Units;
 		/** Resolves to true when the change went through and the dialog can close. */
 		onsubmit: (grid: Grid, cellFeet: number) => Promise<boolean>;
 		/** The GM would sooner line the grid up on the map itself, by dragging. */
@@ -15,7 +24,7 @@
 		onclose: () => void;
 	}
 
-	let { map, onsubmit, onalign, onclose }: Props = $props();
+	let { map, units, onsubmit, onalign, onclose }: Props = $props();
 
 	// Deliberately a one-time copy: the form owns its fields once it is open.
 	// svelte-ignore state_referenced_locally
@@ -26,8 +35,10 @@
 	let y = $state(map.grid.y);
 	// svelte-ignore state_referenced_locally
 	let shown = $state(map.grid.shown);
+	/** How far one cell is, as it is typed: in feet, or in metres. It is kept in feet. */
 	// svelte-ignore state_referenced_locally
-	let feet = $state(map.cellFeet);
+	let far = $state(shortIn(map.cellFeet, units));
+	const feet = $derived(typeof far === 'number' ? shortFrom(far, units) : null);
 	let saving = $state(false);
 
 	/** How many cells that makes, to check against the squares counted on the image. */
@@ -37,8 +48,8 @@
 
 	/** How far that is from edge to edge, at the scale typed in. */
 	const span = $derived(
-		cells && feet >= LIMITS.cellFeetMin && feet <= LIMITS.cellFeetMax
-			? cells.map((count) => feetCount(cellsToFeet({ cellFeet: feet }, count)))
+		cells && feet !== null && feet >= LIMITS.cellFeetMin && feet <= LIMITS.cellFeetMax
+			? cells.map((count) => feetCount(cellsToFeet({ cellFeet: feet }, count), units))
 			: null
 	);
 
@@ -88,19 +99,19 @@
 		</p>
 
 		<label class="field">
-			<span>How far one cell is, in feet</span>
+			<span>How far one cell is, in {UNIT_NAMES[units].short}</span>
 			<input
 				class="input"
 				type="number"
-				bind:value={feet}
-				min={LIMITS.cellFeetMin}
-				max={LIMITS.cellFeetMax}
+				bind:value={far}
+				min={shortIn(LIMITS.cellFeetMin, units)}
+				max={shortIn(LIMITS.cellFeetMax, units)}
 				step="any"
 				required
 			/>
 		</label>
 		<p class="-mt-2 text-[13px] text-muted">
-			The ruler and a token's size are told in feet{#if span}. The whole map is about {span[0]} × {span[1]}{/if}.
+			The ruler and a token's size are told in {UNIT_NAMES[units].short}{#if span}. The whole map is about {span[0]} × {span[1]}{/if}.
 		</p>
 
 		<div class="grid grid-cols-2 gap-2.5">

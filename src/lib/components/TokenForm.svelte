@@ -2,32 +2,37 @@
 	// The rest of what a token is, beyond what the buttons and handles beside
 	// it on the map change: its picture, or the colour of its disc while it
 	// has none, and the ring around it. Any token can wear a ring, to tell it
-	// from others that look the same or to mark which belong together.
+	// from others that look the same or to mark which belong together. The GM
+	// also says whose token it is: the player whose turn it is when its turn
+	// comes, and where the fog follows the tokens, whose eyes it is.
 
 	import {
 		TOKEN_COLORS,
 		imageUrl,
 		type GalleryItem,
 		type GalleryResponse,
+		type Player,
 		type Token,
 		type TokenInput
 	} from '#lib/shared/types.ts';
 	import Gallery from './Gallery.svelte';
 	import Modal from './Modal.svelte';
 
-	type Values = Pick<TokenInput, 'color' | 'outline' | 'image'>;
+	type Values = Pick<TokenInput, 'color' | 'outline' | 'image'> & { ownerId?: string | null };
 
 	interface Props {
 		/** The GM picks from the whole gallery, and adds to it. A player from what is revealed. */
 		gm: boolean;
 		campaignId: string;
 		token: Token;
+		/** The players of the campaign, for the GM to hand the token to one of them. */
+		players?: Player[];
 		/** Resolves to true when the change went through and the form can close. */
 		onsubmit: (values: Values) => Promise<boolean>;
 		onclose: () => void;
 	}
 
-	let { gm, campaignId, token, onsubmit, onclose }: Props = $props();
+	let { gm, campaignId, token, players = [], onsubmit, onclose }: Props = $props();
 
 	// Deliberately a one-time copy: the form owns its fields once it is open.
 	// svelte-ignore state_referenced_locally
@@ -37,6 +42,9 @@
 	let outline = $state(token.outline ?? '');
 	// svelte-ignore state_referenced_locally
 	let image = $state(token.image);
+	/** Whose token it is, by the player's id: empty for nobody's. */
+	// svelte-ignore state_referenced_locally
+	let owner = $state(token.ownerId ?? '');
 	/** The gallery is open, to choose the picture from. */
 	let picking = $state(false);
 	let saving = $state(false);
@@ -45,7 +53,10 @@
 		event.preventDefault();
 		if (saving) return;
 		saving = true;
-		const done = await onsubmit({ color, outline: outline || null, image });
+		const values: Values = { color, outline: outline || null, image };
+		// Whose it is, is the GM's to say, and only said when it has changed.
+		if (gm && owner !== (token.ownerId ?? '')) values.ownerId = owner || null;
+		const done = await onsubmit(values);
 		saving = false;
 		if (done) onclose();
 	}
@@ -204,6 +215,26 @@
 				{/each}
 			</div>
 		</fieldset>
+
+		{#if gm}
+			<label class="field">
+				<span>Whose token it is</span>
+				<select class="input" bind:value={owner}>
+					<option value="">Nobody’s</option>
+					{#each players as player (player.id)}
+						<option value={player.id}>{player.name}</option>
+					{/each}
+					{#if token.ownerId && !players.some((player) => player.id === token.ownerId)}
+						<!-- Someone who is no longer among the players the page knows of. -->
+						<option value={token.ownerId}>{token.ownerName ?? 'A player'}</option>
+					{/if}
+				</select>
+			</label>
+			<p class="-mt-2 text-[13px] text-muted">
+				Anyone still moves it. Its turn is that player’s to end, and where the fog follows the
+				tokens, the table sees around it.
+			</p>
+		{/if}
 
 		<div class="flex justify-end gap-2">
 			<button type="button" class="btn btn-ghost" onclick={onclose}>Cancel</button>
