@@ -1,6 +1,6 @@
 # The Odyssey Map
 
-A living map you can zoom into forever. A shared, real-time campaign map where every region
+A living map you can zoom into forever! A shared, real-time campaign map where every region
 is a doorway to a map of its own, every marker explains itself on hover, and anyone can
 point a spot out to the table with a ping. At the end of the way down, a region can open
 onto a battle map: a grid, tokens the players move themselves, a turn order, shapes
