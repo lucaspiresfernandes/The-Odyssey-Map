@@ -10,11 +10,10 @@
 //     would have posted it, and the app's answer is sent back.
 //   - After every change the app tells this server what to deliver, already
 //     filtered for each role, and for each player who is let in on something
-//     the others are not. The picture the GM is holding up, and who for,
-//     is kept for as long as this server runs, for whoever connects later:
-//     the app also tells of it whenever a browser connects. So is who is
-//     asking for a seat they sat in before, which only the GM is ever
-//     told. And the date it is in the world, which everyone is.
+//     the others are not. Who is asking for a seat they sat in before is
+//     kept for as long as this server runs, for whoever connects later:
+//     the app also tells of it whenever a browser connects, and only the
+//     GM is ever told. So is the date it is in the world, which everyone is.
 //   - What a browser has in hand goes straight from one browser to the
 //     others: the token it is dragging, the distance it is measuring, the
 //     spot it is pointing at while its button is held down. So does a ping,
@@ -38,8 +37,7 @@ import {
 	type PingSpot,
 	type Presence,
 	type Role,
-	type ServerMessage,
-	type Shown
+	type ServerMessage
 } from '#lib/shared/types.ts';
 
 const PORT = Number(process.env.WS_PORT || 3001);
@@ -92,12 +90,11 @@ interface Connection {
 	recent: number[];
 	/** Commands from one socket are forwarded one at a time, in the order they came. */
 	queue: Promise<void>;
-	/** The picture the app said was held up for the table when this browser was identified, and when that was. */
-	shown: Shown | null;
-	/** Who the app said was asking for a seat then. Empty for anyone but the GM. */
+	/** Who the app said was asking for a seat when this browser was identified. Empty for anyone but the GM. */
 	knocks: Knock[];
 	/** The date the app said it was in the world then. */
 	date: string;
+	/** When that was. */
 	identifiedAt: number;
 	/** What this browser last said it had in hand, for people who connect later. */
 	hand: Hand | null;
@@ -116,9 +113,6 @@ const rooms = new Map<string, Set<Socket>>();
 /** The newest event delivered per campaign since this server started. */
 const delivered = new Map<string, number>();
 
-/** The picture held up per campaign, the players it is for, and when the app last said so through here. */
-const heldUp = new Map<string, { shown: Shown | null; to: string[]; at: number }>();
-
 /** Who is asking for a seat per campaign, and when the app last said so through here. */
 const knocking = new Map<string, { knocks: Knock[]; at: number }>();
 
@@ -132,18 +126,6 @@ const dates = new Map<string, { date: string; at: number }>();
  */
 const playerOf = (ws: Socket): string | null =>
 	ws.data.role === 'player' && !ws.data.display ? ws.data.user.id : null;
-
-/**
- * A picture held up for the players in `to`, or with none for the whole
- * table, as one socket is shown it. Only the GM is told who it is for.
- */
-function shownFor(ws: Socket, shown: Shown | null, to: string[]): Shown | null {
-	if (!shown) return null;
-	const { to: _, ...bare } = shown;
-	if (ws.data.role === 'gm') return { ...bare, to };
-	const id = playerOf(ws);
-	return to.length === 0 || (id !== null && to.includes(id)) ? bare : null;
-}
 
 // Players and the GM listen on separate topics, because the same event can
 // mean different things to each (or nothing at all to a player).
@@ -395,7 +377,7 @@ async function publish(request: Request): Promise<Response> {
 	if (request.method !== 'POST' || request.headers.get('authorization') !== `Bearer ${SECRET}`) {
 		return new Response('Forbidden', { status: 403 });
 	}
-	const { campaignId, events, show, knocks, date, seats } = (await request.json()) as Broadcast;
+	const { campaignId, events, knocks, date, seats, gallery } = (await request.json()) as Broadcast;
 	const room = rooms.get(campaignId) ?? [];
 	// Seats the GM has changed. A player who was renamed is called the new
 	// name from here on, by everyone who is told who is at the table. One
@@ -423,18 +405,17 @@ async function publish(request: Request): Promise<Response> {
 		const message: ServerMessage = { t: 'knocks', knocks };
 		server.publish(topic(campaignId, 'gm'), JSON.stringify(message));
 	}
-	// A picture held up, or put away. Everyone is told: the ones it is not
-	// for, that nothing is up.
-	if (show) {
-		const to = show.to ?? [];
-		heldUp.set(campaignId, { shown: show.shown, to, at: Date.now() });
-		for (const ws of room) send(ws, { t: 'show', shown: shownFor(ws, show.shown, to) });
-	}
 	// The date in the world has been set, or with an empty one, taken away:
 	// everyone's to know.
 	if (typeof date === 'string') {
 		dates.set(campaignId, { date, at: Date.now() });
 		const message = JSON.stringify({ t: 'date', date } satisfies ServerMessage);
+		for (const ws of room) ws.send(message);
+	}
+	// The gallery has changed. Everyone is told that much and no more: each
+	// browser asks the app for what it may see of it now.
+	if (gallery) {
+		const message = JSON.stringify({ t: 'gallery' } satisfies ServerMessage);
 		for (const ws of room) ws.send(message);
 	}
 	for (const event of events) {
@@ -505,7 +486,6 @@ const server = Bun.serve({
 			seq: identity.seq,
 			recent: [],
 			queue: Promise.resolve(),
-			shown: identity.shown ?? null,
 			knocks: identity.role === 'gm' ? (identity.knocks ?? []) : [],
 			date: identity.date ?? '',
 			identifiedAt: asked,
@@ -529,7 +509,6 @@ const server = Bun.serve({
 			if (!room) rooms.set(campaignId, (room = new Set()));
 			room.add(ws);
 
-			const held = heldUp.get(campaignId);
 			const asking = knocking.get(campaignId);
 			const dated = dates.get(campaignId);
 			send(ws, {
@@ -542,13 +521,9 @@ const server = Bun.serve({
 				seq: Math.max(ws.data.seq, delivered.get(campaignId) ?? 0),
 				online: presence(campaignId),
 				hands: hands(ws),
-				// What the app said when it identified this browser, unless the
-				// picture has been changed through here since it was asked.
-				shown:
-					held && held.at >= ws.data.identifiedAt
-						? shownFor(ws, held.shown, held.to)
-						: ws.data.shown,
-				// The same goes for who is asking for a seat, which is the GM's to hear.
+				// Who is asking for a seat, which is the GM's to hear: what the
+				// app said when it identified this browser, unless that has
+				// changed through here since it was asked.
 				knocks:
 					role !== 'gm'
 						? []

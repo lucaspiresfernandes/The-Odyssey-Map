@@ -9,7 +9,13 @@
 	import { MapState } from '#lib/client/mapstate.svelte.ts';
 	import { Notices } from '#lib/client/notices.svelte.ts';
 	import { Toolbelt } from '#lib/client/toolbelt.svelte.ts';
-	import { encounterFromDock, tokenFromDock } from '#lib/client/tools/dock.ts';
+	import {
+		characterFromDock,
+		encounterFromDock,
+		partyFromDock,
+		partyMissing,
+		tokenFromDock
+	} from '#lib/client/tools/dock.ts';
 	import { UndoStack, type Step } from '#lib/client/undo.ts';
 	import AlignBar from '#lib/components/AlignBar.svelte';
 	import BattleTools, {
@@ -61,6 +67,7 @@
 		type MarkerInput,
 		type MarkerKind,
 		type MarkerType,
+		type PartyMember,
 		type Patch,
 		type Player,
 		type Point,
@@ -92,6 +99,7 @@
 			world.apply(event);
 			leaveIfShut(event.patch, way);
 			refreshIfBorrowed(event.patch);
+			refreshIfToldAnew(event.patch);
 			// With a scale of its own given or taken away, how far across this
 			// map is has to be worked out again, which only the server does.
 			// The same goes for how far a day's travel goes on it.
@@ -300,6 +308,36 @@
 	}
 	/** Goes up whenever the gallery may have changed, so the dock reads it again. */
 	let galleryStamp = $state(0);
+	/**
+	 * How the tokens that are someone's look on this map, in a word: when it
+	 * changes, so may a character have, and the dock asks for the party again.
+	 */
+	const partyLooks = $derived(
+		JSON.stringify(
+			world.tokens
+				.filter((token) => token.ownerId)
+				.map(({ id, ownerId, name, image, color, outline, size, characterAt }) => [
+					id,
+					ownerId,
+					name,
+					image,
+					color,
+					outline,
+					size,
+					characterAt
+				])
+		)
+	);
+	/** What it was the last time the dock was told, or null before the first look. */
+	let toldLooks: string | null = null;
+	$effect(() => {
+		const looks = partyLooks;
+		untrack(() => {
+			// The dock reads everything once as it opens: only a change is news.
+			if (toldLooks !== null && toldLooks !== looks) galleryStamp++;
+			toldLooks = looks;
+		});
+	});
 	// The palettes of a battle map fold away, and stay as they were left. The
 	// dock starts out as its buttons alone: a tray opens when one is clicked.
 	let dockFolded = $state(true);
@@ -328,6 +366,8 @@
 	let exiting = $state(false);
 	/** A marker the finder is taking this person to, on a map they are on their way to. */
 	let wanted: string | null = null;
+	/** The same for a token or a text of a battle map. */
+	let wantedPiece: string | null = null;
 	/**
 	 * The GM is in the gallery, to look after the whole of it, and the shelf
 	 * it opened on: the encounters, when it was opened from their tab of the
@@ -518,6 +558,11 @@
 			const marker = wanted;
 			wanted = null;
 			if (marker) pinMarker(marker);
+			// Or for a token or a text: once the map has arrived on the screen,
+			// so that going to it doesn't cut the arrival short.
+			const piece = wantedPiece;
+			wantedPiece = null;
+			if (piece) setTimeout(() => showPiece(piece), 500);
 		});
 	});
 
@@ -627,19 +672,40 @@
 		selectedMarkerId = id;
 	}
 
-	/** The finder found what was looked for: off to its map, and to the marker if it is one. */
+	/**
+	 * Brings a token or a text of this battle map to the middle of the
+	 * screen, selected: what the finder was asked for.
+	 */
+	function showPiece(id: string) {
+		const token = world.tokens.find((each) => each.id === id);
+		const text = world.drawings.find((each) => each.id === id);
+		const at: Point | undefined = token ? [token.x, token.y] : text?.points[0];
+		if (!at) return;
+		belt.battleTool = 'pan';
+		selectedIds = [id];
+		canvas?.centreOn(at);
+	}
+
+	/**
+	 * The finder found what was looked for: off to its map, and to the
+	 * marker if it is one, or the token or the text.
+	 */
 	async function go(entry: FindEntry) {
 		finding = false;
 		const marker = entry.kind === 'marker' ? entry.id : null;
+		const piece = entry.kind === 'token' || entry.kind === 'text' ? entry.id : null;
 		if (entry.mapId === world.map.id) {
 			if (marker) pinMarker(marker);
+			if (piece) showPiece(piece);
 			return;
 		}
 		wanted = marker;
+		wantedPiece = piece;
 		try {
 			await goto(mapUrl(entry.mapId));
 		} catch {
 			wanted = null;
+			wantedPiece = null;
 		}
 	}
 
@@ -732,7 +798,12 @@
 		const dropped = drop && canvas.spotAt(drop.x, drop.y);
 		// Let go anywhere but over the map, it goes back in the dock.
 		if (drop && !dropped) return;
-		const commands = encounterFromDock(world.map, encounter, dropped || canvas.middle());
+		const commands = encounterFromDock(
+			world.map,
+			world.tokens,
+			encounter,
+			dropped || canvas.middle()
+		);
 		const had = new Set(world.tokens.map((token) => token.id));
 		const note = `Put down “${encounter.name}”, hidden from the players.`;
 		if (!(await send(commands, note))) return;
@@ -740,8 +811,47 @@
 		selectedIds = world.tokens.filter((token) => !had.has(token.id)).map((token) => token.id);
 	}
 
+	/**
+	 * The party out of the dock: the character of every player who has no
+	 * token of their own on this map yet, side by side around where it was
+	 * dropped, or for a click, the middle of the view. Each is handed to its
+	 * player, in plain sight, selected, and undone as one.
+	 */
+	async function addParty(party: PartyMember[], drop: { x: number; y: number } | null) {
+		if (!canvas) return;
+		const dropped = drop && canvas.spotAt(drop.x, drop.y);
+		if (drop && !dropped) return;
+		const missing = partyMissing(world.tokens, party);
+		if (missing.length === 0) {
+			say('Everyone in the party has a token on this map already.', 'info');
+			return;
+		}
+		const commands = partyFromDock(world.map, missing, dropped || canvas.middle());
+		const had = new Set(world.tokens.map((token) => token.id));
+		const who =
+			missing.length === party.length ? 'the party' : missing.map((each) => each.name).join(', ');
+		if (!(await send(commands, `Put down ${who}.`))) return;
+		belt.battleTool = 'pan';
+		selectedIds = world.tokens.filter((token) => !had.has(token.id)).map((token) => token.id);
+	}
+
+	/** A player's own character out of the dock: as it looks on the token that is their character now. */
+	async function addMine(member: PartyMember, drop: { x: number; y: number } | null) {
+		if (!canvas) return;
+		const dropped = drop && canvas.spotAt(drop.x, drop.y);
+		if (drop && !dropped) return;
+		const command = characterFromDock(world.map, world.tokens, member, dropped || null, canvas.middle());
+		const had = new Set(world.tokens.map((token) => token.id));
+		if (!(await run(command))) return;
+		belt.battleTool = 'pan';
+		selectedIds = world.tokens.filter((token) => !had.has(token.id)).map((token) => token.id);
+	}
+
 	function saveToken(
-		values: Pick<TokenInput, 'color' | 'outline' | 'image'> & { ownerId?: string | null }
+		values: Pick<TokenInput, 'color' | 'outline' | 'image'> & {
+			ownerId?: string | null;
+			character?: boolean;
+		}
 	) {
 		if (!tokenForm) return Promise.resolve(false);
 		return run({ t: 'token.update', id: tokenForm.id, changes: values });
@@ -1005,6 +1115,34 @@
 		const repainted =
 			patch.t === 'map.upsert' && patch.map.id !== world.map.id && onTheWay(patch.map.id);
 		if (reshaped || repainted) refreshAll();
+	}
+
+	/**
+	 * What each map last said of its units and of how a diagonal is counted,
+	 * as far as this browser has heard: kept from map to map, since it is as
+	 * true of a map wherever it is looked at from.
+	 */
+	const outerSaid = new Map<string, string>();
+
+	/**
+	 * What distances are told in, and how a diagonal step is counted, are
+	 * said on a map for itself and every map inside it. So when a map on the
+	 * way here says either anew, what this one goes by has to be worked out
+	 * again, which only the server does: it is asked for the map again. The
+	 * first news of such a map has nothing to be compared with, and asks too,
+	 * unless it says nothing where nothing was said before.
+	 */
+	function refreshIfToldAnew(patch: Patch) {
+		if (patch.t !== 'map.upsert') return;
+		const said = `${patch.map.units}|${patch.map.diagonal}`;
+		const before = outerSaid.get(patch.map.id);
+		outerSaid.set(patch.map.id, said);
+		if (before === said || patch.map.id === world.map.id) return;
+		if (!world.trail.some((crumb) => crumb.id === patch.map.id)) return;
+		const silent = patch.map.units === null && patch.map.diagonal === null;
+		const unsaid = world.units === 'imperial' && world.diagonal === 'one';
+		if (before === undefined && silent && unsaid) return;
+		refreshAll();
 	}
 
 	/** Runs once the GM has confirmed. There is no undo for this one. */
@@ -1489,10 +1627,12 @@
 						{campaignId}
 						gm={isGm}
 						color={tokenColor}
-						stamp={galleryStamp}
+						stamp={galleryStamp + live.gallery}
 						bind:collapsed={dockFolded}
 						onadd={addToken}
 						onencounter={addEncounter}
+						onparty={addParty}
+						onmine={addMine}
 						onencounters={() => (gallery = 'encounter')}
 						onerror={(text) => say(text, 'failure')}
 					/>
@@ -1539,6 +1679,7 @@
 {#if tokenForm}
 	<TokenForm
 		gm={isGm}
+		me={data.me.id}
 		{campaignId}
 		token={tokenForm}
 		{players}

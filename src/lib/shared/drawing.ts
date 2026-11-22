@@ -6,29 +6,51 @@
 // thins a line in the map's pixels, where a distance means the same thing
 // across and down.
 
-import type { Point, TemplateKind } from './types';
+import { RAY_WIDTH, type Point, type TemplateKind } from './types';
 
 // ---------------------------------------------------------------- templates
 
-// A template marks out the area of a spell: a circle, a cone or a box. It
-// is kept as two points, and everything else about it follows from them.
-// What follows is worked out in the map's pixels, like the lines.
+// A template marks out the area of a spell: a circle, a cone, a box or a
+// ray. It is kept as two points, and everything else about it follows from
+// them. What follows is worked out in the map's pixels, like the lines.
+//
+// A ray is the one that needs to know how big a cell is: it is a cell wide,
+// however long. So these take the side of a cell, in the same pixels, for
+// the sake of a ray. Left out, a ray has no width.
 
 /**
  * The outline of a template as an SVG path. A circle is drawn around `a`
  * through `b`. A cone has its tip at `a` and the middle of its far end at
  * `b`, and is as wide there as it is long. A box has `a` and `b` for
- * opposite corners.
+ * opposite corners. A ray runs from `a` to `b`, the middle of each of its
+ * ends, and is one cell wide.
  */
-export function templatePath(kind: TemplateKind, a: Point, b: Point): string {
+export function templatePath(kind: TemplateKind, a: Point, b: Point, cell = 0): string {
 	const n = (value: number) => Math.round(value * 100) / 100;
 	if (kind === 'rect') return `M${n(a[0])} ${n(a[1])}H${n(b[0])}V${n(b[1])}H${n(a[0])}Z`;
 	if (kind === 'circle') {
 		const r = n(Math.hypot(b[0] - a[0], b[1] - a[1]));
 		return `M${n(a[0] - r)} ${n(a[1])}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0Z`;
 	}
+	const at = ([x, y]: Point) => `${n(x)} ${n(y)}`;
+	if (kind === 'ray') return `M${rayCorners(a, b, cell).map(at).join('L')}Z`;
 	const [left, right] = coneEnds(a, b);
-	return `M${n(a[0])} ${n(a[1])}L${n(left[0])} ${n(left[1])}L${n(right[0])} ${n(right[1])}Z`;
+	return `M${at(a)}L${at(left)}L${at(right)}Z`;
+}
+
+/** The four corners of a ray, going round it: two at its near end, two at its far end. */
+function rayCorners(a: Point, b: Point, cell: number): Point[] {
+	const long = Math.hypot(b[0] - a[0], b[1] - a[1]);
+	const half = (RAY_WIDTH * cell) / 2;
+	// Half its width to either side of the line down its middle.
+	const sx = long === 0 ? 0 : (-(b[1] - a[1]) / long) * half;
+	const sy = long === 0 ? half : ((b[0] - a[0]) / long) * half;
+	return [
+		[a[0] + sx, a[1] + sy],
+		[b[0] + sx, b[1] + sy],
+		[b[0] - sx, b[1] - sy],
+		[a[0] - sx, a[1] - sy]
+	];
 }
 
 /** The two corners at the far end of a cone. */
@@ -48,7 +70,24 @@ function coneEnds(a: Point, b: Point): [Point, Point] {
  * `slack` lets a spot that far outside still count, for a middle that sits
  * right on the line once the template is on the grid.
  */
-export function templateHolds(kind: TemplateKind, a: Point, b: Point, at: Point, slack = 0): boolean {
+export function templateHolds(
+	kind: TemplateKind,
+	a: Point,
+	b: Point,
+	at: Point,
+	slack = 0,
+	cell = 0
+): boolean {
+	if (kind === 'ray') {
+		// How far along the ray the spot is, and how far to one side of it.
+		const long = Math.hypot(b[0] - a[0], b[1] - a[1]);
+		if (long === 0) return Math.hypot(at[0] - a[0], at[1] - a[1]) <= slack;
+		const ux = (b[0] - a[0]) / long;
+		const uy = (b[1] - a[1]) / long;
+		const along = (at[0] - a[0]) * ux + (at[1] - a[1]) * uy;
+		const aside = Math.abs((at[0] - a[0]) * uy - (at[1] - a[1]) * ux);
+		return along >= -slack && along <= long + slack && aside <= (RAY_WIDTH * cell) / 2 + slack;
+	}
 	if (kind === 'circle') {
 		return Math.hypot(at[0] - a[0], at[1] - a[1]) <= Math.hypot(b[0] - a[0], b[1] - a[1]) + slack;
 	}
@@ -78,16 +117,17 @@ export function templateHolds(kind: TemplateKind, a: Point, b: Point, at: Point,
 }
 
 /** The box around a template. */
-export function templateBox(kind: TemplateKind, a: Point, b: Point): Box {
+export function templateBox(kind: TemplateKind, a: Point, b: Point, cell = 0): Box {
 	if (kind === 'rect') return boxOf([a, b]);
 	if (kind === 'cone') return boxOf([a, ...coneEnds(a, b)]);
+	if (kind === 'ray') return boxOf(rayCorners(a, b, cell));
 	const r = Math.hypot(b[0] - a[0], b[1] - a[1]);
 	return { x0: a[0] - r, x1: a[0] + r, y0: a[1] - r, y1: a[1] + r };
 }
 
 /**
  * How big a template is: how far a circle reaches from its middle, how long
- * a cone is, how wide and how tall a box is.
+ * a cone or a ray is, how wide and how tall a box is.
  */
 export function templateSpan(kind: TemplateKind, a: Point, b: Point): number[] {
 	if (kind === 'rect') return [Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1])];

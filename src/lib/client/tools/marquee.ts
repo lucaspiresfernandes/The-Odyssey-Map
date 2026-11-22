@@ -39,7 +39,7 @@ export function caughtIn(
 		if (isTemplate(drawing.kind) && drawing.points.length === 2) {
 			// A template is caught by the box around it.
 			const [from, to] = drawing.points.map(([x, y]): Point => [x * W, y * H]);
-			const around = templateBox(drawing.kind, from, to);
+			const around = templateBox(drawing.kind, from, to, cell);
 			const apart =
 				around.x0 / W > box.x1 ||
 				around.x1 / W < box.x0 ||

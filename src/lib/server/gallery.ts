@@ -15,13 +15,21 @@
 // This module keeps the rows. The files behind them are the caller's to
 // write and to remove: see `server/tiles.ts`.
 
-import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, count, eq, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import type { Db } from './db';
 import { newId } from './ids';
-import { campaigns, encounters, gallery, maps, markers, members, tokens } from './schema';
-import { ActionError, asOutline, asText, asTokenSize, isConcealed, type Actor } from './world';
+import { encounters, gallery, maps, markers, tokens } from './schema';
+import {
+	ActionError,
+	asOutline,
+	asText,
+	asTokenSize,
+	isConcealed,
+	wornByOwn,
+	type Actor
+} from './world';
 import { canEditWorld, canSeeMarker, canSeeToken, roleOf, type Who } from '../shared/rules';
-import { LIMITS, type GalleryItem, type GalleryKind, type Shown } from '../shared/types';
+import { LIMITS, type GalleryItem, type GalleryKind } from '../shared/types';
 
 const itemColumns = {
 	id: gallery.id,
@@ -32,7 +40,8 @@ const itemColumns = {
 	height: gallery.height,
 	hidden: gallery.hidden,
 	tokenSize: gallery.tokenSize,
-	tokenOutline: gallery.tokenOutline
+	tokenOutline: gallery.tokenOutline,
+	ownerId: gallery.ownerId
 };
 
 function requireGm(actor: Actor) {
@@ -64,7 +73,10 @@ export function newImageFile(extension: string): string {
 	return `${newId(10)}-${newId(12)}.${extension}`;
 }
 
-/** What is in the gallery, by name: all of it for the GM, what has been revealed for a player. */
+/**
+ * What is in the gallery, by name: all of it for the GM. For a player, what
+ * has been revealed, and the token pictures they added themself.
+ */
 export function listGallery(db: Db, actor: Actor): GalleryItem[] {
 	return db
 		.select(itemColumns)
@@ -73,7 +85,9 @@ export function listGallery(db: Db, actor: Actor): GalleryItem[] {
 			and(
 				eq(gallery.campaignId, actor.campaignId),
 				isNull(gallery.deletedAt),
-				canEditWorld(actor.role) ? undefined : eq(gallery.hidden, false)
+				canEditWorld(actor.role)
+					? undefined
+					: or(eq(gallery.hidden, false), eq(gallery.ownerId, actor.userId))
 			)
 		)
 		.orderBy(sql`${gallery.name} COLLATE NOCASE`, gallery.createdAt)
@@ -81,15 +95,44 @@ export function listGallery(db: Db, actor: Actor): GalleryItem[] {
 }
 
 /**
+ * Whether this person may put a picture of that kind in the gallery, which
+ * is asked before the file is read. The GM may, of either kind. A player
+ * may add a token picture, for a token of their own, and keeps only so many.
+ */
+export function requireRoomFor(db: Db, actor: Actor, kind: GalleryKind) {
+	if (canEditWorld(actor.role)) return;
+	if (kind !== 'token') throw new ActionError('forbidden', 'Map images are the GM’s to add.');
+	const [{ n }] = db
+		.select({ n: count() })
+		.from(gallery)
+		.where(
+			and(
+				eq(gallery.campaignId, actor.campaignId),
+				eq(gallery.ownerId, actor.userId),
+				isNull(gallery.deletedAt)
+			)
+		)
+		.all();
+	if (n >= LIMITS.playerPictures) {
+		throw new ActionError(
+			'conflict',
+			`You keep up to ${LIMITS.playerPictures} pictures here. Take one out first.`
+		);
+	}
+}
+
+/**
  * Puts a picture in the gallery, hidden from the players until the GM
- * reveals it. Its file is already in the uploads directory.
+ * reveals it. Its file is already in the uploads directory. One a player
+ * adds is their own: it is in the gallery for them and for the GM, and the
+ * rest of the table sees it on the tokens that wear it.
  */
 export function addToGallery(
 	db: Db,
 	actor: Actor,
 	picture: { kind: GalleryKind; name: string; file: string; width: number; height: number }
 ): GalleryItem {
-	requireGm(actor);
+	requireRoomFor(db, actor, picture.kind);
 	const item = {
 		id: newId(),
 		kind: picture.kind,
@@ -99,7 +142,8 @@ export function addToGallery(
 		height: picture.height,
 		hidden: true,
 		tokenSize: null,
-		tokenOutline: null
+		tokenOutline: null,
+		ownerId: canEditWorld(actor.role) ? null : actor.userId
 	};
 	db.insert(gallery)
 		.values({ ...item, campaignId: actor.campaignId, createdAt: Date.now() })
@@ -121,18 +165,6 @@ function findItem(db: Db, actor: Actor, id: string): GalleryItem {
 		.get();
 	if (!item) throw new ActionError('not_found', 'That picture is not in the gallery.');
 	return item;
-}
-
-/** The id of the picture in the gallery that is kept in this file, or null when none is. */
-export function galleryIdOf(db: Db, campaignId: string, file: string): string | null {
-	const item = db
-		.select({ id: gallery.id })
-		.from(gallery)
-		.where(
-			and(eq(gallery.file, file), eq(gallery.campaignId, campaignId), isNull(gallery.deletedAt))
-		)
-		.get();
-	return item?.id ?? null;
 }
 
 export function renameInGallery(db: Db, actor: Actor, id: string, name: unknown): void {
@@ -174,77 +206,6 @@ export function presetInGallery(
 		})
 		.where(eq(gallery.id, item.id))
 		.run();
-}
-
-// ------------------------------------------------- a picture for the table
-
-/**
- * The picture the GM is holding up, as someone is shown it, if they are.
- * It is up for the whole table, or for the players it is meant for: to the
- * others, nothing is up. The GM is told who it is up for.
- */
-export function shownTo(db: Db, campaignId: string, who: Who = 'gm'): Shown | null {
-	const row = db
-		.select({
-			file: gallery.file,
-			name: gallery.name,
-			width: gallery.width,
-			height: gallery.height,
-			to: campaigns.shownTo
-		})
-		.from(campaigns)
-		.innerJoin(gallery, eq(gallery.file, campaigns.shownFile))
-		.where(and(eq(campaigns.id, campaignId), eq(gallery.campaignId, campaignId)))
-		.get();
-	if (!row) return null;
-	if (roleOf(who) === 'gm') return row;
-	const { to, ...shown } = row;
-	const id = typeof who === 'string' ? null : who.userId;
-	return to.length === 0 || (id !== null && to.includes(id)) ? shown : null;
-}
-
-/**
- * Holds a picture of the gallery up, by its id, or with null puts away the
- * one that is up. `to` names the players it is for, by user id: with none,
- * it is for the whole table. Showing a picture does not reveal it in the
- * gallery: players see it for as long as it is held up, and can't pick it
- * for a token.
- */
-export function showToTable(
-	db: Db,
-	actor: Actor,
-	id: string | null,
-	to: unknown = []
-): Shown | null {
-	requireGm(actor);
-	const item = id === null ? null : findItem(db, actor, id);
-	if (!Array.isArray(to) || to.length > LIMITS.seenBy || to.some((each) => typeof each !== 'string')) {
-		throw new ActionError('invalid', 'Malformed request.');
-	}
-	const players = db
-		.select({ id: members.userId })
-		.from(members)
-		.where(and(eq(members.campaignId, actor.campaignId), eq(members.role, 'player')))
-		.orderBy(members.joinedAt, sql`${members}.rowid`)
-		.all()
-		.map((member) => member.id);
-	if (to.some((each) => !players.includes(each))) {
-		throw new ActionError('not_found', 'That player is not in this campaign.');
-	}
-	const shownTo = item ? players.filter((each) => to.includes(each)) : [];
-	db.update(campaigns)
-		.set({ shownFile: item?.file ?? null, shownTo })
-		.where(eq(campaigns.id, actor.campaignId))
-		.run();
-	return (
-		item && {
-			file: item.file,
-			name: item.name,
-			width: item.width,
-			height: item.height,
-			to: shownTo
-		}
-	);
 }
 
 /**
@@ -292,27 +253,27 @@ export function sweepGallery(db: Db, campaignId: string): string[] {
  * them has let go of it. Returns the files that can be removed right away.
  */
 export function removeFromGallery(db: Db, actor: Actor, id: string): string[] {
-	requireGm(actor);
 	const item = findItem(db, actor, id);
+	// A player takes out what they added themself. To them, any other
+	// picture they were not shown is one that isn't there.
+	if (!canEditWorld(actor.role) && item.ownerId !== actor.userId) {
+		if (item.hidden) throw new ActionError('not_found', 'That picture is not in the gallery.');
+		requireGm(actor);
+	}
 	db.update(gallery).set({ deletedAt: Date.now() }).where(eq(gallery.id, item.id)).run();
-	// A picture taken out is no longer held up for the table either.
-	db.update(campaigns)
-		.set({ shownFile: null, shownTo: [] })
-		.where(and(eq(campaigns.id, actor.campaignId), eq(campaigns.shownFile, item.file)))
-		.run();
 	return sweepGallery(db, actor.campaignId);
 }
 
 /**
  * Whether someone may load a picture of this campaign's. The GM may load
  * any of them. A player may load the ones the GM has revealed in the
- * gallery, and whatever is in front of them: the picture the GM is holding
- * up for them, the image of a map they can open, the picture on a token
- * they can see, and the one on the card of a marker they can see.
+ * gallery, and whatever is in front of them: the image of a map they can
+ * open, the picture on a token they can see, and the one on the card of a
+ * marker they can see.
  */
 export function canLoadImage(db: Db, campaignId: string, who: Who, file: string): boolean {
 	const kept = db
-		.select({ hidden: gallery.hidden, deletedAt: gallery.deletedAt })
+		.select({ hidden: gallery.hidden, deletedAt: gallery.deletedAt, ownerId: gallery.ownerId })
 		.from(gallery)
 		.where(and(eq(gallery.file, file), eq(gallery.campaignId, campaignId)))
 		.get();
@@ -320,8 +281,12 @@ export function canLoadImage(db: Db, campaignId: string, who: Who, file: string)
 	if (roleOf(who) === 'gm') return true;
 	// One taken out of the gallery is no longer on show there, revealed or not.
 	if (!kept.hidden && kept.deletedAt === null) return true;
-	// The one the GM is holding up is in front of whoever it is held up for.
-	if (kept.deletedAt === null && shownTo(db, campaignId, who)?.file === file) return true;
+	// What a player added themself is theirs to look at, and so is the
+	// picture a token of their own wears, wherever that token is now: the
+	// face of their character, which goes down again on the next battle map.
+	const me = typeof who === 'string' ? null : who.userId;
+	if (me !== null && kept.ownerId === me && kept.deletedAt === null) return true;
+	if (me !== null && wornByOwn(db, campaignId, me, file)) return true;
 
 	const shown = db
 		.select({ id: maps.id })

@@ -1,8 +1,8 @@
 // The GM saying what date it is in the world.
 //
-// Like a picture held up for the table, it is not a change to a map, so it
-// is no event and has no undo. It is kept with the campaign: a browser that
-// connects later is told what the date is.
+// It is not a change to a map, so it is no event and has no undo. It is
+// kept with the campaign: a browser that connects later is told what the
+// date is.
 
 import { type RequestHandler } from '@sveltejs/kit';
 import { dated } from '#lib/server/bridge.ts';

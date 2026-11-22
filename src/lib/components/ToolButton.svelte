@@ -44,6 +44,8 @@
 		circle: 'M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0 M11.5 12a.5.5 0 1 0 1 0a.5.5 0 1 0-1 0',
 		cone: 'M3 12 20 4.5v15Z',
 		box: 'M4 4h16v16H4Z',
+		// A bar lying at a slant: a straight line with some width to it.
+		ray: 'M4.5 16.5 16.5 4.5l3 3-12 12Z',
 		// An hourglass: whose turn it is. And the way on to the next one.
 		turns: 'M6 2h12 M6 22h12 M7 2v4l5 6-5 6v4 M17 2v4l-5 6 5 6v4',
 		next: 'M5 4l10 8-10 8Z M19 5v14',
@@ -73,8 +75,6 @@
 			'M14.5 17.5 3 6V3h3l11.5 11.5 M13 19l6-6 M16 16l4 4 M19 21l2-2 M14.5 6.5 18 3h3v3l-3.5 3.5 M5 14l4 4 M7 17l-3 3 M3 19l2 2',
 		// Three stripes, one under the other: the menu.
 		menu: 'M4 6h16 M4 12h16 M4 18h16',
-		// A screen on a stand: something held up for the whole table.
-		show: 'M3 4h18v12H3Z M8 20h8 M12 16v4',
 		close: 'M6 6l12 12 M18 6 6 18',
 		plus: 'M12 5v14 M5 12h14',
 		minus: 'M5 12h14',

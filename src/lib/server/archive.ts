@@ -6,9 +6,9 @@
 // app itself can restore, and a way to hand a prepared world to another GM.
 //
 // What is left out is what belongs to one table and not to the world: who
-// plays in it, which of them is let in on which secret, the picture being
-// held up, and the history that undo works from. Tiles and thumbnails are
-// made again when they are next asked for.
+// plays in it, which of them is let in on which secret, and the history
+// that undo works from. Tiles and thumbnails are made again when they are
+// next asked for.
 //
 // Importing never changes a campaign that is there. It makes a new one,
 // owned by whoever imports it, with ids and file names of its own, so the
@@ -125,7 +125,11 @@ function manifestOf(db: Db, campaignId: string) {
 					.where(and(inArray(tokens.mapId, list), isNull(tokens.deletedAt)))
 					.orderBy(tokens.createdAt)
 					.all()
-			).map(({ seenBy: _, ownerId: __, ownerName: ___, deletedAt: ____, ...token }) => token),
+			).map(
+				// Whose a token is, and whose character, stays behind with who plays.
+				({ seenBy: _, ownerId: __, ownerName: ___, characterAt: ____, deletedAt: _____, ...token }) =>
+					token
+			),
 			drawings: on((list) =>
 				tx
 					.select()
@@ -140,7 +144,8 @@ function manifestOf(db: Db, campaignId: string) {
 				.where(eq(gallery.campaignId, campaignId))
 				.orderBy(gallery.createdAt)
 				.all()
-				.map(({ campaignId: _, deletedAt, ...picture }) => ({
+				// Which player added a picture stays behind as well.
+				.map(({ campaignId: _, ownerId: __, deletedAt, ...picture }) => ({
 					...picture,
 					// One taken out of the gallery, and kept for the maps and tokens that still show it.
 					removed: deletedAt !== null
@@ -555,7 +560,7 @@ function build(
 			for (const drawing of list(manifest.drawings, 100000).map(record)) {
 				const on = text(drawing.mapId, 64);
 				if (kinds.get(on) !== 'battle') refuse();
-				const kind = oneOf<DrawingKind>(drawing.kind, ['line', 'text', 'circle', 'cone', 'rect']);
+				const kind = oneOf<DrawingKind>(drawing.kind, ['line', 'text', 'circle', 'cone', 'rect', 'ray']);
 				const exact = kind === 'text' ? 1 : isTemplate(kind) ? 2 : 0;
 				tx.insert(drawings)
 					.values({

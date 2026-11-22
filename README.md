@@ -140,11 +140,15 @@ are everyone's. The rest are the GM's.
 - **A ping.** Hold `Alt` and click a spot of any map, or on a touch screen rest a finger
   on it for a moment: rings spread from it in your colour, with your name under it, for
   everyone looking at that map, and it is gone again a couple of seconds later.
+  Whoever is looking at another part of that map gets an arrow at the edge of their
+  screen instead, in your colour and with your name beside it, pointing the way: a
+  click on it takes them to the spot. It stays a few seconds, long enough to be clicked.
 - **Pointing.** The rings among the tools in the upper right corner of a map, where
   the key is `T`. With that tool in hand the cursor is a dot in a ring, and
   for as long as you hold the button down, everyone looking at that map sees a dot in
   your colour where your pointer is, with your name under it, following it as it moves:
   the road to take, the wall to climb, "this one, not that one". Let go and it is gone.
+  Off someone's screen, it is an arrow at the edge of it, like a ping's.
   A press let go at once leaves a ping. On a touch screen, press and move a finger. The
   tool stays in hand until you put it away with `Esc` or its button, and while it is,
   dragging points and doesn't move the map: the wheel and a pinch still do.
@@ -153,11 +157,13 @@ are everyone's. The rest are the GM's.
   is on anyone else's screen otherwise: not the players', and not the GM's while it
   wanders over what is hidden.
 - **The finder.** `Ctrl+K`, or the magnifier at the top, and type a few letters of a
-  place or a marker. It searches every map of the campaign and every marker and note on
-  them, by name first and then by what a marker's card says: a marker found by its
-  words shows the words that matched. `Enter` takes you there, with a marker's card open. Nothing of it is on
+  place, a marker or a token. It searches every map of the campaign, every marker and note on
+  them, and on the battle maps every token and what is written there, by name first and
+  then by what a marker's card says: a marker found by its
+  words shows the words that matched. `Enter` takes you there, with a marker's card open,
+  or with the token or the text in the middle of the screen, selected. Nothing of it is on
   screen until it is asked for. A player is offered nothing hidden, nor anything behind
-  a hidden region.
+  a hidden region, nor a token under the fog or out of their tokens' sight.
 
 - **Fog that lifts where you clear it.** The cloud in the upper right corner of a world
   map takes up the fog, and its tools come out beside it: the same ones a battle map
@@ -183,8 +189,7 @@ are everyone's. The rest are the GM's.
   new all over, and nothing on it glints.
 - **A picture on a marker.** A world marker can carry a picture out of the gallery, off
   either shelf: its card shows it above the words, for whoever can see the marker, hidden
-  in the gallery or not. Choose it in the marker's form. On a pinned card, the screen
-  button holds that picture up for the whole table.
+  in the gallery or not. Choose it in the marker's form.
 - **The date in the world.** The GM writes what day it is in the field floating in the upper
   left corner of any map, over who is at the table, in whatever words the setting's calendar has for it: "15th of Mirtul, 1492 DR".
   It saves on `Enter` or when the field is left, and `Esc` leaves it as it was. Everyone
@@ -222,15 +227,6 @@ are everyone's. The rest are the GM's.
   tells the whole way. Double-click ends it, and it stays on the map to be read, for the
   table too, until you start another or put the ruler away. `Backspace` takes the last
   bend back. It works the same on a battle map, where each stretch is counted in cells.
-- **A picture for the table.** In the **Gallery**, each picture has a small screen at
-  its top edge. Click it and that picture fills every player's screen and the table
-  display, with its name under it: the portrait of the villain, the handout, the view
-  from the pass. Your own screen stays on the map, with **Showing …** at the top: click
-  that to put the picture away again, for everyone. A player can close it on their own
-  screen. It works for any picture, hidden or not: holding one up does not reveal it in
-  the gallery, and players can load it only for as long as it is up. Pick players from
-  the row at the top of the gallery first, and the picture goes up for them alone: the
-  letter only one of them reads. The others, and the table display, are shown nothing.
 - **The table display.** **Display**, at the top, opens the map you are on in a window
   of its own, to drag onto a TV or a second screen and make full screen (`F11`). It is
   the players' view and nothing around it: no bars, no tools, and nothing a player
@@ -240,7 +236,7 @@ are everyone's. The rest are the GM's.
   lettered before it, fainter. Click one to step back out to it, or press `Backspace`
   to go back one map. Names are
   lettered larger on it, to be read from across the room, and on a battle map it shows
-  the turn order down its side, each token by name. It shows the picture you are holding up. It asks the
+  the turn order down its side, each token by name. It asks the
   screen to stay awake, which browsers allow on the machine the app runs on and over
   https. Any map's address with `?display` on the end is a display, so a player's tablet
   in the middle of the table can be one too.
@@ -283,8 +279,7 @@ session, to move a campaign to another machine, or to hand a prepared world to a
 GM.
 
 What stays behind is what belonged to the table and not to the world: who plays in it,
-which of them was let in on which secret, the picture being held up, and the history
-that undo works from. Hidden and closed things arrive hidden and closed.
+which of them was let in on which secret, and the history that undo works from. Hidden and closed things arrive hidden and closed.
 
 ### The gallery
 
@@ -329,8 +324,18 @@ it to reveal that picture to the table, and again to hide it. A revealed picture
 gold eye.
 
 A player opens the gallery from the form of a token. They are shown the token
-pictures you have revealed and nothing else, and pick from those. They can't add,
-rename, reveal or take out anything.
+pictures you have revealed, and pick from those. They can't rename, reveal or take out
+anything of yours.
+
+A player can add token pictures of their own, for their own tokens: with the first tile
+of that gallery, or the **+** at the end of the dock's tray of tokens. A picture of
+theirs is in the gallery for them and for you, hidden from the rest of the table like
+any other, and the table sees it on the tokens that wear it. They take it out again
+with its **×**. You can reveal it, rename it or take it out like any picture. Each
+player keeps up to twelve, and they add no map images.
+
+A picture you reveal, hide, add or take out is in everyone's dock the moment you do:
+nobody reloads anything.
 
 A hidden picture is, to a player, not in the gallery. They can load it only where you
 have put it in front of them: as the image of a map they can open, or on a token they
@@ -388,18 +393,25 @@ them. It has three palettes of its own, and each folds away:
   Click one and its tray slides open on top of it. Click it again and the tray is put
   away, and the map has its room back. The dock is as you left it the next time.
   - The tray of tokens shows every token that can be put on the map: a plain disc first,
-    then the token pictures in the gallery (for a player, the ones the GM has revealed).
+    then the token pictures in the gallery (for a player, the ones the GM has revealed
+    and the ones they added themself).
     Click one and it goes down in the free cell nearest the middle of the view. Drag one
-    and it goes down where you let go. The GM's **+** adds pictures to the gallery
-    straight from here.
+    and it goes down where you let go. The **+** adds pictures to the gallery
+    straight from here: the GM's are for everything, a player's for their own tokens.
+    One whose name is taken on the map gets the next number: the second goblin out of
+    the tray is "Goblin 2". A player who has a character finds it first in their tray,
+    ringed in gold: see [The party](#the-party).
   - The tray of encounters shows the ones made in [the gallery](#the-gallery), each with
     the first few of its tokens, its name and how many it holds. Click or drag one like
     a token and all its tokens go down together, side by side on the grid, selected, and
-    hidden from the players until you reveal them. `Ctrl+Z` takes the whole encounter
+    hidden from the players until you reveal them. Tokens of one name are numbered as
+    they go down, going on from the ones of that name already on the map: "Goblin 1",
+    "Goblin 2", "Goblin 3". `Ctrl+Z` takes the whole encounter
     back off. The pencil at the end of the tray opens the gallery on its encounters.
+    First in that tray, once any player has a token, is **The party**: see below.
 - **The tools**, in the upper right corner: select and move, select several, measure,
   draw, point. They fold away with the arrow at their end. Each has a key: `Q`, `W`, `E`, `R` and `T`, in that order. The pen draws lines,
-  shapes and text: which of them is picked beside it. The GM's also has the map image, the name, the grid and the fog
+  shapes and text: which of them is picked beside it, or with `1` to `6`. The GM's also has the map image, the name, the grid and the fog
   of war. A tool stays in hand until you click it again,
   take another or press `Esc`.
 - **The table's dock**, in the upper left corner, under the date: one box with two
@@ -446,6 +458,27 @@ What is on a battle map:
   order reads **Your turn**, and the turn is theirs and the GM's to end. A player with a
   token on the map has one more tool in the corner, and the key `G`: it brings their token
   to the middle of the screen, selected.
+- <a id="the-party"></a>**The party.** One of the tokens a player has is their character: the one that goes
+  down for them on the next battle map, as it looks now, with its name, its picture,
+  its colour, its ring and its size. Nothing has to be set up for it. Until you say
+  otherwise it is the first token they were given on the map where they last got one:
+  the ranger, and not the wolf that was copied from her afterwards. To say otherwise,
+  tick **This is …'s character** in the token's picture, colour and outline. A player
+  ticks **This is my character** on a token of their own. With several ticked, the one
+  ticked last counts.
+
+  On a new battle map, open **Encounters** in the dock: **The party** is the first
+  thing in its tray. Click it, or drag it to where the party comes in, and the
+  character of every player goes down side by side, each handed to its player and in
+  plain sight. A player who has a token of their own on that map already is left out,
+  so it is safe to click twice. `Ctrl+Z` takes them back off. A player does the same
+  for themself: their character is first in their tray of tokens. Whichever way it
+  goes down, that token is their character from then on, so what they change about it
+  on this map, a new picture or a new name, is what goes down on the next.
+- **Copies are numbered.** `Ctrl+D`, or the duplicate button, puts a copy beside a
+  token with the next number after its name: the copy of "Goblin" is "Goblin 2", and
+  the copy of that "Goblin 3". The first keeps the name it had. A copy of a player's
+  token is theirs too, and is not their character.
 - **A number.** The `#` button gives a token a number to carry, on its rim at the upper
   left: hit points, charges, rounds left. Type a number to set it, `+3` or `-5` to
   change it by that much, or nothing to take it off. With several tokens selected it
@@ -488,11 +521,13 @@ What is on a battle map:
   and `Ctrl+Z` takes back any of it. A token taken off the map is passed over and keeps
   its place, in case it comes back. Players see only the tokens they can see: a hidden
   one is not in their strip, and its turn is nobody's.
-- **Shapes.** For the area of a spell, a breath, a wall. They come out of the same pen
-  as the lines: with **Draw** in hand, pick a circle, a cone or a box
-  in place of the line, and a colour, and drag: out from the middle of a circle, from
-  the tip of a cone the way it points, from one corner of a box to the other. A cone is
-  as wide at its far end as it is long. Its size is written on it in feet while you
+- **Shapes.** For the area of a spell, a breath, a wall, a bolt. They come out of the same pen
+  as the lines: with **Draw** in hand, pick a circle, a cone, a box or a straight line
+  in place of the freehand line, and a colour, and drag: out from the middle of a circle, from
+  the tip of a cone the way it points, from one corner of a box to the other, from
+  where a straight line starts the way it goes. A cone is
+  as wide at its far end as it is long. A straight line is one cell wide and points any
+  way, which a box does not: its sides stay level with the grid. Its size is written on it in feet while you
   drag: a shape starts on the grid and is a whole number of cells long. Once it is
   drawn the hand is back, to move it or get on with the fight, and the pen remembers
   the shape for the next time. It lies on the map under the tokens, tinted so they show
@@ -502,6 +537,13 @@ What is on a battle map:
   a cone from a corner, the middle of a cell or the middle of one of its sides. `Alt`
   leaves the grid, while drawing and while moving. A shape is moved and rubbed out like
   any drawing: by whoever drew it, and the GM.
+- **The handles on a selected shape.** Select a shape that is yours to change, and
+  nothing else, and it wears white dots. The one at the far end of a cone or of a
+  straight line aims it and makes it longer or shorter: drag it round the tip, and out
+  or in. The one on the rim of a circle resizes it. A box has one at each corner, and
+  the corner across from the one you drag stays put. The shape keeps to the grid and
+  to whole cells as it goes, its size is written on it while you drag, and `Alt` leaves
+  the grid. `Ctrl+Z` puts it back as it was.
 - **A shape picks its targets.** While you drag a shape out, and while one is selected,
   the tokens whose middle is inside it wear a pale ring, on your screen only. A shape
   you have just drawn is selected, and its buttons have one more: **Select the tokens
@@ -582,6 +624,8 @@ always a world map.
 | Drag a box with **Select multiple** in hand, on a world map | Select the markers in it together: drag one to move them all, and their buttons hide or delete them |
 | A click with the ruler in hand | Start a ruler that bends at every click. Double-click ends it, `Backspace` takes a bend back |
 | Click a token, a drawing or a text | Select it: its buttons float under it. `Shift`-click selects several |
+| Drag a white dot on a selected shape | Aim a cone or a straight line and change its length, resize a circle or a box |
+| Click an arrow at the edge of the map | Go to the spot someone is pointing out off your screen |
 | Double-click a text | Reword it, if it's yours |
 | Breadcrumbs | Step back out |
 | The names in the corner of a table display, or `Backspace` there | Step back out |
@@ -614,7 +658,7 @@ On a battle map:
 | | |
 |---|---|
 | `Q` `W` `E` `R` `T` | Select and move, select several, measure, draw, point |
-| `1` to `5`, with the pen in hand | Draw a line, a circle, a cone, a box, text |
+| `1` to `6`, with the pen in hand | Draw a line, a circle, a cone, a box, a straight line, text |
 | `C`, `Shift+C`, with the pen in hand | The next colour, the one before |
 | `A` | Put down a plain token |
 | `G` | Go to your own token, if one of the tokens there is yours |
@@ -632,7 +676,7 @@ With tokens or drawings selected there:
 | `C` | Its number: type `12`, `+3` or `-5` |
 | `M` | Its marks |
 | `K` | Lock it in place, or unlock it |
-| `Ctrl+D` | Duplicate |
+| `Ctrl+D` | Duplicate: the copy takes the next number after its name |
 | `P` | Its picture, colour and outline |
 | `Shift+W` | Select the tokens inside the shape |
 | `I` | Put it in the turn order, or take it out, as the GM |
@@ -678,13 +722,12 @@ and the tools are in the corner.
 | World markers, on world maps | create, edit, give a picture, hide, reveal, show to some players, delete | read, picture and all (never the hidden ones they are not let in on, nor the ones under the fog) |
 | Table notes, on world maps | create, edit, delete, anyone's | create, edit anyone's, delete their own |
 | Maps, regions | create, edit, hide, reveal, show to some players, close, open, delete | read (never the hidden ones they are not let in on), step into the ones that are open |
-| The gallery | add, rename, reveal, hide, take out, lay an image under a map | look through what the GM has revealed, pick one of those for a token |
+| The gallery | add, rename, reveal, hide, take out, lay an image under a map | look through what the GM has revealed, pick one of those for a token, add token pictures of their own and take those out again |
 | Encounters | make, fill, rename, throw away, put down on a battle map | nothing: they see the tokens once the GM reveals them |
 | Battle maps and grids | make one behind a new region, set up the grid | read |
 | The scale of a world map | say how many miles across it is | measure, once a map on the way has one |
 | Units, and how a diagonal is counted | say, for a map and the maps inside it | read distances that way |
 | A ping, and the finder | point a spot out, go to anything | point a spot out, go to anything not hidden |
-| A picture for the table | hold any picture up, for everyone or for some players, put it away | look, if it is held up for them, and close it on their own screen |
 | The date in the world | write it, change it, clear it | read |
 | The turn order, on battle maps | add tokens, sort by dragging or by rolls, start the fight, next turn, back a turn, end the fight | see whose turn it is, among the tokens they can see, and end the turn of their own token, or of one that is nobody's |
 | Fog of war, on battle maps | cover, clear, lift, see through, make it follow the tokens | see what has been cleared, and where it follows the tokens, what the players' tokens see |
@@ -692,10 +735,11 @@ and the tools are in the corner.
 | A seat at the table | make one, rename its player, take it away, let in whoever asks for one, or not | ask for one of the seats on the invite link, by picking their name |
 | The invite | while a seat is free: show it as a code to scan, on their screen or on the table display, and copy the link | |
 | A campaign in one file | export the ones they run, import one as a new campaign | |
-| Tokens | create anywhere, give any picture, hide, reveal, show to some players, hand to a player | create where there is no fog, give a revealed picture: what they put down is their own |
+| Tokens | create anywhere, give any picture, hide, reveal, show to some players, hand to a player | create where there is no fog, give a revealed picture or one of their own: what they put down is their own |
+| The party | put it down on a battle map, say which token is a player's character | put their own character down, say which of their own tokens it is |
 | Any token they can see | move, resize, turn, recolour, outline, label, mark, number, lock, unlock, duplicate, delete | move, resize, turn, recolour, outline, label, mark, number, lock, unlock, duplicate, delete |
 | A token's number, kept | keep it from the table, see it, change it, show it again | nothing: they are sent the token without it |
-| Drawings, text and shapes, on battle maps | create, move, change, rub out, anyone's, hide, reveal, show to some players | create, and move, change, rub out their own (never a hidden one they are not let in on) |
+| Drawings, text and shapes, on battle maps | create, move, change, turn and resize, rub out, anyone's, hide, reveal, show to some players | create, and move, change, turn and resize, rub out their own (never a hidden one they are not let in on) |
 | Undo and redo | their own changes | their own changes to table notes, tokens and drawings |
 
 A table note can be deleted by whoever added it and by the GM, never by another player.
@@ -735,9 +779,11 @@ src/lib/client/     the browser's side: the live connection, the map's state, un
   tools/              one module for each tool of the map, with what it is in the middle of
 src/lib/server/     database, sessions, and the modules that matter most:
   schema.ts           the tables, as a Drizzle schema
-  world.ts            every change: validate, check permission, write, log an event
+  world.ts            every change: check permission, write, log an event
+  inputs.ts           what a command's values are checked with before any of that
   gallery.ts          the campaign's pictures, and who may load which
   encounters.ts       tokens made ahead of time, to put down together
+  party.ts            each player's character, read off the tokens that are theirs
   visibility.ts       the only path from the event log to a client, filtered by who it is
   archive.ts, tar.ts  a campaign out to one file and back in, as a stream
   db.ts, drivers/     where the database is kept: one driver per kind of place
@@ -855,10 +901,6 @@ scripts/            run both servers, seed a demo, end-to-end check
 - **A drawn line is thinned before it is sent.** The browser keeps the points that give
   the line its shape, to within a pixel on screen, and the server stores at most 800 of
   them. A line appears for the table when it is finished, not while it is being drawn.
-- **A picture for the table is the campaign's.** Which picture is up is one column on
-  the campaign. It is not an event, so it has no undo, but it is kept: the app tells
-  the WebSocket server whenever it changes and whenever a browser connects, and lets a
-  player load that one picture for as long as it is up.
 - **The turn order is part of its map.** Who takes turns, whose turn it is and the round
   are one value on the battle map, changed with `map.update` like its fog, so every
   step of a fight is an event and can be undone. It names tokens, so it goes through
@@ -892,6 +934,37 @@ scripts/            run both servers, seed a demo, end-to-end check
   them brings its saved groups in as encounters. The server can still make an encounter
   of tokens that stand on a map, keeping their places (`encounterFromMap`, `from` in a
   `POST`): the browser has no button for it.
+- **A character is a token, and nothing else is kept.** A token has `characterAt`:
+  when it was said to be its owner's character, or nothing. The party is read off the
+  tokens each time it is asked for: `server/party.ts`, behind `/c/<campaign>/party`.
+  A player's character is the token of theirs that was said so last, on the map or
+  taken off it, and with none said, the first they were given on the map where they
+  last got one. Putting the party down is a batch of `token.create` from the browser,
+  each with `ownerId` and `character`, so it is an event with undo like any other.
+  Whose character a token is goes with whose it is: handed to someone else, it is the
+  next one's only if that is said too. A campaign's file leaves it behind with who plays.
+- **A copy is named on the server, a token out of the dock in the browser.**
+  `shared/naming.ts` gives a name that is taken the next number. `token.duplicate`
+  counts the tokens the person asking can see: a number that skipped would tell a
+  player of the goblins they can't. The dock counts the tokens the browser has.
+- **A shape is turned and resized by its two points.** `drawing.update` takes
+  `points` for a shape and nothing else: a handle moves one of the two, and the other
+  stays put. `templateFrom` in `shared/grid.ts` keeps what comes of it on the grid.
+  A straight line is one more kind of drawing, `ray`: its width is not kept, it is
+  one cell, so the outline is worked out with the size of a cell in hand.
+- **A picture a player adds is theirs by a column.** `gallery.ownerId`, empty for
+  the GM's. The gallery lists it for its player hidden or not, `findPicture` lets
+  them put it on a token, and they may take it out. A player may also use and load
+  the picture a token of their own wears, whatever the gallery says of it: that is
+  how a character keeps a picture the GM gave it from one map to the next.
+- **The gallery is not an event, so the table is told it changed.** After a picture
+  is added, revealed, hidden, renamed or taken out, the app has the WebSocket server
+  tell every browser of the campaign that much and no more. Each asks for the gallery
+  again and is sent what it may see.
+- **An arrow for a ping is the browser's own.** A ping is sent as it always was. The
+  browser that gets one works out whether the spot is on its screen, and if it isn't,
+  where on the edge the arrow goes: `PingArrows.svelte`. It keeps the arrow a few
+  seconds after the ping itself is gone.
 - **A mark is an id in a list.** A token keeps the ids of the marks it wears. How each
   looks, a colour or an icon, is one table: `TOKEN_MARKS` in `shared/types.ts`. A
   new mark is one more line there, and nothing in the database changes.
@@ -1026,8 +1099,8 @@ Unit tests for the rules: permissions, hidden markers and regions, battle maps, 
 and drawings, the fog of war and what it keeps from players, maps that
 borrow their picture, the grid's arithmetic, undo and restore, campaign isolation, and the storage, on disk and off.
 And for what a session is run with: marks, the turn order and what a player sees of it,
-shapes, the scale of a world map, the finder, a picture held
-up for the table, and what a token picture starts its tokens out as.
+shapes, the scale of a world map, the finder, and what a token picture starts its
+tokens out as.
 And for what is kept from some and not from others: closed regions, secrets shared with
 some players and what each of them is sent, and the fog of a world map. And the number on a token, one the GM keeps, shapes that pick their targets,
 encounters and how their tokens are stood side by side, initiative rolls, ending a turn, lining up a grid,
@@ -1040,6 +1113,10 @@ And for what came after the first sessions were planned: fog that follows the to
 what it sends the players as they move, drawings the GM keeps out of sight, metres and
 the ways of counting a diagonal, the finder reading what a marker says, and the seats
 the GM makes, renames and takes away.
+And for what came with the party: whose character a token is and what the party is
+told of it, numbered copies, shapes turned and resized by their points, the straight
+line among them, token pictures a player adds and takes out, and the finder knowing
+the tokens and the texts of a battle map.
 
 ```bash
 bun run test:e2e
@@ -1096,8 +1173,8 @@ Type-checks everything.
 - What someone has looked at is kept in their browser. On another device, or with its
   storage cleared, every map starts over: nothing glints there until something new
   comes. A table note someone else adds doesn't glint, and nothing glints for the GM.
-- The card of a marker shows its picture small. It can't be opened larger from there by
-  a player: the GM holds it up for the table. A table note carries no picture.
+- The card of a marker shows its picture small, and it can't be opened larger. A table
+  note carries no picture.
 - A secret is shared with players one thing at a time: there are no groups of players,
   and no list of everything one player has been let in on.
 - A closed region shows its name. For one the players should not be able to name yet,
@@ -1123,16 +1200,24 @@ Type-checks everything.
   into another map or reload the page.
 - Undo can't put back a map image, or a token's picture, that has since been taken out
   of the gallery and removed from disk.
-- A player can't add a picture of their own to the gallery. They send it to the GM,
-  who adds it and reveals it.
+- A player adds token pictures of their own, up to twelve, and no map images. A
+  picture of theirs is named after its file, and only the GM renames it.
 - Pictures are revealed in the gallery one at a time, and to the whole table: not to one player only.
+- A player has one character. With several tokens ticked as theirs, the one ticked
+  last counts, and the others stay ticked. The party goes down around one spot,
+  whatever stands there, and a player with any token of their own on the map is left
+  out of it: it puts down nobody's second token. Marks and the number on a token are
+  not part of a character: each battle starts without them.
+- A copy is numbered, and the token it was copied from is not: "Goblin" and
+  "Goblin 2". Tokens put down one at a time by hand, with names typed in, are never
+  renamed.
 - A token picture remembers a size and an outline for its tokens, and nothing else: not
   a colour, a name of its own for them, or marks.
-- One picture is held up at a time. It is shown whole, and can't be zoomed into.
 - Undoing the drawing of a region only works while the map behind it is still empty.
   After that the region has to be deleted with its own button, which asks first.
 - A ping shows where it lands on the map. Someone looking at another part of that map
-  is not turned towards it, and someone on another map is not told.
+  gets an arrow to it and is not turned towards it unless they click that, and someone
+  on another map is not told.
 - A ping, a ruler and a token in someone's hand are passed to every browser in the
   campaign, each of which shows only what is on the map it is on. A player who inspects
   their network traffic can see that the GM pinged or measured on a map they can't
@@ -1145,15 +1230,18 @@ Type-checks everything.
   on it, and no timer that takes it off again. Icons are small: on a token that is
   small on screen they are told apart by their colours until the map is zoomed in.
 - A shape catches a token by its middle, however big the token is. Only the person
-  with the shape selected sees which tokens it catches. It can't be
-  resized or turned once drawn: draw another. There is no straight line among the
-  shapes: a thin box does for one along the grid.
+  with the shape selected sees which tokens it catches. A box can't be
+  turned: its sides stay level with the grid, and the straight line is the shape that
+  points any way. That line is always one cell wide. A circle and a cone keep their
+  middle or their tip where it is while a handle is dragged: to move that, drag the
+  shape by its edge.
 - A world map is measured in miles. It knows nothing of roads: the ruler follows one
   only as far as you click along it. How long the way takes is the miles over one pace,
   the same over hills and by sea. A ruler laid by clicks is not kept: it is gone when
   the tool is put away, or the page reloaded.
-- The finder searches the names of maps and markers, and what a marker's card says: not
-  tokens, and not what is written on a battle map.
+- The finder searches the names of maps, markers and tokens, what a marker's card
+  says, and what is written on a battle map: not the lines and shapes drawn there,
+  which have no words to be found by.
 - The fog a GM paints on a battle map is cleared and covered by hand, with a brush. The
   fog that follows the tokens knows nothing of walls: a token sees the same distance
   every way, through anything. Every token of a player sees as far as every other, and
@@ -1173,8 +1261,6 @@ Type-checks everything.
   rubs out part of a line. Only the GM hides a drawing: a player's are in plain sight.
 - A token's label is its name: it can be changed by anyone, but not left empty.
 - A token is half a cell to six cells across, and turns in steps of 15 degrees.
-- A player sees a newly revealed token picture in the dock the next time they reach for
-  it, not the moment the GM reveals it.
 - The grid is square. Lining it up by a box is as true as the box: over one small
   square it can be a pixel or two out, which adds up across a big map.
 - Where every second diagonal step counts as two, the ruler starts the count over at
@@ -1182,8 +1268,6 @@ Type-checks everything.
 - Metres and kilometres are worked out from feet and miles by round numbers, 1.5 m to
   five feet and 1.5 km to the mile: a map that is really to a metric scale is a little
   out if its scale is read off in miles.
-- A player on a battle map when the units or the diagonal are changed on a map further
-  out reads the new ones the next time they load the map.
 - The way into a battle map is a region. A marker can't lead to one.
 - A battle map holds no markers, notes or regions.
 - A map stays the kind it was made as. A world map can't be turned into a battle map, or

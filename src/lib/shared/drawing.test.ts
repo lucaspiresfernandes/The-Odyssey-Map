@@ -1,5 +1,15 @@
 import { describe, expect, test } from 'bun:test';
-import { boxOf, capped, linePath, templateHolds, thinOut, touchesBox } from './drawing';
+import {
+	boxOf,
+	capped,
+	linePath,
+	templateBox,
+	templateHolds,
+	templatePath,
+	templateSpan,
+	thinOut,
+	touchesBox
+} from './drawing';
 import type { Point } from './types';
 
 describe('a line drawn freehand', () => {
@@ -148,5 +158,27 @@ describe('a shape that picks its targets', () => {
 		// One with no length is a single spot.
 		expect(templateHolds('cone', tip, tip, [0, 0])).toBe(true);
 		expect(templateHolds('cone', tip, tip, [1, 0])).toBe(false);
+	});
+
+	test('a ray holds what is along it, half a cell to either side', () => {
+		const from: Point = [100, 100];
+		const to: Point = [300, 100];
+		const CELL = 50;
+		const holds = (at: Point, slack = 0) => templateHolds('ray', from, to, at, slack, CELL);
+		expect(holds([200, 100])).toBe(true);
+		expect(holds([200, 125])).toBe(true);
+		expect(holds([200, 126])).toBe(false);
+		expect(holds([99, 100])).toBe(false);
+		expect(holds([301, 100])).toBe(false);
+		expect(holds([301, 126], 1)).toBe(true);
+		// It points any way: along a slant, the same holds.
+		const slant: Point = [300, 300];
+		expect(templateHolds('ray', from, slant, [200, 200], 0, CELL)).toBe(true);
+		expect(templateHolds('ray', from, slant, [220, 180], 0, CELL)).toBe(false);
+		expect(templateHolds('ray', from, slant, [210, 190], 0, CELL)).toBe(true);
+		// The outline goes round its four corners, and the box around it takes them in.
+		expect(templatePath('ray', from, to, CELL)).toBe('M100 125L300 125L300 75L100 75Z');
+		expect(templateBox('ray', from, to, CELL)).toEqual({ x0: 100, x1: 300, y0: 75, y1: 125 });
+		expect(templateSpan('ray', from, to)).toEqual([200]);
 	});
 });

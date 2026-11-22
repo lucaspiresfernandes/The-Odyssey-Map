@@ -4,7 +4,7 @@
 // tells it what to deliver, already filtered for each role by `toLiveEvent`,
 // so nothing hidden is ever handed over to be sent to a player.
 
-import type { Broadcast, Shown, StoredEvent } from '../shared/types';
+import type { Broadcast, StoredEvent } from '../shared/types';
 import type { Db } from './db';
 import { playersOf } from './queries';
 import { knocksOf } from './seats';
@@ -114,15 +114,16 @@ export function seated(
 	return send({ campaignId, events: [], seats });
 }
 
+/**
+ * Tells everyone at the table that the gallery has changed: a picture was
+ * added, revealed, hidden, renamed or taken out. They are told nothing of
+ * what: each browser asks for the gallery again, and is sent what it may see.
+ */
+export function galleryChanged(campaignId: string): Promise<void> {
+	return send({ campaignId, events: [], gallery: true });
+}
+
 /** Tells everyone what date it is in the world now, or with nothing, that there is none. */
 export function dated(campaignId: string, date: string): Promise<void> {
 	return send({ campaignId, events: [], date });
-}
-
-/**
- * Tells the table which picture the GM is holding up, or with null that it
- * is put away. `to` names the players it is for: empty for all of them.
- */
-export function holdUp(campaignId: string, shown: Shown | null, to: string[] = []): Promise<void> {
-	return send({ campaignId, events: [], show: { shown, to } });
 }

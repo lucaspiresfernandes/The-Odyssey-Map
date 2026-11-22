@@ -1,17 +1,17 @@
 // One picture in the gallery: renaming it, revealing it to the players or
 // hiding it again, saying what a token made from it starts out as, and
-// taking it out. All of it is the GM's.
+// taking it out. All of it is the GM's, but for a player taking out a
+// picture they added themself.
 
 import { type RequestHandler } from '@sveltejs/kit';
-import { holdUp } from '#lib/server/bridge.ts';
+import { galleryChanged } from '#lib/server/bridge.ts';
 import { getDb } from '#lib/server/db.ts';
 import {
 	hideInGallery,
 	listGallery,
 	presetInGallery,
 	removeFromGallery,
-	renameInGallery,
-	shownTo
+	renameInGallery
 } from '#lib/server/gallery.ts';
 import { requireMemberApi } from '#lib/server/session.ts';
 import { dropImages } from '#lib/server/tiles.ts';
@@ -48,6 +48,8 @@ export const PATCH: RequestHandler = async (event) => {
 		if (body?.name !== undefined || (body?.hidden === undefined && body?.preset === undefined)) {
 			renameInGallery(db, actor, id, body?.name);
 		}
+		// A picture revealed is in a player's dock the moment it is.
+		galleryChanged(actor.campaignId);
 		return Response.json({ ok: true, items: listGallery(db, actor) } satisfies GalleryResponse);
 	} catch (err) {
 		return refusal(err);
@@ -58,11 +60,9 @@ export const DELETE: RequestHandler = async (event) => {
 	const { actor } = requireMemberApi(event, event.params.campaign!);
 	try {
 		const db = getDb();
-		const held = shownTo(db, actor.campaignId);
 		// A picture that a map or a token still shows stays on disk for them.
 		await dropImages(removeFromGallery(db, actor, event.params.id!));
-		// The one being held up for the table comes down with it.
-		if (held && !shownTo(db, actor.campaignId)) await holdUp(actor.campaignId, null);
+		galleryChanged(actor.campaignId);
 		return Response.json({ ok: true, items: listGallery(db, actor) } satisfies GalleryResponse);
 	} catch (err) {
 		return refusal(err);

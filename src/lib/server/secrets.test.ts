@@ -1,12 +1,11 @@
 // What is kept from some players and not from others: regions that are
-// closed, things hidden from the table and shown to a few, a picture held
-// up for a few, and the fog of a world map.
+// closed, things hidden from the table and shown to a few, and the fog of a
+// world map.
 
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { createGuest, registerUser } from './auth';
 import { actorFor, createCampaign, getMembership, joinCampaign } from './campaigns';
 import { openDb, type Db } from './db';
-import { addToGallery, canLoadImage, newImageFile, showToTable, shownTo } from './gallery';
 import { findable, getMapSnapshot, playersOf } from './queries';
 import { toLiveEvent } from './visibility';
 import { ActionError, perform, performReceived, viewerOf, type Actor } from './world';
@@ -225,35 +224,6 @@ describe('a secret with some of the players', () => {
 		perform(db, gm, { t: 'map.update', id: field, turns: { order: [id], current: id } });
 		expect(sees(field, mira)!.map.turns).toMatchObject({ order: [id], current: id });
 		expect(sees(field, odo)!.map.turns).toMatchObject({ order: [], current: null });
-	});
-});
-
-describe('a picture held up for some of the players', () => {
-	test('they are shown it, and may load it: the others are not', () => {
-		const letter = addToGallery(db, gm, {
-			kind: 'map',
-			name: 'The Letter',
-			file: newImageFile('png'),
-			width: 640,
-			height: 480
-		});
-		expect(showToTable(db, gm, letter.id, [odo.userId])).toMatchObject({ to: [odo.userId] });
-		expect(shownTo(db, gm.campaignId)).toMatchObject({ file: letter.file, to: [odo.userId] });
-		expect(shownTo(db, gm.campaignId, viewerOf(odo))).toEqual({
-			file: letter.file,
-			name: 'The Letter',
-			width: 640,
-			height: 480
-		});
-		expect(shownTo(db, gm.campaignId, viewerOf(mira))).toBeNull();
-		expect(shownTo(db, gm.campaignId, 'player')).toBeNull();
-		expect(canLoadImage(db, gm.campaignId, viewerOf(odo), letter.file)).toBe(true);
-		expect(canLoadImage(db, gm.campaignId, viewerOf(mira), letter.file)).toBe(false);
-
-		// Held up again for everyone, it is everyone's.
-		showToTable(db, gm, letter.id);
-		expect(shownTo(db, gm.campaignId, viewerOf(mira))?.file).toBe(letter.file);
-		expect(refusal(() => showToTable(db, gm, letter.id, ['nobody']))).toBe('not_found');
 	});
 });
 

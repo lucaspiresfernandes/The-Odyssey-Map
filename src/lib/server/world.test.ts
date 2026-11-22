@@ -893,7 +893,8 @@ describe('battle maps', () => {
 		const [copied] = perform(db, player, { t: 'token.duplicate', id: ogre.id });
 		const copy = copied.after as Token;
 		// Its own width to the right: two cells of a hundred, on a map 1600 wide.
-		expect(copy).toMatchObject({ name: 'Ogre', size: 2, rotation: 90, color: '#3fae7c', locked: false, y: 0.5 });
+		// And the next number after its name, to tell it from the first.
+		expect(copy).toMatchObject({ name: 'Ogre 2', size: 2, rotation: 90, color: '#3fae7c', locked: false, y: 0.5 });
 		expect(copy.x).toBeCloseTo(0.625);
 		expect(copy.id).not.toBe(ogre.id);
 		// Whoever made the copy can take it back.
@@ -1164,11 +1165,11 @@ describe('the gallery', () => {
 		void goblin;
 	});
 
-	test('a player changes nothing in it, and reveals nothing', () => {
+	test('a player changes nothing of the GM’s in it, and reveals nothing', () => {
 		const knight = revealed('token', 'Knight');
 		const goblin = picture('token', 'Goblin');
 
-		expect(refusal(() => picture('token', 'Mine', player))).toBe('forbidden');
+		// A token picture of their own is another matter: see player-pictures in party.test.ts.
 		expect(refusal(() => picture('map', 'My map', player))).toBe('forbidden');
 		expect(refusal(() => renameInGallery(db, player, knight.id, 'x'))).toBe('forbidden');
 		expect(refusal(() => removeFromGallery(db, player, knight.id))).toBe('forbidden');
@@ -1271,7 +1272,9 @@ describe('the gallery', () => {
 		const mine = token(id, { name: 'Second', image: hero.file }, player);
 		hideInGallery(db, gm, hero.id, true);
 		expect((getMapSnapshot(db, gm.campaignId, id, 'player')!.tokens.find((t) => t.id === mine.id) as Token).image).toBe(hero.file);
-		expect(refusal(() => token(id, { image: hero.file }, player))).toBe('conflict');
+		expect(refusal(() => token(id, { image: hero.file }, other))).toBe('conflict');
+		// But for whoever has a token that wears it: their own token's face is theirs to use again.
+		expect(refusal(() => token(id, { image: hero.file }, player))).toBe('allowed');
 	});
 
 	test('each kind of picture has its use, and no other', () => {

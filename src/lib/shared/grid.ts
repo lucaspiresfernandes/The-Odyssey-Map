@@ -61,9 +61,9 @@ export function snapToHalfCell(map: Sheet, [x, y]: Point): Point {
  * The two points a template is kept as, for one dragged from `from` to
  * `to`. It starts on the grid and is a whole number of cells long, and a
  * box runs from one corner of a cell to another. `free` leaves it exactly
- * as dragged. Either way both points stay on the map: a cone that would
- * end beyond the edge is made shorter, and a circle is still a circle of
- * the size dragged, with its second point put where there is room for it.
+ * as dragged. Either way both points stay on the map: a cone or a ray that
+ * would end beyond the edge is made shorter, and a circle is still a circle
+ * of the size dragged, with its second point put where there is room for it.
  */
 export function templatePoints(
 	map: Sheet,
@@ -72,7 +72,6 @@ export function templatePoints(
 	to: Point,
 	free = false
 ): [Point, Point] {
-	const { grid, width, height } = map;
 	const onMap = ([x, y]: Point): Point => [
 		Math.min(1, Math.max(0, x)),
 		Math.min(1, Math.max(0, y))
@@ -80,8 +79,28 @@ export function templatePoints(
 	if (kind === 'rect') {
 		return free ? [onMap(from), onMap(to)] : [snapToGrid(map, from, 2), snapToGrid(map, to, 2)];
 	}
+	return templateFrom(map, kind, free ? onMap(from) : snapToHalfCell(map, from), to, free);
+}
 
-	const a = free ? onMap(from) : snapToHalfCell(map, from);
+/**
+ * The same for a template whose first point stays where it is: one that is
+ * on the map already, being turned or resized by its other end. `a` is the
+ * middle of a circle, the tip of a cone, the near end of a ray, or the
+ * corner of a box that is not the one being dragged.
+ */
+export function templateFrom(
+	map: Sheet,
+	kind: TemplateKind,
+	a: Point,
+	to: Point,
+	free = false
+): [Point, Point] {
+	const { grid, width, height } = map;
+	const onMap = ([x, y]: Point): Point => [
+		Math.min(1, Math.max(0, x)),
+		Math.min(1, Math.max(0, y))
+	];
+	if (kind === 'rect') return [a, free ? onMap(to) : snapToGrid(map, to, 2)];
 	const dx = (to[0] - a[0]) * width;
 	const dy = (to[1] - a[1]) * height;
 	const dragged = Math.hypot(dx, dy);
@@ -97,7 +116,7 @@ export function templatePoints(
 		const rim = [end(1, 0, length), end(-1, 0, length), end(0, 1, length), end(0, -1, length)];
 		return [a, rim.find(fits) ?? onMap(rim[0])];
 	}
-	// A cone points where it was dragged, as far as the map goes that way.
+	// A cone points where it was dragged, as far as the map goes that way. So does a ray.
 	const [ux, uy] = dragged === 0 ? [1, 0] : [dx / dragged, dy / dragged];
 	for (let long = length; long > 0 && !free; long -= grid.size) {
 		if (fits(end(ux, uy, long))) return [a, end(ux, uy, long)];

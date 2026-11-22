@@ -62,14 +62,6 @@ export const campaigns = sqliteTable('campaigns', {
 	// would need both rows to exist before either could be inserted.
 	rootMapId: text('root_map_id').notNull(),
 	/**
-	 * File name of the picture the GM is holding up for the whole table, out
-	 * of the gallery. Null while none is. Not a foreign key, for the same
-	 * reason, and because a picture may leave the gallery while it is shown.
-	 */
-	shownFile: text('shown_file'),
-	/** The players that picture is held up for, by user id. Empty for the whole table. */
-	shownTo: text('shown_to', { mode: 'json' }).$type<string[]>().notNull().default([]),
-	/**
 	 * The date it is in the world, in the GM's own words: its calendar is
 	 * the setting's and not ours, so nothing here reads it. Empty for none.
 	 */
@@ -267,6 +259,12 @@ export const tokens = sqliteTable(
 		// tokens never hang on who is still a member.
 		ownerId: text('owner_id'),
 		ownerName: text('owner_name'),
+		/**
+		 * When it was made its owner's character, or null if it never was. Of
+		 * the tokens a player has, the one said so last is what goes down for
+		 * them on a new battle map.
+		 */
+		characterAt: integer('character_at'),
 		/** A number the table counts on it: hit points, charges, rounds left. Null for none. */
 		count: integer('count'),
 		/** The GM keeps the number to themself: players are sent the token without it. */
@@ -291,7 +289,7 @@ export const drawings = sqliteTable(
 		mapId: text('map_id')
 			.notNull()
 			.references(() => maps.id, { onDelete: 'cascade' }),
-		kind: text('kind', { enum: ['line', 'text', 'circle', 'cone', 'rect'] }).notNull(),
+		kind: text('kind', { enum: ['line', 'text', 'circle', 'cone', 'rect', 'ray'] }).notNull(),
 		/** In map space. A text has one, a template two. */
 		points: text('points', { mode: 'json' }).$type<Point[]>().notNull(),
 		text: text('text').notNull().default(''),
@@ -337,6 +335,12 @@ export const gallery = sqliteTable(
 		 */
 		tokenSize: real('token_size'),
 		tokenOutline: text('token_outline'),
+		/**
+		 * The player who added it, for a token picture a player put in for a
+		 * token of their own. Null for the GM's. Not a foreign key, like the
+		 * owner of a token: taking a seat away hands its pictures to the GM.
+		 */
+		ownerId: text('owner_id'),
 		createdAt: integer('created_at').notNull(),
 		/**
 		 * Set when the GM takes a picture out of the gallery while a map or a

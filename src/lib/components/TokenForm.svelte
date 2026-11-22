@@ -4,7 +4,9 @@
 	// has none, and the ring around it. Any token can wear a ring, to tell it
 	// from others that look the same or to mark which belong together. The GM
 	// also says whose token it is: the player whose turn it is when its turn
-	// comes, and where the fog follows the tokens, whose eyes it is.
+	// comes, and where the fog follows the tokens, whose eyes it is. And of a
+	// token that is a player's, whether it is their character: the one that
+	// goes down for them on a new battle map. That is theirs to say too.
 
 	import {
 		TOKEN_COLORS,
@@ -18,11 +20,19 @@
 	import Gallery from './Gallery.svelte';
 	import Modal from './Modal.svelte';
 
-	type Values = Pick<TokenInput, 'color' | 'outline' | 'image'> & { ownerId?: string | null };
+	type Values = Pick<TokenInput, 'color' | 'outline' | 'image'> & {
+		ownerId?: string | null;
+		character?: boolean;
+	};
 
 	interface Props {
-		/** The GM picks from the whole gallery, and adds to it. A player from what is revealed. */
+		/**
+		 * The GM picks from the whole gallery, and adds to it. A player from
+		 * what is revealed, and from the pictures they added themself.
+		 */
 		gm: boolean;
+		/** Who has the form open, by user id. */
+		me: string;
 		campaignId: string;
 		token: Token;
 		/** The players of the campaign, for the GM to hand the token to one of them. */
@@ -32,7 +42,7 @@
 		onclose: () => void;
 	}
 
-	let { gm, campaignId, token, players = [], onsubmit, onclose }: Props = $props();
+	let { gm, me, campaignId, token, players = [], onsubmit, onclose }: Props = $props();
 
 	// Deliberately a one-time copy: the form owns its fields once it is open.
 	// svelte-ignore state_referenced_locally
@@ -45,6 +55,17 @@
 	/** Whose token it is, by the player's id: empty for nobody's. */
 	// svelte-ignore state_referenced_locally
 	let owner = $state(token.ownerId ?? '');
+	/** It is its owner's character: what goes down for them on a new battle map. */
+	// svelte-ignore state_referenced_locally
+	let character = $state(token.characterAt != null);
+	/** Whoever it is to be, as the form has it now: what they are called, or nothing for nobody. */
+	const ownerName = $derived(
+		owner === ''
+			? ''
+			: (players.find((player) => player.id === owner)?.name ?? token.ownerName ?? 'this player')
+	);
+	/** Whose character it is, is for the GM to say of any player's token, and a player of their own. */
+	const canCast = $derived(gm ? owner !== '' : token.ownerId === me);
 	/** The gallery is open, to choose the picture from. */
 	let picking = $state(false);
 	let saving = $state(false);
@@ -55,7 +76,12 @@
 		saving = true;
 		const values: Values = { color, outline: outline || null, image };
 		// Whose it is, is the GM's to say, and only said when it has changed.
-		if (gm && owner !== (token.ownerId ?? '')) values.ownerId = owner || null;
+		const handed = gm && owner !== (token.ownerId ?? '');
+		if (handed) values.ownerId = owner || null;
+		// Whose character it is likewise. Handed to someone else, it is not
+		// theirs unless the box is still ticked, so then it is said again.
+		const was = token.characterAt != null;
+		if (canCast && (character !== was || (handed && character))) values.character = character;
 		const done = await onsubmit(values);
 		saving = false;
 		if (done) onclose();
@@ -236,6 +262,21 @@
 			</p>
 		{/if}
 
+		{#if canCast}
+			<!-- The one token of theirs that goes down again on the next battle map. -->
+			<label class="flex cursor-pointer items-start gap-2.5">
+				<input class="mt-1" type="checkbox" bind:checked={character} />
+				<span class="grid gap-0.5">
+					<span>{gm ? `This is ${ownerName}’s character` : 'This is my character'}</span>
+					<span class="text-[13px] text-muted">
+						{gm
+							? 'It goes down for them, as it looks now, when you put the party on a new battle map.'
+							: 'It is first among your tokens on every battle map, as it looks now.'}
+					</span>
+				</span>
+			</label>
+		{/if}
+
 		<div class="flex justify-end gap-2">
 			<button type="button" class="btn btn-ghost" onclick={onclose}>Cancel</button>
 			<button class="btn btn-primary" disabled={saving}>Save</button>
@@ -248,6 +289,7 @@
 		{campaignId}
 		kind="token"
 		readonly={!gm}
+		{me}
 		current={image}
 		onpick={wear}
 		onclose={() => (picking = false)}

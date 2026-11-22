@@ -19,7 +19,7 @@ import { openDb, type Db } from './db';
 import {
 	addToGallery,
 	canLoadImage,
-	galleryIdOf,
+	listGallery,
 	newImageFile,
 	removeFromGallery,
 	sweepGallery,
@@ -581,9 +581,8 @@ describe('a picture on a marker', () => {
 	test('a picture taken out of the gallery is kept for the marker that shows it', () => {
 		const face = picture();
 		const ferryman = marker({ image: face.file });
-		expect(galleryIdOf(db, campaignId, face.file)).toBe(face.id);
 		expect(removeFromGallery(db, gm, face.id)).toEqual([]);
-		expect(galleryIdOf(db, campaignId, face.file)).toBeNull();
+		expect(listGallery(db, gm).some((item) => item.id === face.id)).toBe(false);
 		expect(canLoadImage(db, campaignId, asPlayer(player), face.file)).toBe(
 			true,
 		);

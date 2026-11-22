@@ -433,11 +433,33 @@ async function run() {
 	check('every picture starts hidden from the player', (await playersShelf()).length === 0 && uploaded.item?.hidden === true);
 	check('and is not theirs to load', (await gm.request(imagePath)).status === 200 && (await player.request(imagePath)).status === 404);
 	check(
-		'the player cannot add to the gallery, rename in it, reveal in it or tidy it',
-		(await player.request(galleryPath, { method: 'POST', body: picture('token', pixels, 'mine.png') })).status === 403 &&
+		'the player cannot add a map image to the gallery, rename in it, reveal in it or tidy it',
+		(await player.request(galleryPath, { method: 'POST', body: picture('map', pixels, 'mine.png') })).status === 403 &&
 			(await patch(player, uploaded.item?.id, { name: 'Mine' })).status === 403 &&
 			(await patch(player, uploaded.item?.id, { hidden: false })).status === 403 &&
-			(await player.request(`${galleryPath}/${uploaded.item?.id}`, { method: 'DELETE' })).status === 403 &&
+			// To them a hidden picture is not there at all.
+			(await player.request(`${galleryPath}/${uploaded.item?.id}`, { method: 'DELETE' })).status === 404 &&
+			(await playersShelf()).length === 0
+	);
+	// A token picture of their own is another matter: theirs to add, to find
+	// in the gallery, and to take out again. Nobody else at the table has it there.
+	const own = await player.request(galleryPath, { method: 'POST', body: picture('token', pixels, 'My_face.png') });
+	const ownFace = ((await own.json().catch(() => null))?.items ?? []).find((item: any) => item.name === 'My face');
+	const gmsShelf: any[] = (await (await gm.request(galleryPath)).json()).items;
+	check(
+		'but adds a token picture of their own, there for them and the GM',
+		own.status === 200 &&
+			ownFace?.hidden === true &&
+			!!ownFace?.ownerId &&
+			(await playersShelf()).length === 1 &&
+			gmsShelf.some((item) => item.id === ownFace?.id) &&
+			(await player.request(`/c/${campaign}/image/${ownFace?.file}`)).status === 200
+	);
+	check(
+		'which is theirs to take out again, and not to rename or reveal',
+		(await patch(player, ownFace?.id, { name: 'Mine' })).status === 403 &&
+			(await patch(player, ownFace?.id, { hidden: false })).status === 403 &&
+			(await player.request(`${galleryPath}/${ownFace?.id}`, { method: 'DELETE' })).status === 200 &&
 			(await playersShelf()).length === 0
 	);
 	const shown = await patch(gm, uploaded.item?.id, { hidden: false });
@@ -653,8 +675,9 @@ async function run() {
 	await pause(700);
 	const chief = tokenEvents(gmSocket, ogreId).at(-1);
 	check('a player labels and locks the GM\'s token', ack(40)?.ok === true && chief?.name === 'Ogre chief' && chief?.locked === true);
-	const twin = gmSocket.messages.filter((m) => m.t === 'event' && m.event.patch.token?.name === 'Ogre chief').map((m) => m.event.patch.token).find((t) => t.id !== ogreId);
-	check('and duplicates it, into one that is not locked', ack(41)?.ok === true && !!twin && twin.locked === false);
+	// The copy takes the next number after its name, to tell it from the first.
+	const twin = gmSocket.messages.filter((m) => m.t === 'event' && m.event.patch.token?.name === 'Ogre chief 2').map((m) => m.event.patch.token).find((t) => t.id !== ogreId);
+	check('and duplicates it, into one that is numbered and not locked', ack(41)?.ok === true && !!twin && twin.locked === false);
 	// Anyone takes a token off the map, and whoever did can change their mind.
 	// The last the GM heard of the copy: that it is on the map, or off it.
 	const twinNews = () => gmSocket.messages.filter((m) => m.t === 'event' && (m.event.patch.token?.id ?? m.event.patch.id) === twin?.id).at(-1)?.event.patch.t;
@@ -804,34 +827,20 @@ async function run() {
 		gmFinds.some((e) => e.mapId === cryptId && e.hidden) && playerFinds.some((e) => e.mapId === bridgeId) && !playerFinds.some((e) => e.mapId === cryptId)
 	);
 
-	// A picture held up for the table: everyone is shown it, and a player
-	// can load it for as long as it is up.
+	// A picture that is in the gallery and nowhere else is the GM's alone:
+	// there is no holding one up for the table.
 	const lich = (await add('map', pixels, 'The Lich.png', 'The Lich')).item;
 	const lichPath = `/c/${campaign}/image/${lich?.file}`;
-	const hold = (who: Visitor, id: unknown) =>
-		who.request(`/c/${campaign}/show`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
-	const shows = (socket: { messages: any[] }) => socket.messages.filter((m) => m.t === 'show');
-	check('a player cannot load a picture nobody has shown them', (await player.request(lichPath)).status === 404);
-	check('nor hold one up for the table', (await hold(player, lich?.id)).status === 403);
-	const held = await hold(gm, lich?.id);
-	await pause(300);
+	check('a player cannot load a picture nothing on a map shows them', (await player.request(lichPath)).status === 404);
+	const hold = await gm.request(`/c/${campaign}/show`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ id: lich?.id })
+	});
 	check(
-		'the GM holds a picture up, and the whole table is told',
-		held.status === 200 && [playerSocket, displaySocket, gmSocket].every((socket) => shows(socket).at(-1)?.shown?.file === lich?.file),
-		`status ${held.status}`
-	);
-	check('for as long as it is up, the player can load it', (await player.request(lichPath)).status === 200);
-	const arriving = player.connect(campaign);
-	await arriving.opened;
-	await pause(300);
-	check('someone who connects later is told what is up', arriving.messages[0]?.shown?.name === 'The Lich');
-	arriving.ws.close();
-	check('a picture that is not there cannot be held up', (await hold(gm, 'nosuchpicture')).status === 404);
-	await hold(gm, null);
-	await pause(300);
-	check(
-		'put away, it is gone for everyone',
-		shows(playerSocket).at(-1)?.shown === null && (await player.request(lichPath)).status === 404
+		'and the GM has no way to hold one up for the table',
+		hold.status === 404 && (await player.request(lichPath)).status === 404,
+		`status ${hold.status}`
 	);
 
 	displaySocket.ws.close();
@@ -873,33 +882,6 @@ async function run() {
 		'taken back, it goes from their map like a marker deleted',
 		friendSocket.messages.at(-1)?.event?.patch.t === 'marker.remove' && friendSocket.messages.at(-1)?.event.patch.id === whisperId
 	);
-
-	// A picture held up for one player.
-	const holdFor = (to: string[]) =>
-		gm.request(`/c/${campaign}/show`, {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ id: lich?.id, to })
-		});
-	await holdFor([friendId]);
-	await pause(300);
-	check(
-		'a picture held up for one player is theirs to see, and the GM is told who for',
-		shows(friendSocket).at(-1)?.shown?.file === lich?.file &&
-			shows(friendSocket).at(-1)?.shown?.to === undefined &&
-			shows(gmSocket).at(-1)?.shown?.to?.[0] === friendId &&
-			(await friend.request(lichPath)).status === 200
-	);
-	check(
-		'to the others nothing is up',
-		shows(playerSocket).at(-1)?.shown === null && shows(screen).at(-1)?.shown === null && (await player.request(lichPath)).status === 404
-	);
-	const lateFriend = friend.connect(campaign);
-	await lateFriend.opened;
-	await pause(300);
-	check('whoever it is for is still shown it on connecting later', lateFriend.messages[0]?.shown?.file === lich?.file);
-	lateFriend.ws.close();
-	await hold(gm, null);
 
 	// A closed region: on the map for everyone, and nobody but the GM steps in.
 	const tomb = await gm.command(campaign, {

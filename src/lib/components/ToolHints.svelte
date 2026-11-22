@@ -66,6 +66,8 @@
 			Drag out from the middle of the circle.
 		{:else if shape === 'cone'}
 			Drag from the tip of the cone the way it points.
+		{:else if shape === 'ray'}
+			Drag from where the line starts the way it goes.
 		{:else}
 			Drag from one corner of the box to the other.
 		{/if}

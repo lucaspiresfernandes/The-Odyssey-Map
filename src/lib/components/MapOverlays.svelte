@@ -77,6 +77,8 @@
 		selectedRegion: Region | null;
 		/** The token that wears handles. */
 		handled: Token | null;
+		/** A handle of a shape is being dragged: its buttons keep out of the way. */
+		reshaping: boolean;
 		markerSpot: (marker: Marker) => Point;
 		spotOf: (token: Token) => Point;
 		shiftOf: (drawing: Drawing) => Point;
@@ -134,6 +136,7 @@
 		selectedPins,
 		selectedRegion,
 		handled,
+		reshaping,
 		markerSpot,
 		spotOf,
 		shiftOf,
@@ -217,7 +220,7 @@
 	 * or over the top of it when it is too low on the screen for that.
 	 */
 	const barPosition = $derived.by(() => {
-		if (carry?.held || shaping?.held || marquee || writing) return null;
+		if (carry?.held || shaping?.held || reshaping || marquee || writing) return null;
 		if (selectedTokens.length + selectedDrawings.length === 0) return null;
 		const box = extentOf(selectedTokens, selectedDrawings, { W, H, cell, spotOf, sizeOf, shiftOf });
 		// A token's name is written under it, so the buttons go under that. With

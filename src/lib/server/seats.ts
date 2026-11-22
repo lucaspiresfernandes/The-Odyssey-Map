@@ -28,8 +28,8 @@ import { joinCampaign } from './campaigns';
 import type { Db } from './db';
 import { newId, newToken } from './ids';
 import {
-	campaigns,
 	drawings,
+	gallery,
 	maps,
 	markers,
 	members,
@@ -428,8 +428,13 @@ export function removeSeat(db: Db, actor: Actor, id: unknown): StoredEvent[] {
 		(tx) => {
 			// The ones that were taken off the map are nobody's as well, for when one comes back.
 			tx.update(tokens)
-				.set({ ownerId: null, ownerName: null })
+				.set({ ownerId: null, ownerName: null, characterAt: null })
 				.where(and(eq(tokens.ownerId, seat.id), inArray(tokens.mapId, inCampaign)))
+				.run();
+			// The token pictures they added are the GM's to keep or take out.
+			tx.update(gallery)
+				.set({ ownerId: null })
+				.where(and(eq(gallery.campaignId, actor.campaignId), eq(gallery.ownerId, seat.id)))
 				.run();
 
 			// Whatever was a secret with them is a secret with one fewer.
@@ -462,21 +467,6 @@ export function removeSeat(db: Db, actor: Actor, id: unknown): StoredEvent[] {
 				.where(and(inArray(regions.mapId, inCampaign), sql`${regions.seenBy} LIKE ${named}`))
 				.all()) {
 				tx.update(regions).set({ seenBy: without(row.seenBy) }).where(eq(regions.id, row.id)).run();
-			}
-			// And a picture held up for them is held up for one fewer. One held
-			// up for them alone is put away: with nobody named it would go up
-			// for the whole table.
-			const held = tx
-				.select({ file: campaigns.shownFile, to: campaigns.shownTo })
-				.from(campaigns)
-				.where(eq(campaigns.id, actor.campaignId))
-				.get();
-			if (held?.to.includes(seat.id)) {
-				const to = without(held.to);
-				tx.update(campaigns)
-					.set(to.length ? { shownTo: to } : { shownFile: null, shownTo: [] })
-					.where(eq(campaigns.id, actor.campaignId))
-					.run();
 			}
 
 			tx.delete(seatClaims)

@@ -425,6 +425,13 @@ export interface Token {
    */
   ownerId: string | null;
   ownerName: string | null;
+  /**
+   * When this token was made its owner's character, or null if it never
+   * was: the one that goes down for them on a new battle map. Of the tokens
+   * a player has, the one said so last is their character. One that is
+   * nobody's is nobody's character.
+   */
+  characterAt: number | null;
   /** Sent as true to the GM, and to the players it is a secret with: see `seenBy`. */
   hidden: boolean;
   /** The players a hidden token is shown to all the same, by id. A player is only ever sent it empty. */
@@ -451,12 +458,22 @@ export const INK_COLORS = [
 
 /**
  * A drawing is a line drawn freehand, a line of text, or a template: the
- * area a spell or a breath covers, as a circle, a cone or a box.
+ * area a spell or a breath covers, as a circle, a cone, a box, or a ray:
+ * a straight line one cell wide, which unlike a box points any way.
  */
-export type DrawingKind = "line" | "text" | "circle" | "cone" | "rect";
+export type DrawingKind =
+  | "line"
+  | "text"
+  | "circle"
+  | "cone"
+  | "rect"
+  | "ray";
 
 /** The templates among them. Each is kept as two points: see `Drawing.points`. */
-export const TEMPLATE_KINDS = ["circle", "cone", "rect"] as const;
+export const TEMPLATE_KINDS = ["circle", "cone", "rect", "ray"] as const;
+
+/** How wide a ray is, in cells. */
+export const RAY_WIDTH = 1;
 export type TemplateKind = (typeof TEMPLATE_KINDS)[number];
 
 export const isTemplate = (kind: string): kind is TemplateKind =>
@@ -469,6 +486,7 @@ export const DRAWING_SIZE: Record<DrawingKind, number> = {
   circle: 0.06,
   cone: 0.06,
   rect: 0.06,
+  ray: 0.06,
 };
 
 /**
@@ -482,7 +500,8 @@ export interface Drawing {
   /**
    * The path of a line. A text has one point: the middle of its left edge.
    * A template has two: a circle its middle and a spot on its rim, a cone
-   * its tip and the middle of its far end, a box two opposite corners.
+   * its tip and the middle of its far end, a box two opposite corners, a
+   * ray the middle of each of its ends.
    */
   points: Point[];
   /** What a text says. Empty for anything else. */
@@ -591,6 +610,33 @@ export interface Encounter {
   tokens: EncounterToken[];
 }
 
+/**
+ * The character of one player: what goes down for them on a new battle map,
+ * taken from the token that is their character as it looks now. See
+ * `Token.characterAt`.
+ */
+export interface PartyMember {
+  /** The player, by user id, and what they are called. */
+  userId: string;
+  player: string;
+  name: string;
+  color: string;
+  outline: string | null;
+  image: string | null;
+  size: number;
+}
+
+/**
+ * What the endpoint for the party answers with: for the GM, the character
+ * of every player who has one, in the order they joined. For a player,
+ * their own and nobody else's.
+ */
+export interface PartyResponse {
+  ok: boolean;
+  error?: string;
+  party?: PartyMember[];
+}
+
 /** What the endpoints for encounters answer with: the encounters as they are now. */
 export interface EncountersResponse {
   ok: boolean;
@@ -624,25 +670,12 @@ export interface GalleryItem {
    */
   tokenSize: number | null;
   tokenOutline: string | null;
-}
-
-/** A picture the GM is holding up for the table to look at: all of it, or the players it is meant for. */
-export interface Shown {
-  file: string;
-  name: string;
-  width: number;
-  height: number;
   /**
-   * The players it is held up for, by id. Empty for the whole table. Only
-   * the GM is told: a player is shown the picture or isn't.
+   * The player who added it, by user id, for a token picture a player put
+   * in for a token of their own. Null for the GM's, which is most of them.
+   * Its player sees it in the gallery hidden or not, and may take it out.
    */
-  to?: string[];
-}
-
-/** What the endpoint that holds a picture up for the table answers with. */
-export interface ShowResponse {
-  ok: boolean;
-  error?: string;
+  ownerId: string | null;
 }
 
 /** What the endpoint that sets the date in the world answers with: the date as it was kept. */
@@ -652,20 +685,23 @@ export interface DateResponse {
   date?: string;
 }
 
-/** One thing the finder can take someone to: a map, or a marker on one. */
+/**
+ * One thing the finder can take someone to: a map, a marker on one, or on a
+ * battle map, a token or a text written there.
+ */
 export interface FindEntry {
-  kind: "map" | "marker";
-  /** The map's id, or the marker's. */
+  kind: "map" | "marker" | "token" | "text";
+  /** The map's id, or the id of the marker, the token or the text. */
   id: string;
-  /** The map to go to: itself, or the one the marker is on. */
+  /** The map to go to: itself, or the one the thing is on. */
   mapId: string;
   name: string;
   /** What a marker's card says under its title, to be searched as well. Left out where it says nothing. */
   text?: string;
   /** The maps on the way there, by name, the first map of the campaign first. */
   path: string[];
-  /** What kind of map it is, or what type of marker. */
-  type: MapKind | MarkerType;
+  /** What kind of map it is, or what type of marker. A token and a text are each their own. */
+  type: MapKind | MarkerType | "token" | "text";
   /** Only ever true for the GM. */
   hidden: boolean;
 }
@@ -796,6 +832,11 @@ export interface TokenInput {
   countHidden: boolean;
   /** The GM's to set: the player whose token it is, by user id, or null for nobody's. */
   ownerId: string | null;
+  /**
+   * The GM's to set, and a player's for a token of their own: this token is
+   * its owner's character, or is that no longer. See `Token.characterAt`.
+   */
+  character: boolean;
   /** The GM's to set. */
   hidden: boolean;
   /** The GM's to set: the players a hidden token is a secret with. */
@@ -822,6 +863,11 @@ export interface DrawingChanges {
   seenBy?: string[];
   /** Slides the whole drawing this far across the map, in map space. */
   move?: Point;
+  /**
+   * The two points a template is kept as, put somewhere else: how one is
+   * turned and resized once it is drawn. Only a template has them to change.
+   */
+  points?: Point[];
 }
 
 /** Everything a client can ask the server to change. */
@@ -1133,8 +1179,6 @@ export type ServerMessage =
       seq: number;
       online: Presence[];
       hands: Hand[];
-      /** The picture the GM is holding up for the table, if any. */
-      shown: Shown | null;
       /** For the GM: who is asking for a seat. */
       knocks: Knock[];
       /** The date it is in the world, as the GM wrote it. Empty for none. */
@@ -1147,12 +1191,15 @@ export type ServerMessage =
   | { t: "hand"; hand: Hand }
   | { t: "hand.left"; id: string }
   | { t: "ping"; ping: Ping }
-  /** The GM holds a picture up for the table, or with null puts it away. */
-  | { t: "show"; shown: Shown | null }
   /** The GM has said what date it is in the world, or with nothing, that there is none. */
   | { t: "date"; date: string }
   /** The GM has taken this browser's seat away: it is no longer at the table. */
   | { t: "bye" }
+  /**
+   * The gallery has changed: a picture was added, revealed, hidden or taken
+   * out, or an encounter was. Whoever shows any of it reads it again.
+   */
+  | { t: "gallery" }
   /** The answer to a browser that asked whether the server is there. */
   | { t: "hi" }
   | { t: "ack"; id: number; ok: true; undo: number[] }
@@ -1180,8 +1227,6 @@ export interface LiveIdentity {
   user: { id: string; name: string };
   role: Role;
   seq: number;
-  /** The picture the GM is holding up for the table, if any. */
-  shown: Shown | null;
   /** Who is asking for a seat. Only ever told to the GM. */
   knocks: Knock[];
   /** The date it is in the world. Empty for none. */
@@ -1205,11 +1250,6 @@ export interface Broadcast {
     to: Record<Role, LiveEvent | null>;
     only?: Record<string, LiveEvent | null>;
   }[];
-  /**
-   * A picture held up, or null once it is put away. `to` names the players
-   * it is held up for, by user id: empty for the whole table.
-   */
-  show?: { shown: Shown | null; to: string[] };
   /** Everyone asking for a seat right now. It goes to the GM and nobody else. */
   knocks?: Knock[];
   /** The date it is in the world now, for everyone. Empty once there is none. */
@@ -1219,6 +1259,8 @@ export interface Broadcast {
    * or null for one that was taken away, whose browsers are shown out.
    */
   seats?: { id: string; name: string | null }[];
+  /** The gallery has changed: every browser at the table is told to read it again. */
+  gallery?: true;
 }
 
 export const LIMITS = {
@@ -1288,6 +1330,8 @@ export const LIMITS = {
   imageSide: 30000,
   /** A token's picture is made small before it is kept, so this is only what may be sent. */
   tokenImageBytes: 32 * 1024 * 1024,
+  /** The most token pictures one player keeps in the gallery at a time. */
+  playerPictures: 12,
 } as const;
 
 /** The longest side a token's picture is kept at, in pixels. */

@@ -4,12 +4,13 @@
 	// shows that shelf, and whoever opened it picks one to use. The GM can
 	// also add to the shelf, rename what is on it and take things off while
 	// here, and decides which token pictures the players get to see: every
-	// picture starts hidden from them. A player only looks at what has been
-	// revealed, and picks.
+	// picture starts hidden from them. A player looks at what has been
+	// revealed, and picks. They can add token pictures of their own, for
+	// their own tokens: those are theirs to pick and to take out again, and
+	// stay hidden from the rest of the table like any other.
 	//
 	// Opened on its own, with no `kind`, it is the GM's storeroom: both
 	// shelves, to stock and tidy ahead of the session. Nothing is picked.
-	// From there a picture can be held up for the whole table to look at.
 	// The storeroom has a third shelf, which holds no pictures: the
 	// encounters, each a handful of tokens made ahead of time out of the token
 	// pictures. See EncounterShelf.svelte.
@@ -24,12 +25,10 @@
 		type EncountersResponse,
 		type GalleryItem,
 		type GalleryKind,
-		type GalleryResponse,
-		type Player
+		type GalleryResponse
 	} from '#lib/shared/types.ts';
 	import EncounterShelf from './EncounterShelf.svelte';
 	import Modal from './Modal.svelte';
-	import PlayerPicker from './PlayerPicker.svelte';
 
 	/** A shelf of the storeroom: one of pictures, or the encounters. */
 	type Shelf = GalleryKind | 'encounter';
@@ -40,8 +39,13 @@
 		kind?: GalleryKind;
 		/** The file in use where this was opened from, to mark it on the shelf. */
 		current?: string | null;
-		/** For a player: the shelf is there to pick from, and nothing on it can be changed. */
+		/**
+		 * For a player: the shelf is there to pick from, and nothing on it can
+		 * be changed but what they added themself.
+		 */
 		readonly?: boolean;
+		/** Who is looking, by user id: a player's own pictures are theirs to take out. */
+		me?: string | null;
 		/** With both shelves open, the one to start on. The map images, unless it says otherwise. */
 		start?: Shelf;
 		/**
@@ -57,13 +61,11 @@
 		kind,
 		current = null,
 		readonly = false,
+		me = null,
 		start = 'map',
 		onpick,
 		onclose
 	}: Props = $props();
-
-	/** The players the next picture is held up for. With none, it is for the whole table. */
-	let audience = $state<string[]>([]);
 
 	const ACCEPT = 'image/png,image/jpeg,image/webp,image/gif,image/avif';
 	/**
@@ -84,6 +86,10 @@
 	const shown = $derived<Shelf>(kind ?? (tab === 'encounter' && !storeroom ? 'map' : tab));
 	const maps = $derived(shown === 'map');
 	const encountering = $derived(shown === 'encounter');
+	/** The GM adds to either shelf of pictures. A player adds token pictures, for their own tokens. */
+	const canAdd = $derived(!readonly || shown === 'token');
+	/** Taking a picture out is the GM's, and a player's for one they added. */
+	const canRemove = (item: GalleryItem) => !readonly || (me !== null && item.ownerId === me);
 
 	/** Null until the gallery has been read. */
 	let items = $state<GalleryItem[] | null>(null);
@@ -139,7 +145,7 @@
 	 * Answers with the ones that went in.
 	 */
 	async function upload(files: File[], onto: GalleryKind = maps ? 'map' : 'token') {
-		if (readonly || uploading || files.length === 0) return [];
+		if ((readonly && onto !== 'token') || uploading || files.length === 0) return [];
 		error = '';
 		const had = new Set(items?.map((item) => item.id));
 		const most = onto === 'map' ? LIMITS.imageBytes : LIMITS.tokenImageBytes;
@@ -200,7 +206,7 @@
 		event.preventDefault();
 		over = false;
 		// The encounters take pictures through the plus on their own page.
-		if (encountering) return;
+		if (encountering || !canAdd) return;
 		upload([...(event.dataTransfer?.files ?? [])].filter((file) => file.type.startsWith('image/')));
 	}
 </script>
@@ -215,7 +221,7 @@
 		class="grid gap-4"
 		ondragover={(e) => {
 			e.preventDefault();
-			over = !readonly && !encountering;
+			over = canAdd && !encountering;
 		}}
 		ondragleave={() => (over = false)}
 		ondrop={dropped}
@@ -264,7 +270,8 @@
 		{:else}
 		<p class={['text-[13px] text-muted', kind && '-mt-2']}>
 			{#if readonly}
-				Pick a picture for your token, from the ones the GM has shared with the table.
+				Pick a picture for your token: one the GM has shared with the table, or one you add
+				yourself. A picture of yours is for you to pick: the table sees it on your token.
 			{:else if !kind && onpick}
 				Pick a picture for the card of this marker, off either shelf. Players who can see the
 				marker see its picture, hidden in the gallery or not.
@@ -287,7 +294,7 @@
 			]}
 		>
 			<!-- The first place on the shelf is the way to add to it. -->
-			{#if !readonly}
+			{#if canAdd}
 				<li class="grid content-start gap-1.5">
 					<button
 						class={[
@@ -370,7 +377,7 @@
 						/>
 					{/if}
 
-					{#if !readonly}
+					{#if canRemove(item)}
 						{#if removing === item.id}
 							<div
 								class="absolute inset-x-0 top-0 grid place-content-center gap-1.5 bg-night/92 p-2 text-center text-[13px] {maps
@@ -390,7 +397,7 @@
 								title="Remove from the gallery"
 								onclick={() => (removing = item.id)}>x</button
 							>
-							{#if !maps}
+							{#if !maps && !readonly}
 								<!-- Who gets to see it. A revealed picture keeps its eye in view, in
 								     gold. A hidden one, which is most of them, shows a struck-out
 								     eye only when the pointer or the focus is on its card. -->
@@ -434,7 +441,8 @@
 		{:else if items && shelf.length === 0}
 			<p class="text-sm text-muted">
 				{#if readonly}
-					Nothing here yet. The GM hasn't shared any pictures with the table.
+					Nothing here yet. The GM hasn't shared any pictures with the table: add one of your own
+					with the button above.
 				{:else}
 					Nothing here yet. Add {maps ? 'an image' : 'a picture'} with the button above, or drop
 					files anywhere on this box.

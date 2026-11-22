@@ -118,7 +118,7 @@ export function extentOf(tokens: Token[], drawings: Drawing[], drawn: Drawn): Ex
 		const half = (drawing.size * cell) / 2;
 		if (isTemplate(drawing.kind) && drawing.points.length === 2) {
 			const [a, b] = drawing.points.map(([x, y]): Point => [x * W, y * H]);
-			const around = templateBox(drawing.kind, a, b);
+			const around = templateBox(drawing.kind, a, b, cell);
 			take(around.x0 / W + sx, around.y0 / H + sy, 0, 0);
 			take(around.x1 / W + sx, around.y1 / H + sy, 0, 0);
 		} else if (drawing.kind === 'line') {

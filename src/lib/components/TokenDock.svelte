@@ -5,15 +5,18 @@
 	// it, with everything of that kind in it. Click it again and the tray is
 	// put away, and the map has its room back.
 	//
-	// The tray of tokens starts with a plain disc. The rest are the
-	// campaign's token pictures: all of them for the GM, the ones the GM has
-	// revealed for a player. Click one and it goes down in the middle of the
-	// view. Drag it and it goes down where it is let go. The GM's plus adds
+	// The tray of tokens starts with a player's own character, once they have
+	// one, and then a plain disc. The rest are the campaign's token pictures:
+	// all of them for the GM, for a player the ones the GM has revealed and
+	// the ones they added themself. Click one and it goes down in the middle
+	// of the view. Drag it and it goes down where it is let go. The plus adds
 	// pictures to the gallery from here, and they show up in the tray at once.
 	//
-	// The tray of encounters holds the ones made in the gallery, each several
-	// tokens that go down together. One is a pill with the first few of its
-	// tokens, its name and how many it holds, clicked or dragged like a token.
+	// The tray of encounters starts with the party: the character of every
+	// player, to put down together, each handed to its player. Then the ones
+	// made in the gallery, each several tokens that go down together. One is
+	// a pill with the first few of its tokens, its name and how many it
+	// holds, clicked or dragged like a token.
 
 	import { fly } from 'svelte/transition';
 	import {
@@ -22,7 +25,9 @@
 		type Encounter,
 		type EncountersResponse,
 		type GalleryItem,
-		type GalleryResponse
+		type GalleryResponse,
+		type PartyMember,
+		type PartyResponse
 	} from '#lib/shared/types.ts';
 	import { KEY, ariaKey, keyLabel } from '#lib/client/keys.ts';
 	import ToolButton from './ToolButton.svelte';
@@ -43,6 +48,10 @@
 		onadd: (item: GalleryItem | null, drop: { x: number; y: number } | null) => void;
 		/** An encounter is wanted on the map: dropped there, or clicked. */
 		onencounter: (encounter: Encounter, drop: { x: number; y: number } | null) => void;
+		/** The GM wants the party on the map: the character of each of these players. */
+		onparty: (party: PartyMember[], drop: { x: number; y: number } | null) => void;
+		/** A player wants their own character on the map. */
+		onmine: (member: PartyMember, drop: { x: number; y: number } | null) => void;
 		/** The GM wants to make an encounter or change one: that is done in the gallery. */
 		onencounters: () => void;
 		/** Something went wrong that the person should hear about. */
@@ -57,6 +66,8 @@
 		collapsed = $bindable(),
 		onadd,
 		onencounter,
+		onparty,
+		onmine,
 		onencounters,
 		onerror
 	}: Props = $props();
@@ -80,9 +91,16 @@
 		tray = which;
 		collapsed = false;
 		if (which === 'tokens') glance();
+		// Who is in the party, and how each looks, changes as tokens do.
+		readParty();
 	}
 	/** The encounters with something in them. A player has none. */
 	let encounters = $state.raw<Encounter[]>([]);
+	/**
+	 * The character of each player who has one, for the GM. For a player,
+	 * their own and nobody else's, or none yet.
+	 */
+	let party = $state.raw<PartyMember[]>([]);
 	let uploading = $state(false);
 	let fileInput = $state<HTMLInputElement>();
 	/** A token or an encounter on its way from the dock to the map, and where the pointer has it. */
@@ -123,9 +141,30 @@
 		if (gm) readEncounters();
 	});
 
-	/** A player isn't told when the GM reveals a picture, so reaching for the dock looks again. */
+	async function readParty() {
+		try {
+			const response = await fetch(`/c/${campaignId}/party`);
+			const result = (await response.json()) as PartyResponse;
+			if (result.ok && result.party) party = result.party;
+		} catch {
+			// The dock keeps what it had.
+		}
+	}
+
+	$effect(() => {
+		void [campaignId, stamp];
+		readParty();
+	});
+
+	/**
+	 * The pointer has come to the tray: what is in it may be old news. The
+	 * table is told when the gallery changes, so this is for a browser that
+	 * missed it, and for the party, which changes as tokens do.
+	 */
 	function glance() {
-		if (Date.now() - readAt > 15000) read();
+		if (Date.now() - readAt <= 15000) return;
+		read();
+		readParty();
 	}
 
 	async function upload(files: File[]) {
@@ -155,13 +194,25 @@
 
 	// ------------------------------------------------------------- dragging
 
-	/** What is taken out of the dock: a token of a picture, a plain one (null), or an encounter. */
-	type Piece = GalleryItem | Encounter | null;
-	const isEncounter = (piece: Piece): piece is Encounter => piece !== null && 'tokens' in piece;
+	/** The whole party, as one thing to put down. */
+	interface Party {
+		party: PartyMember[];
+	}
 
-	/** It goes on the map: an encounter through `onencounter`, a token through `onadd`. */
+	/**
+	 * What is taken out of the dock: a token of a picture, a plain one (null),
+	 * an encounter, the party, or for a player their own character.
+	 */
+	type Piece = GalleryItem | Encounter | Party | PartyMember | null;
+	const isEncounter = (piece: Piece): piece is Encounter => piece !== null && 'tokens' in piece;
+	const isParty = (piece: Piece): piece is Party => piece !== null && 'party' in piece;
+	const isMember = (piece: Piece): piece is PartyMember => piece !== null && 'userId' in piece;
+
+	/** It goes on the map, by whichever way is its own. */
 	function put(piece: Piece, drop: { x: number; y: number } | null) {
 		if (isEncounter(piece)) onencounter(piece, drop);
+		else if (isParty(piece)) onparty(piece.party, drop);
+		else if (isMember(piece)) onmine(piece, drop);
 		else onadd(piece, drop);
 	}
 
@@ -202,7 +253,33 @@
 
 	const piece =
 		'grid size-11 shrink-0 cursor-grab touch-pan-x place-items-center overflow-hidden rounded-full border-2 transition-[border-color,scale] duration-120 select-none hover:scale-108 hover:border-accent active:cursor-grabbing';
+	/** A pill that holds several tokens: an encounter, or the party. */
+	const pill =
+		'flex h-11 shrink-0 cursor-grab touch-pan-x items-center gap-1.5 rounded-full border-2 bg-night pr-3 pl-1 transition-[border-color] duration-120 select-none hover:border-accent active:cursor-grabbing';
 </script>
+
+<!-- The first few tokens of a pill, each overlapping the one before: a
+     picture, or a disc in its colour (--c). -->
+{#snippet faces(tokens: { image: string | null; color: string }[])}
+	<span class="pointer-events-none flex -space-x-3.5">
+		{#each tokens.slice(0, 3) as token, i (i)}
+			<span
+				class="grid size-8 place-items-center overflow-hidden rounded-full border-2 border-[#12151c] bg-(--c)"
+				style:--c={token.image ? 'var(--color-night)' : token.color}
+			>
+				{#if token.image}
+					<img
+						class="size-full object-cover"
+						src={imageUrl(campaignId, token.image, 'thumb')}
+						alt=""
+						loading="lazy"
+						draggable="false"
+					/>
+				{/if}
+			</span>
+		{/each}
+	</span>
+{/snippet}
 
 <div class="pointer-events-none flex w-full flex-col items-center gap-2">
 	{#if open}
@@ -218,11 +295,32 @@
 		>
 			{#if open === 'encounters'}
 				<div class="flex min-w-0 items-center gap-2 overflow-x-auto px-1 py-0.5 [scrollbar-width:thin]">
+					{#if party.length}
+						<!-- The party: the character of every player who has one. It goes
+						     down in plain sight, so its pill is not dashed like the rest. -->
+						<button
+							class="{pill} border-accent/60"
+							title="The party: the character of each player, handed to them. Players with a token on this map already are left out."
+							aria-label="Put down the party: {count(party.length)}, each handed to its player"
+							data-party
+							onpointerdown={(e) => onpointerdown(e, { party })}
+							{onpointermove}
+							onpointerup={(e) => onpointerup(e, true)}
+							onpointercancel={(e) => onpointerup(e, false)}
+							onclick={(e) => onclick(e, { party })}
+						>
+							{@render faces(party)}
+							<span class="pointer-events-none max-w-32 truncate text-xs font-semibold">
+								The party
+							</span>
+							<span class="pointer-events-none text-xs text-muted tabular-nums">{party.length}</span>
+						</button>
+					{/if}
 					{#each encounters as encounter (encounter.id)}
 						<!-- An encounter: the first few of its tokens, its name and how many
 						     it holds. Dashed, like everything that goes down hidden. -->
 						<button
-							class="flex h-11 shrink-0 cursor-grab touch-pan-x items-center gap-1.5 rounded-full border-2 border-dashed border-line bg-night pr-3 pl-1 transition-[border-color] duration-120 select-none hover:border-accent active:cursor-grabbing"
+							class="{pill} border-dashed border-line"
 							title="{encounter.name}: {count(encounter.tokens.length)}. They go down hidden from the players."
 							aria-label="Put down {encounter.name}: {count(encounter.tokens.length)}, hidden from the players"
 							data-encounter={encounter.id}
@@ -232,24 +330,7 @@
 							onpointercancel={(e) => onpointerup(e, false)}
 							onclick={(e) => onclick(e, encounter)}
 						>
-							<span class="pointer-events-none flex -space-x-3.5">
-								{#each encounter.tokens.slice(0, 3) as token, i (i)}
-									<span
-										class="grid size-8 place-items-center overflow-hidden rounded-full border-2 border-[#12151c] bg-(--c)"
-										style:--c={token.image ? 'var(--color-night)' : token.color}
-									>
-										{#if token.image}
-											<img
-												class="size-full object-cover"
-												src={imageUrl(campaignId, token.image, 'thumb')}
-												alt=""
-												loading="lazy"
-												draggable="false"
-											/>
-										{/if}
-									</span>
-								{/each}
-							</span>
+							{@render faces(encounter.tokens)}
 							<span class="pointer-events-none max-w-32 truncate text-xs font-semibold">
 								{encounter.name}
 							</span>
@@ -257,11 +338,12 @@
 								{encounter.tokens.length}
 							</span>
 						</button>
-					{:else}
+					{/each}
+					{#if encounters.length === 0 && party.length === 0}
 						<span class="px-1.5 text-[13px] whitespace-nowrap text-muted">
 							No encounters to put down yet.
 						</span>
-					{/each}
+					{/if}
 				</div>
 
 				<span class="w-px self-stretch bg-line"></span>
@@ -273,6 +355,32 @@
 				/>
 			{:else}
 				<div class="flex min-w-0 items-center gap-2 overflow-x-auto px-1 py-0.5 [scrollbar-width:thin]">
+					{#if !gm && party[0]}
+						{@const mine = party[0]}
+						<!-- A player's own character comes first, ringed in gold: as its
+						     token looks now, on whatever map that is. -->
+						<button
+							class="{piece} border-accent bg-(--c)"
+							style:--c={mine.image ? 'var(--color-night)' : mine.color}
+							title="Your character: {mine.name}"
+							aria-label="Add your character, {mine.name}"
+							data-mine
+							onpointerdown={(e) => onpointerdown(e, mine)}
+							{onpointermove}
+							onpointerup={(e) => onpointerup(e, true)}
+							onpointercancel={(e) => onpointerup(e, false)}
+							onclick={(e) => onclick(e, mine)}
+						>
+							{#if mine.image}
+								<img
+									class="pointer-events-none size-full object-cover"
+									src={imageUrl(campaignId, mine.image, 'thumb')}
+									alt=""
+									draggable="false"
+								/>
+							{/if}
+						</button>
+					{/if}
 					<!-- The plain disc, in the colour (--c) a token made from it will be. -->
 					<button
 						class="{piece} border-[#12151c] bg-(--c)"
@@ -288,8 +396,12 @@
 					></button>
 					{#each items as item (item.id)}
 						<button
-							class={[piece, 'bg-night', item.hidden ? 'border-dashed border-line' : 'border-line']}
-							title={item.hidden ? `${item.name} (players can't pick it)` : item.name}
+							class={[
+								piece,
+								'bg-night',
+								gm && item.hidden ? 'border-dashed border-line' : 'border-line'
+							]}
+							title={gm && item.hidden ? `${item.name} (players can't pick it)` : item.name}
 							aria-label="Add {item.name}"
 							onpointerdown={(e) => onpointerdown(e, item)}
 							{onpointermove}
@@ -308,16 +420,16 @@
 					{/each}
 				</div>
 
-				{#if gm}
-					<span class="w-px self-stretch bg-line"></span>
-					<ToolButton
-						icon="plus"
-						label={uploading ? 'Adding…' : 'Add token pictures'}
-						hint="They go in the gallery, hidden from players"
-						disabled={uploading}
-						onclick={() => fileInput?.click()}
-					/>
-				{/if}
+				<span class="w-px self-stretch bg-line"></span>
+				<ToolButton
+					icon="plus"
+					label={uploading ? 'Adding…' : gm ? 'Add token pictures' : 'Add a picture of your own'}
+					hint={gm
+						? 'They go in the gallery, hidden from players'
+						: 'For your own tokens: the table sees it on them'}
+					disabled={uploading}
+					onclick={() => fileInput?.click()}
+				/>
 			{/if}
 		</div>
 	{/if}
@@ -343,7 +455,7 @@
 			<ToolButton
 				icon="encounter"
 				label="Encounters"
-				hint="Put a whole group of tokens down at once"
+				hint="Put the party, or a whole group of tokens, down at once"
 				tip="right"
 				active={open === 'encounters'}
 				expanded={open === 'encounters'}
@@ -353,37 +465,40 @@
 	</div>
 </div>
 
-{#if gm}
-	<!-- Outside the tray, so pictures on their way in outlast it being put away. -->
-	<input
-		bind:this={fileInput}
-		type="file"
-		accept={ACCEPT}
-		multiple
-		hidden
-		onchange={(e) => upload([...(e.currentTarget.files ?? [])])}
-	/>
-{/if}
+<!-- Outside the tray, so pictures on their way in outlast it being put away. -->
+<input
+	bind:this={fileInput}
+	type="file"
+	accept={ACCEPT}
+	multiple
+	hidden
+	onchange={(e) => upload([...(e.currentTarget.files ?? [])])}
+/>
 
 {#if ghost}
+	{@const carried = ghost.item}
 	<!-- What is being carried to the map, under the pointer. -->
 	<div
 		class="pointer-events-none fixed z-10 size-12 -translate-1/2 overflow-hidden rounded-full border-2 border-accent bg-(--c) opacity-85 shadow-pop"
 		style:left="{ghost.x}px"
 		style:top="{ghost.y}px"
-		style:--c={ghost.item ? 'var(--color-night)' : color}
+		style:--c={carried === null
+			? color
+			: isMember(carried) && !carried.image
+				? carried.color
+				: 'var(--color-night)'}
 	>
-		{#if isEncounter(ghost.item)}
-			<!-- An encounter on its way: how many tokens are coming. -->
+		{#if isEncounter(carried) || isParty(carried)}
+			<!-- Several on their way: how many tokens are coming. -->
 			<span class="grid size-full place-items-center text-sm font-bold text-accent tabular-nums">
-				{ghost.item.tokens.length}
+				{isEncounter(carried) ? carried.tokens.length : carried.party.length}
 			</span>
-		{:else if ghost.item}
-			<img
-				class="size-full object-cover"
-				src={imageUrl(campaignId, ghost.item.file, 'thumb')}
-				alt=""
-			/>
+		{:else if isMember(carried)}
+			{#if carried.image}
+				<img class="size-full object-cover" src={imageUrl(campaignId, carried.image, 'thumb')} alt="" />
+			{/if}
+		{:else if carried}
+			<img class="size-full object-cover" src={imageUrl(campaignId, carried.file, 'thumb')} alt="" />
 		{/if}
 	</div>
 {/if}

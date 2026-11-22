@@ -141,6 +141,20 @@
       "when": 1795322346981,
       "tag": "0019_seats_are_picked",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1795345381328,
+      "tag": "0020_party_ray_player_pictures",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1795373367108,
+      "tag": "0021_no_held_up_picture",
+      "breakpoints": true
     }
   ]
 }

@@ -1,8 +1,9 @@
 <script lang="ts">
-	// The finder: type a few letters of a place or a marker, and go there.
-	// It searches every map of the campaign, and every marker and note on
-	// them, that this person may see. Nothing of it is on screen until it is
-	// asked for, with Ctrl+K or the magnifier at the top.
+	// The finder: type a few letters of a place, a marker or a token, and go
+	// there. It searches every map of the campaign, every marker and note on
+	// them, and on the battle maps every token and what is written there,
+	// that this person may see. Nothing of it is on screen until it is asked
+	// for, with Ctrl+K or the magnifier at the top.
 
 	import {
 		markerType,
@@ -85,9 +86,20 @@
 	/**
 	 * What matches, the best first: a name that starts with what was typed,
 	 * then one with a word that does, then one that has it anywhere, and
-	 * last a marker whose description has it. Maps come before markers.
-	 * Before anything is typed, the maps are listed.
+	 * last a marker whose description has it. Maps come before markers, and
+	 * markers before what is on a battle map. Before anything is typed, the
+	 * maps are listed.
 	 */
+	const ORDER: Record<FindEntry['kind'], number> = { map: 0, marker: 1, token: 2, text: 2 };
+
+	/** How each kind that isn't a marker is drawn: a sheet, a grid, a disc, a letter. */
+	const SIGNS: Record<string, string> = {
+		world: 'M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2Z M9 4v14 M15 6v14',
+		battle: 'M3 3h18v18H3Z M3 9h18 M3 15h18 M9 3v18 M15 3v18',
+		token: 'M4 12a8 8 0 1 0 16 0a8 8 0 1 0-16 0 M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0',
+		text: 'M4 7V4h16v3 M9 20h6 M12 4v16'
+	};
+
 	const results = $derived.by((): Found[] => {
 		if (!entries) return [];
 		const wanted = plain(query.trim());
@@ -102,9 +114,9 @@
 			const found = name.indexOf(wanted);
 			if (found !== -1) {
 				const rank = found === 0 ? 0 : /\s/.test(name[found - 1]) ? 1 : 2;
-				ranked.push({ entry, rank: rank * 2 + (entry.kind === 'map' ? 0 : 1) });
+				ranked.push({ entry, rank: rank * 3 + ORDER[entry.kind] });
 			} else if (entry.text && plain(entry.text).includes(wanted)) {
-				ranked.push({ entry, rank: 6, words: entry.text });
+				ranked.push({ entry, rank: 9, words: entry.text });
 			}
 		}
 		// Only what is shown has its words cut out: there may be a great many markers.
@@ -133,14 +145,14 @@
 	}
 </script>
 
-<Modal title="Find a place or a marker" {onclose}>
+<Modal title="Find a place, a marker or a token" {onclose}>
 	<div class="grid gap-3">
 		<!-- svelte-ignore a11y_autofocus -->
 		<input
 			class="input"
 			type="search"
 			placeholder="Type a name, or a word from a marker…"
-			aria-label="Name of a map or a marker, or words from a marker"
+			aria-label="Name of a map, a marker or a token, or words from a marker"
 			aria-controls="finder-results"
 			autocomplete="off"
 			autofocus
@@ -169,11 +181,12 @@
 							onpointermove={() => (at = i)}
 							onclick={() => onpick(entry)}
 						>
-							<!-- A marker shows its glyph in its type's colour (--c), a map a small sheet. -->
+							<!-- A marker shows its glyph in its type's colour (--c), a map a
+							     small sheet, a token a disc and a text a letter. -->
 							<span
 								class="grid size-6 shrink-0 place-items-center text-(--c)"
 								style:--c={entry.kind === 'marker'
-									? markerType(entry.type).color
+									? markerType(entry.type as MarkerType).color
 									: 'var(--color-muted)'}
 							>
 								{#if entry.kind === 'marker'}
@@ -189,11 +202,7 @@
 										stroke-linejoin="round"
 										aria-hidden="true"
 									>
-										<path
-											d={entry.type === 'battle'
-												? 'M3 3h18v18H3Z M3 9h18 M3 15h18 M9 3v18 M15 3v18'
-												: 'M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2Z M9 4v14 M15 6v14'}
-										/>
+										<path d={SIGNS[entry.type] ?? SIGNS.world} />
 									</svg>
 								{/if}
 							</span>

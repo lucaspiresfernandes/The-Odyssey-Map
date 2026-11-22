@@ -1,7 +1,7 @@
 // What a session is run with: marks on tokens, the turn order, spell
 // templates, the scale of a world map, the road the party has taken, the
-// finder, a picture held up for the table, the date in the world, and what
-// a token picture starts its tokens out as.
+// finder, the date in the world, and what a token picture starts its
+// tokens out as.
 
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { createGuest, registerUser } from './auth';
@@ -16,14 +16,10 @@ import {
 import { openDb, type Db } from './db';
 import {
 	addToGallery,
-	canLoadImage,
 	hideInGallery,
 	listGallery,
 	newImageFile,
-	presetInGallery,
-	removeFromGallery,
-	showToTable,
-	shownTo
+	presetInGallery
 } from './gallery';
 import { findable, getMapSnapshot } from './queries';
 import { toLiveEvent } from './visibility';
@@ -398,49 +394,6 @@ describe('the finder', () => {
 			'The Trapdoor',
 			'The Vault'
 		]);
-	});
-});
-
-describe('a picture held up for the table', () => {
-	const picture = (kind: 'map' | 'token' = 'map', name = 'The Lich') =>
-		addToGallery(db, gm, { kind, name, file: newImageFile('png'), width: 640, height: 480 });
-	const loads = (file: string) => canLoadImage(db, gm.campaignId, 'player', file);
-
-	test('the GM holds one up, and players may load it for as long as it is', () => {
-		const lich = picture();
-		expect(shownTo(db, gm.campaignId)).toBeNull();
-		expect(loads(lich.file)).toBe(false);
-
-		expect(showToTable(db, gm, lich.id)).toEqual({
-			file: lich.file,
-			name: 'The Lich',
-			width: 640,
-			height: 480,
-			to: []
-		});
-		expect(shownTo(db, gm.campaignId)?.file).toBe(lich.file);
-		expect(loads(lich.file)).toBe(true);
-		// Holding it up does not put it on the shelf players pick from.
-		expect(listGallery(db, player)).toHaveLength(0);
-
-		expect(showToTable(db, gm, null)).toBeNull();
-		expect(shownTo(db, gm.campaignId)).toBeNull();
-		expect(loads(lich.file)).toBe(false);
-	});
-
-	test('only the GM does, and only with a picture of this campaign', () => {
-		const lich = picture();
-		expect(refusal(() => showToTable(db, player, lich.id))).toBe('forbidden');
-		expect(refusal(() => showToTable(db, gm, 'nothing'))).toBe('not_found');
-		expect(shownTo(db, gm.campaignId)).toBeNull();
-	});
-
-	test('one taken out of the gallery comes down with it', () => {
-		const lich = picture();
-		showToTable(db, gm, lich.id);
-		removeFromGallery(db, gm, lich.id);
-		expect(shownTo(db, gm.campaignId)).toBeNull();
-		expect(loads(lich.file)).toBe(false);
 	});
 });
 

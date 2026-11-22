@@ -29,6 +29,7 @@
 	import { Pen } from '#lib/client/tools/pen.svelte.ts';
 	import { Pointing } from '#lib/client/tools/pointing.svelte.ts';
 	import { RegionShaper } from '#lib/client/tools/regions.svelte.ts';
+	import { Reshaper } from '#lib/client/tools/reshape.svelte.ts';
 	import { RulerTool } from '#lib/client/tools/ruler.svelte.ts';
 	import { Shaper } from '#lib/client/tools/shaper.svelte.ts';
 	import { Shapes } from '#lib/client/tools/shapes.svelte.ts';
@@ -45,6 +46,7 @@
 	import {
 		FOG_BRUSH,
 		imageUrl,
+		isTemplate,
 		type Backdrop,
 		type Command,
 		type Diagonal,
@@ -70,7 +72,9 @@
 	import MapOverlays from './MapOverlays.svelte';
 	import MapPicture from './MapPicture.svelte';
 	import MapPins from './MapPins.svelte';
+	import PingArrows from './PingArrows.svelte';
 	import RegionNames from './RegionNames.svelte';
+	import ShapeHandles from './ShapeHandles.svelte';
 	import TableSigns from './TableSigns.svelte';
 
 	interface Props {
@@ -344,6 +348,8 @@
 	});
 	/** The handles that turn and resize the one token selected. */
 	const shaper = new Shaper(board, (token) => spotOf(token));
+	/** The handles that turn and resize the one shape selected. */
+	const reshaper = new Reshaper(board);
 	/** The GM's brush for the fog. */
 	const brush = new FogBrush(board, {
 		tool: () => tool,
@@ -378,6 +384,7 @@
 		selecting: () => selecting,
 		spotOf: (token) => spotOf(token),
 		shiftOf: (drawing) => shiftOf(drawing),
+		pointsOf: (drawing) => reshaper.pointsOf(drawing),
 		casted: () => pen.casted,
 		shape: () => shape,
 		tokensSelected: () => selectedTokens.length,
@@ -584,6 +591,23 @@
 			: null
 	);
 	/**
+	 * The shape that wears handles to turn and resize it by: the only thing
+	 * selected, as long as it is this person's to change and isn't being carried.
+	 */
+	const reshaped = $derived.by(() => {
+		const [only] = selectedDrawings;
+		if (selectedTokens.length || selectedDrawings.length !== 1 || carry?.held) return null;
+		return isTemplate(only.kind) && canGrabDrawing(only) ? only : null;
+	});
+	/** Where those stand: with the shape, while it has yet to come to rest where it was put. */
+	const shapeHandles = $derived.by(() => {
+		if (!reshaped) return [];
+		const [sx, sy] = shiftOf(reshaped);
+		return reshaper
+			.handlesOf(reshaped)
+			.map((handle) => ({ ...handle, at: [handle.at[0] + sx, handle.at[1] + sy] as Point }));
+	});
+	/**
 	 * How far beyond a token's rim its handles stand, on screen: the dots that
 	 * resize it just clear of it, so a small token isn't lost under them, and
 	 * the one that turns it clear of those.
@@ -766,6 +790,7 @@
 				clearHover();
 				hand.now = null;
 				shaper.now = null;
+				reshaper.now = null;
 				ruler.putAway();
 				pen.stroke = null;
 				pen.inked = [];
@@ -870,6 +895,7 @@
 			// A second finger makes it a pinch, and drops whatever the first one held.
 			if (carry?.held) hand.now = null;
 			if (shaping?.held) shaper.now = null;
+			if (reshaper.now?.held) reshaper.now = null;
 			ruler.putAway();
 			pen.stroke = null;
 			pen.casting = null;
@@ -903,6 +929,18 @@
 		const handle = handled && target.closest<HTMLElement>('[data-handle]');
 		if (handle && handled) {
 			gesture = shaper.press(handled, handle, e);
+			dragging = true;
+			return;
+		}
+
+		// The same for a handle on the selected shape: the point it stands on
+		// goes with the pointer, and the shape is turned or resized by it.
+		const dot = reshaped && target.closest<HTMLElement>('[data-shape-handle]');
+		const grip = dot && shapeHandles.find((each) => each.key === dot.dataset.shapeHandle);
+		if (grip && reshaped) {
+			// Where the handle is kept, not where the shape is drawn on its way there.
+			const [sx, sy] = shiftOf(reshaped);
+			gesture = reshaper.press(reshaped, { ...grip, at: [grip.at[0] - sx, grip.at[1] - sy] }, e);
 			dragging = true;
 			return;
 		}
@@ -1025,6 +1063,8 @@
 			if (hand.drag(g, e)) dragging = true;
 		} else if (g?.type === 'shape') {
 			shaper.drag(g, e);
+		} else if (g?.type === 'reshape') {
+			reshaper.drag(g, e);
 		} else if (g?.type === 'measure') {
 			ruler.drag(g, e);
 		} else if (g?.type === 'sketch') {
@@ -1094,6 +1134,7 @@
 			}
 		}
 		if (g?.type === 'shape') shaper.lift(g, e, completed);
+		if (g?.type === 'reshape') reshaper.lift(g, completed);
 		if (g?.type === 'vertex') outlines.lift(g, completed);
 	}
 
@@ -1500,6 +1541,8 @@
 				handleKey={shaper.handleKey}
 			/>
 
+			<ShapeHandles drawing={reshaped} handles={shapeHandles} {W} {H} />
+
 			<FogLayer
 				{fog}
 				{brushAt}
@@ -1533,8 +1576,23 @@
 		</div>
 	</div>
 
+	<PingArrows
+		{pings}
+		{pointed}
+		{tintOf}
+		{userId}
+		{view}
+		{W}
+		{H}
+		{cw}
+		{ch}
+		{passive}
+		ongo={(spot) => stage.centreOn(spot)}
+	/>
+
 	<MapOverlays
 		bind:this={overlays}
+		reshaping={!!reshaper.now?.held}
 		{map}
 		{role}
 		{userId}

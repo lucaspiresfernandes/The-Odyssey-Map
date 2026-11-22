@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { createGuest, createSession, getSessionUser, registerUser, type User } from './auth';
 import { actorFor, createCampaign, getMembership, joinCampaign } from './campaigns';
 import { openDb, type Db } from './db';
-import { addToGallery, newImageFile, showToTable, shownTo } from './gallery';
 import { getMapSnapshot, playersOf } from './queries';
 import {
 	answerKnock,
@@ -253,24 +252,5 @@ describe('taking a seat away', () => {
 		removeSeat(db, gm, account.id);
 		expect(getMembership(db, campaignId, account.id)).toBeNull();
 		expect(getSessionUser(db, session)?.id).toBe(account.id);
-	});
-
-	test('a picture held up for them is held up for one fewer, or put away', () => {
-		const odo = createSeat(db, gm, 'Odo');
-		const letter = addToGallery(db, gm, {
-			kind: 'map',
-			name: 'The Letter',
-			file: newImageFile('png'),
-			width: 640,
-			height: 480
-		});
-		showToTable(db, gm, letter.id, [mira.userId, odo.id]);
-		removeSeat(db, gm, mira.userId);
-		expect(shownTo(db, campaignId)?.to).toEqual([odo.id]);
-
-		// Held up for one player alone, it goes with them: with nobody named
-		// it would be up for the whole table.
-		removeSeat(db, gm, odo.id);
-		expect(shownTo(db, campaignId)).toBeNull();
 	});
 });

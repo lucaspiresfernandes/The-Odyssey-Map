@@ -3,7 +3,14 @@
 
 import { describe, expect, test } from 'bun:test';
 import { templateBox, templatePath, templateSpan } from './drawing';
-import { milesBetween, milesCount, pixelsToFeet, snapToHalfCell, templatePoints } from './grid';
+import {
+	milesBetween,
+	milesCount,
+	pixelsToFeet,
+	snapToHalfCell,
+	templateFrom,
+	templatePoints
+} from './grid';
 import { joinedTurns, nextTurn, previousTurn, reorderedTurns } from './turns';
 import { MARK_LOOKS, TOKEN_MARK_IDS, turnsAmong, type Point, type Turns } from './types';
 
@@ -122,6 +129,25 @@ describe('shapes', () => {
 		const [tip, end] = templatePoints(SHEET, 'cone', [0.9, 0.5], [1.5, 0.5]);
 		expect(tip).toEqual([0.9, 0.5]);
 		expect(end).toEqual([1, 0.5]);
+	});
+
+	test('one that is turned or resized keeps its first point where it is', () => {
+		// A cone drawn off the grid, with Alt: its tip is no corner of a cell.
+		const tip: Point = [0.262, 0.31];
+		const [a, b] = templateFrom(SHEET, 'cone', tip, [0.262, 0.72]);
+		expect(a).toEqual(tip);
+		// Aimed straight down, and a whole number of cells long: 205 pixels is four.
+		expect(b[0]).toBeCloseTo(0.262);
+		expect(templateSpan('cone', px(a), px(b))[0]).toBeCloseTo(200);
+		// A ray goes the same way, and a circle is resized about its middle.
+		expect(templateFrom(SHEET, 'ray', [0.5, 0.5], [0.71, 0.5])).toEqual([[0.5, 0.5], [0.7, 0.5]]);
+		const [middle, rim] = templateFrom(SHEET, 'circle', [0.5, 0.5], [0.5, 0.82]);
+		expect(middle).toEqual([0.5, 0.5]);
+		expect(templateSpan('circle', px(middle), px(rim))[0]).toBeCloseTo(150);
+		// A box keeps the corner across from the one dragged, which goes to a corner of a cell.
+		expect(templateFrom(SHEET, 'rect', [0.262, 0.31], [0.41, 0.52])).toEqual([[0.262, 0.31], [0.4, 0.5]]);
+		// With Alt it is left exactly where it was let go.
+		expect(templateFrom(SHEET, 'ray', [0.5, 0.5], [0.71, 0.53], true)).toEqual([[0.5, 0.5], [0.71, 0.53]]);
 	});
 
 	test('a cone is as wide at its far end as it is long', () => {

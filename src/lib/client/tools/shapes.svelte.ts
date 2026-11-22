@@ -22,6 +22,8 @@ interface Looks {
 	spotOf(token: Token): Point;
 	/** How far from where it is kept a drawing is drawn, while it is in hand. */
 	shiftOf(drawing: Drawing): Point;
+	/** The points a drawing is drawn by: as a handle of it has them, or as it is kept. */
+	pointsOf(drawing: Drawing): Point[];
 	/** The template being dragged out, as it will be kept. */
 	casted(): [Point, Point] | null;
 	/** Which template the pen lays down. */
@@ -45,7 +47,8 @@ export class Shapes {
 		const { battle, drawings, W, H } = this.#board;
 		if (!battle) return [];
 		return drawings.flatMap((drawing) => {
-			const { kind, points } = drawing;
+			const { kind } = drawing;
+			const points = this.#looks.pointsOf(drawing);
 			if (!isTemplate(kind) || points.length !== 2) return [];
 			const [a, b] = points.map(([x, y]): Point => [x * W, y * H]);
 			return [{ drawing, kind, a, b }];
@@ -61,7 +64,7 @@ export class Shapes {
 		const { tokens, W, H, cell } = this.#board;
 		return tokens.filter((token) => {
 			const [x, y] = this.#looks.spotOf(token);
-			return templateHolds(kind, a, b, [x * W, y * H], cell * 0.02);
+			return templateHolds(kind, a, b, [x * W, y * H], cell * 0.02, cell);
 		});
 	}
 
@@ -96,7 +99,7 @@ export class Shapes {
 		return ids;
 	});
 
-	/** How big a template is, in words: "20 ft radius", "30 ft cone", "10 × 20 ft". In metres on a metric map. */
+	/** How big a template is, in words: "20 ft radius", "30 ft cone", "60 ft line", "10 × 20 ft". In metres on a metric map. */
 	size = (kind: TemplateKind, a: Point, b: Point): string => {
 		const { map } = this.#board;
 		const [first, second] = templateSpan(kind, a, b).map((pixels) =>
@@ -104,6 +107,6 @@ export class Shapes {
 		);
 		// The two sides of a box are told with the unit said once.
 		if (kind === 'rect') return `${first.replace(/ \S+$/, '')} × ${second}`;
-		return `${first} ${kind === 'circle' ? 'radius' : 'cone'}`;
+		return `${first} ${kind === 'circle' ? 'radius' : kind === 'ray' ? 'line' : 'cone'}`;
 	};
 }

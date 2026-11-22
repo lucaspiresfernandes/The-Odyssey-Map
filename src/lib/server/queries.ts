@@ -197,10 +197,11 @@ export function diagonalOf(db: Db, map: Pick<MapInfo, 'diagonal' | 'parentId'>):
 }
 
 /**
- * Everything in a campaign the finder can take someone to: its maps, and
- * the markers and notes on them. A player is told of none that are hidden
- * from them, nor of anything behind a region they can't step through:
- * hidden, closed, or still under the fog.
+ * Everything in a campaign the finder can take someone to: its maps, the
+ * markers and notes on them, and on its battle maps the tokens and what is
+ * written there. A player is told of none that are hidden from them, nor of
+ * anything behind a region they can't step through: hidden, closed, or
+ * still under the fog.
  */
 export function findable(db: Db, campaignId: string, who: Who): FindEntry[] {
 	const gm = roleOf(who) === 'gm';
@@ -289,6 +290,56 @@ export function findable(db: Db, campaignId: string, who: Who): FindEntry[] {
 			path: way.path,
 			type: marker.type,
 			hidden: gm && (marker.hidden || way.shut)
+		});
+	}
+
+	// The tokens on the battle maps, and what is written there. A player is
+	// told of a token only where they could see it on its map: not a hidden
+	// one, nor one under the fog or out of their tokens' sight.
+	const full = new Map(
+		db
+			.select(mapColumns)
+			.from(maps)
+			.where(and(eq(maps.campaignId, campaignId), eq(maps.kind, 'battle')))
+			.all()
+			.map((map) => [map.id, map])
+	);
+	for (const map of full.values()) {
+		const way = ways.get(map.id);
+		if (!way || way.concealed) continue;
+		// What the GM is sent of them says which are hidden from the table.
+		for (const token of tokensOn(db, map, who)) {
+			entries.push({
+				kind: 'token',
+				id: token.id,
+				mapId: map.id,
+				name: token.name,
+				path: way.path,
+				type: 'token',
+				hidden: gm && (token.hidden || way.shut)
+			});
+		}
+	}
+	const written = db
+		.select({ drawing: drawingColumns })
+		.from(drawings)
+		.innerJoin(maps, eq(maps.id, drawings.mapId))
+		.where(
+			and(eq(maps.campaignId, campaignId), eq(drawings.kind, 'text'), isNull(drawings.deletedAt))
+		)
+		.orderBy(drawings.createdAt)
+		.all();
+	for (const { drawing } of written) {
+		const way = ways.get(drawing.mapId);
+		if (!way || way.concealed || !canSeeDrawing(who, drawing)) continue;
+		entries.push({
+			kind: 'text',
+			id: drawing.id,
+			mapId: drawing.mapId,
+			name: drawing.text,
+			path: way.path,
+			type: 'text',
+			hidden: gm && (Boolean(drawing.hidden) || way.shut)
 		});
 	}
 	return entries;

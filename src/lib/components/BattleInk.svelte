@@ -76,7 +76,7 @@
 	/** What goes around letters so they read on any map: dark around light ink, light around dark. */
 	const haloOf = (color: string) => (color === '#12151c' ? '#fff8e4' : '#0c0e14');
 
-	/** Where the size of a template is written: its middle, or for a cone, half way along it. */
+	/** Where the size of a template is written: its middle, or for a cone or a ray, half way along it. */
 	function templateMiddle(kind: TemplateKind, a: Point, b: Point): Point {
 		return kind === 'circle' ? a : [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
 	}
@@ -102,7 +102,7 @@
 	     pressing inside one still pans the map and picks up tokens. -->
 	<g class="[stroke-linejoin:round]">
 		{#each templates as { drawing, kind, a, b } (drawing.id)}
-			{@const d = templatePath(kind, a, b)}
+			{@const d = templatePath(kind, a, b, cell)}
 			{@const [sx, sy] = shiftOf(drawing)}
 			{@const thick = drawing.size * cell}
 			<!-- One the GM keeps out of the players' sight is drawn faint, for whoever sees it. -->
@@ -134,7 +134,7 @@
 		{#each cast as pending (pending)}
 			{@const [a, b] = inPixels(pending.points)}
 			<path
-				d={templatePath(pending.kind, a, b)}
+				d={templatePath(pending.kind, a, b, cell)}
 				fill={pending.color}
 				fill-opacity="0.2"
 				stroke={pending.color}
@@ -144,7 +144,7 @@
 		{#if casted}
 			{@const [a, b] = inPixels(casted)}
 			<path
-				d={templatePath(shape, a, b)}
+				d={templatePath(shape, a, b, cell)}
 				fill={ink}
 				fill-opacity="0.2"
 				stroke={ink}

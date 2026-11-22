@@ -49,7 +49,7 @@ export const KEY = {
 	plainToken: 'A',
 	grid: '#',
 	palettes: '\\',
-	/** With the pen in hand: the next ink, and the one before. 1 to 5 choose what it draws. */
+	/** With the pen in hand: the next ink, and the one before. 1 to 6 choose what it draws. */
 	ink: 'C',
 	inkBack: 'Shift+C',
 
@@ -90,7 +90,7 @@ export const KEY = {
 } as const;
 
 /** The keys that choose what the pen draws, in the order its palette has them. */
-export const PEN_KEYS = ['1', '2', '3', '4', '5'];
+export const PEN_KEYS = ['1', '2', '3', '4', '5', '6'];
 
 /** What of a key press tells one from another. A KeyboardEvent is one of these. */
 export interface Press {
@@ -190,7 +190,7 @@ export function ariaKey(key: string): string {
 // ------------------------------------------------------------- the sheet
 
 export interface SheetRow {
-	/** The keys that do it, each as the table above writes it, or in words: `1 to 5`. */
+	/** The keys that do it, each as the table above writes it, or in words: `1 to 6`. */
 	keys: string[];
 	does: string;
 	/** Only the GM has it. */
@@ -232,7 +232,10 @@ export const SHEET: SheetSection[] = [
 			{ keys: [KEY.ruler], does: 'Measure a distance' },
 			{ keys: [KEY.pen], does: 'Draw' },
 			{ keys: [KEY.point], does: 'Point at the map' },
-			{ keys: ['1 to 5'], does: 'With the pen: a line, a circle, a cone, a box, text' },
+			{
+				keys: ['1 to 6'],
+				does: 'With the pen: a line, a circle, a cone, a box, a straight line, text'
+			},
 			{ keys: [KEY.ink, KEY.inkBack], does: 'With the pen: the next colour, the one before' },
 			{ keys: [KEY.plainToken], does: 'Put down a plain token' },
 			{ keys: [KEY.mine], does: 'Go to my token' },

@@ -25,9 +25,7 @@ import type {
 	Presence,
 	Role,
 	SeatResponse,
-	ServerMessage,
-	ShowResponse,
-	Shown
+	ServerMessage
 } from '#lib/shared/types.ts';
 
 interface Options {
@@ -83,6 +81,12 @@ export class Live {
 	 * until then.
 	 */
 	date = $state<string | null>(null);
+	/**
+	 * How many times the server has said the gallery changed: a picture was
+	 * added, revealed, hidden or taken out. Whoever shows any of the gallery
+	 * reads it again when this goes up.
+	 */
+	gallery = $state(0);
 
 	/**
 	 * The last few events received. A page that finishes loading while
@@ -231,6 +235,9 @@ export class Live {
 				break;
 			case 'date':
 				this.date = message.date;
+				break;
+			case 'gallery':
+				this.gallery++;
 				break;
 			case 'bye':
 				// The GM has taken this seat away. There is nothing to come back

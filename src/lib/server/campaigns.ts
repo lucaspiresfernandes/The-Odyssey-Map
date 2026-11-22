@@ -93,8 +93,7 @@ export function dateOf(db: Db, campaignId: string): string {
  * the GM's to do. It is kept as it was written, on one line, since the
  * calendar is the setting's own. Returns the date as it was kept.
  *
- * Like a picture held up for the table, it is no event and has no undo:
- * the GM writes the old date back.
+ * It is no event and has no undo: the GM writes the old date back.
  */
 export function setDate(db: Db, actor: Actor, raw: unknown): string {
 	if (!canEditWorld(actor.role)) throw new ActionError('forbidden', 'Only the GM sets the date.');

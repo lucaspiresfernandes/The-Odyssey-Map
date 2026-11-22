@@ -6,10 +6,29 @@
 // writes the change, and appends one row per change to the event log, all in
 // a single transaction.
 
-import { and, count, eq, gt, inArray, isNull, max, or, sql } from 'drizzle-orm';
+import { and, count, eq, gt, inArray, isNull, max, or } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
 import type { Db } from './db';
 import { newId } from './ids';
+import {
+	asBool,
+	asCellFeet,
+	asCoord,
+	asGrid,
+	asId,
+	asImageFile,
+	asMapKind,
+	asMarkerChanges,
+	asPoints,
+	asRecord,
+	asSeenBy,
+	asText,
+	asTokenChanges,
+	fail,
+	sameList,
+	viewerOf,
+	type Actor
+} from './inputs';
 import {
 	drawings,
 	events,
@@ -22,7 +41,6 @@ import {
 	users
 } from './schema';
 import { fogOf, isEye, isFogged, sightOf, type Sight } from '../shared/fog';
-import { wrapOffset } from '../shared/grid';
 import {
 	canChangeDrawing,
 	canEditMarkerKind,
@@ -41,6 +59,7 @@ import {
 	roleOf,
 	type Who
 } from '../shared/rules';
+import { copyName } from '../shared/naming';
 import { nextTurn, previousTurn } from '../shared/turns';
 import {
 	DEFAULT_MAP_SIZE,
@@ -48,11 +67,7 @@ import {
 	DRAWING_SIZE,
 	INK_COLORS,
 	LIMITS,
-	MARKER_TYPE_IDS,
-	ROTATION_STEP,
 	TOKEN_COLORS,
-	TOKEN_MARK_IDS,
-	TOKEN_SIZE_STEP,
 	UNITS,
 	isTemplate,
 	type Command,
@@ -68,56 +83,33 @@ import {
 	type MapInfo,
 	type MapKind,
 	type Marker,
-	type MarkerInput,
 	type MarkerKind,
-	type MarkerType,
 	type Point,
 	type Rect,
 	type Region,
-	type Role,
 	type StoredEvent,
 	type Token,
-	type TokenInput,
-	type TokenMark,
 	type Turns,
-	type Units,
-	type Viewer
+	type Units
 } from '../shared/types';
 
-export interface Actor {
-	userId: string;
-	name: string;
-	campaignId: string;
-	role: Role;
-}
-
-/** The actor as someone looking at the world: what they may see hangs on who they are. */
-export const viewerOf = (actor: Actor): Viewer => ({ role: actor.role, userId: actor.userId });
-
-export type ErrorCode = 'forbidden' | 'not_found' | 'invalid' | 'conflict';
-
-/** The HTTP status that goes with each kind of refusal. */
-export const ERROR_STATUS: Record<ErrorCode, number> = {
-	invalid: 400,
-	forbidden: 403,
-	not_found: 404,
-	conflict: 409
-};
-
-/** A refusal that is safe to show to the person who sent the command. */
-export class ActionError extends Error {
-	constructor(
-		public code: ErrorCode,
-		message: string
-	) {
-		super(message);
-		this.name = 'ActionError';
-	}
-}
-
-function fail(code: ErrorCode, message: string): never {
-	throw new ActionError(code, message);
-}
+// Who is asking, the refusal they are sent, and what a command's values are
+// checked with are in `inputs.ts`. They are handed on from here, where the
+// rest of the app has always found them.
+export {
+	ActionError,
+	ERROR_STATUS,
+	IMAGE_FILE_PATTERN,
+	asCount,
+	asMarks,
+	asOutline,
+	asText,
+	asTokenChanges,
+	asTokenSize,
+	viewerOf,
+	type Actor,
+	type ErrorCode
+} from './inputs';
 
 // -------------------------------------------------------------- selections
 
@@ -194,6 +186,7 @@ export const tokenColumns = {
 	countHidden: tokens.countHidden,
 	ownerId: tokens.ownerId,
 	ownerName: tokens.ownerName,
+	characterAt: tokens.characterAt,
 	hidden: tokens.hidden,
 	seenBy: tokens.seenBy,
 	updatedAt: tokens.updatedAt
@@ -369,8 +362,6 @@ function findDrawing(
 	return row;
 }
 
-/** Naming rule for the files pictures are kept in: `<random>-<random>.<ext>`. */
-export const IMAGE_FILE_PATTERN = /^[A-Za-z0-9]+-[A-Za-z0-9]+\.(png|jpg|gif|webp|avif)$/;
 
 /**
  * A picture of this campaign's that the actor may put to use, by its file
@@ -378,7 +369,9 @@ export const IMAGE_FILE_PATTERN = /^[A-Za-z0-9]+-[A-Za-z0-9]+\.(png|jpg|gif|webp
  * counts for as long as it is kept: undo may be putting it back where it
  * was.
  *
- * A player picks only from what the GM has revealed in the gallery: to
+ * A player picks from what the GM has revealed in the gallery, from the
+ * pictures they added themself, and from what a token of their own wears
+ * already, which is how their character keeps a picture the GM gave it. To
  * them any other picture is the same as one that isn't there. `restoring`
  * is for undo, which puts back what was there before, whatever it was.
  *
@@ -394,19 +387,46 @@ export function findPicture(
 	restoring = false
 ) {
 	const anyOfThem = actor.role === 'gm' || restoring;
-	const picture = db
-		.select({ file: gallery.file, width: gallery.width, height: gallery.height })
+	const row = db
+		.select({
+			file: gallery.file,
+			width: gallery.width,
+			height: gallery.height,
+			hidden: gallery.hidden,
+			ownerId: gallery.ownerId,
+			deletedAt: gallery.deletedAt
+		})
 		.from(gallery)
 		.where(
 			and(
 				eq(gallery.file, file),
 				eq(gallery.campaignId, actor.campaignId),
-				kind ? eq(gallery.kind, kind) : undefined,
-				anyOfThem ? undefined : and(eq(gallery.hidden, false), isNull(gallery.deletedAt))
+				kind ? eq(gallery.kind, kind) : undefined
 			)
 		)
 		.get();
-	return picture ?? fail('conflict', 'That picture is no longer in the gallery.');
+	if (!row) fail('conflict', 'That picture is no longer in the gallery.');
+	const { hidden, ownerId, deletedAt, ...picture } = row;
+	const onShow = deletedAt === null && (!hidden || ownerId === actor.userId);
+	if (!anyOfThem && !onShow && !wornByOwn(db, actor.campaignId, actor.userId, file)) {
+		fail('conflict', 'That picture is no longer in the gallery.');
+	}
+	return picture;
+}
+
+/**
+ * Whether a token that is this player's wears the picture, on any map of the
+ * campaign, on it or taken off it: their own character's face is theirs to
+ * use again, and to load, wherever that token is now.
+ */
+export function wornByOwn(db: Db, campaignId: string, userId: string, file: string): boolean {
+	const worn = db
+		.select({ id: tokens.id })
+		.from(tokens)
+		.innerJoin(maps, eq(maps.id, tokens.mapId))
+		.where(and(eq(maps.campaignId, campaignId), eq(tokens.image, file), eq(tokens.ownerId, userId)))
+		.get();
+	return Boolean(worn);
 }
 
 function findRegion(db: Db, actor: Actor, id: string): Region {
@@ -459,228 +479,6 @@ export function latestSeq(db: Db, campaignId?: string): number {
 		.where(campaignId ? eq(events.campaignId, campaignId) : undefined)
 		.get();
 	return row?.seq ?? 0;
-}
-
-// -------------------------------------------------------------- validation
-
-function asRecord(value: unknown): Record<string, unknown> {
-	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-		fail('invalid', 'Malformed request.');
-	}
-	return value as Record<string, unknown>;
-}
-
-function asId(value: unknown): string {
-	if (typeof value !== 'string' || value.length === 0 || value.length > 64) {
-		fail('invalid', 'Malformed request.');
-	}
-	return value;
-}
-
-export function asText(value: unknown, label: string, max: number, required: boolean): string {
-	if (typeof value !== 'string') fail('invalid', `${label} is missing.`);
-	const text = value.trim();
-	if (required && text.length === 0) fail('invalid', `${label} can't be empty.`);
-	if (text.length > max) fail('invalid', `${label} is too long (${max} characters at most).`);
-	return text;
-}
-
-function asCoord(value: unknown): number {
-	if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
-		fail('invalid', 'That position is outside the map.');
-	}
-	return value;
-}
-
-function asPoints(value: unknown): Point[] {
-	if (!Array.isArray(value) || value.length < 3) {
-		fail('invalid', 'A region needs at least three corners.');
-	}
-	if (value.length > LIMITS.regionPoints) {
-		fail('invalid', `A region can have at most ${LIMITS.regionPoints} corners.`);
-	}
-	return value.map((p) => {
-		if (!Array.isArray(p) || p.length !== 2) fail('invalid', 'Malformed region.');
-		return [asCoord(p[0]), asCoord(p[1])] as Point;
-	});
-}
-
-function asMarkerType(value: unknown): MarkerType {
-	if (typeof value !== 'string' || !MARKER_TYPE_IDS.includes(value)) {
-		fail('invalid', 'Unknown marker type.');
-	}
-	return value as MarkerType;
-}
-
-function asBool(value: unknown): boolean {
-	if (typeof value !== 'boolean') fail('invalid', 'Malformed request.');
-	return value;
-}
-
-/**
- * The players a hidden thing is a secret with, by user id: each of them
- * once, and each a player of this campaign.
- */
-function asSeenBy(db: Db, actor: Actor, value: unknown): string[] {
-	if (!Array.isArray(value) || value.length > LIMITS.seenBy) fail('invalid', 'Malformed request.');
-	const asked = new Set(value.map(asId));
-	if (asked.size === 0) return [];
-	const players = db
-		.select({ id: members.userId })
-		.from(members)
-		.where(and(eq(members.campaignId, actor.campaignId), eq(members.role, 'player')))
-		.orderBy(members.joinedAt, sql`${members}.rowid`)
-		.all()
-		.map((member) => member.id);
-	if ([...asked].some((id) => !players.includes(id))) {
-		fail('not_found', 'That player is not in this campaign.');
-	}
-	return players.filter((id) => asked.has(id));
-}
-
-const sameList = (a: readonly string[] | undefined, b: readonly string[] | undefined) =>
-	(a ?? []).join() === (b ?? []).join();
-
-function asImageFile(value: unknown): string {
-	if (typeof value !== 'string' || !IMAGE_FILE_PATTERN.test(value)) {
-		fail('invalid', 'That picture could not be used.');
-	}
-	return value;
-}
-
-function asMapKind(value: unknown): MapKind {
-	if (value !== 'world' && value !== 'battle') fail('invalid', 'Unknown kind of map.');
-	return value;
-}
-
-/** A grid with whichever of its settings are present changed, and checked. */
-function asGrid(value: unknown, current: Grid): Grid {
-	const raw = asRecord(value);
-	const number = (n: unknown): number => {
-		if (typeof n !== 'number' || !Number.isFinite(n)) fail('invalid', 'Malformed grid.');
-		return n;
-	};
-	const size = raw.size === undefined ? current.size : number(raw.size);
-	if (size < LIMITS.gridMin || size > LIMITS.gridMax) {
-		fail('invalid', `A grid cell is between ${LIMITS.gridMin} and ${LIMITS.gridMax} pixels wide.`);
-	}
-	return {
-		size,
-		// Lines repeat every cell, so an offset is only ever part of one.
-		x: wrapOffset(raw.x === undefined ? current.x : number(raw.x), size),
-		y: wrapOffset(raw.y === undefined ? current.y : number(raw.y), size),
-		shown: raw.shown === undefined ? current.shown : asBool(raw.shown)
-	};
-}
-
-/** How many feet a cell stands for. */
-function asCellFeet(value: unknown): number {
-	if (
-		typeof value !== 'number' ||
-		!Number.isFinite(value) ||
-		value < LIMITS.cellFeetMin ||
-		value > LIMITS.cellFeetMax
-	) {
-		fail('invalid', `A cell stands for between ${LIMITS.cellFeetMin} and ${LIMITS.cellFeetMax} feet.`);
-	}
-	return value;
-}
-
-/** How many cells across a token is: also what a picture in the gallery can start one out as. */
-export function asTokenSize(size: unknown): number {
-	if (
-		typeof size !== 'number' ||
-		!Number.isInteger(size / TOKEN_SIZE_STEP) ||
-		size < TOKEN_SIZE_STEP ||
-		size > LIMITS.tokenSize
-	) {
-		fail(
-			'invalid',
-			`A token is between ${TOKEN_SIZE_STEP} and ${LIMITS.tokenSize} cells across, in steps of ${TOKEN_SIZE_STEP}.`
-		);
-	}
-	return size;
-}
-
-/** A ring is in one of the token colours, or isn't there. */
-export function asOutline(value: unknown): string | null {
-	if (value !== null && !(TOKEN_COLORS as readonly unknown[]).includes(value)) {
-		fail('invalid', 'Unknown outline colour.');
-	}
-	return value as string | null;
-}
-
-/** What a token is marked with: each mark once, in the order they are listed in. */
-export function asMarks(value: unknown): TokenMark[] {
-	if (!Array.isArray(value) || value.some((mark) => !TOKEN_MARK_IDS.includes(mark))) {
-		fail('invalid', 'Unknown mark.');
-	}
-	return TOKEN_MARK_IDS.filter((mark) => value.includes(mark)) as TokenMark[];
-}
-
-/** The number a token carries, or null for none. */
-export function asCount(value: unknown): number | null {
-	if (value === null) return null;
-	if (
-		typeof value !== 'number' ||
-		!Number.isInteger(value) ||
-		value < LIMITS.countMin ||
-		value > LIMITS.countMax
-	) {
-		fail('invalid', `A token's number is a whole one, from ${LIMITS.countMin} to ${LIMITS.countMax}.`);
-	}
-	return value;
-}
-
-/** Validates whichever token fields are present and drops everything else. */
-export function asTokenChanges(db: Db, actor: Actor, value: unknown): Partial<TokenInput> {
-	const raw = asRecord(value);
-	const out: Partial<TokenInput> = {};
-	if (raw.name !== undefined) out.name = asText(raw.name, 'The name', LIMITS.tokenName, true);
-	if (raw.color !== undefined) {
-		if (!(TOKEN_COLORS as readonly unknown[]).includes(raw.color)) {
-			fail('invalid', 'Unknown token colour.');
-		}
-		out.color = raw.color as string;
-	}
-	if (raw.outline !== undefined) out.outline = asOutline(raw.outline);
-	if (raw.image !== undefined) out.image = raw.image === null ? null : asImageFile(raw.image);
-	if (raw.x !== undefined) out.x = asCoord(raw.x);
-	if (raw.y !== undefined) out.y = asCoord(raw.y);
-	if (raw.size !== undefined) out.size = asTokenSize(raw.size);
-	if (raw.marks !== undefined) out.marks = asMarks(raw.marks);
-	if (raw.rotation !== undefined) {
-		const turn = raw.rotation;
-		if (typeof turn !== 'number' || !Number.isInteger(turn) || turn % ROTATION_STEP !== 0) {
-			fail('invalid', `A token turns ${ROTATION_STEP} degrees at a time.`);
-		}
-		// A full turn is no turn: kept as 0 to 345.
-		out.rotation = ((turn % 360) + 360) % 360;
-	}
-	if (raw.locked !== undefined) out.locked = asBool(raw.locked);
-	if (raw.count !== undefined) out.count = asCount(raw.count);
-	if (raw.countHidden !== undefined) out.countHidden = asBool(raw.countHidden);
-	if (raw.ownerId !== undefined) out.ownerId = raw.ownerId === null ? null : asId(raw.ownerId);
-	if (raw.hidden !== undefined) out.hidden = asBool(raw.hidden);
-	if (raw.seenBy !== undefined) out.seenBy = asSeenBy(db, actor, raw.seenBy);
-	return out;
-}
-
-/** Validates whichever marker fields are present and drops everything else. */
-function asMarkerChanges(db: Db, actor: Actor, value: unknown): Partial<MarkerInput> {
-	const raw = asRecord(value);
-	const out: Partial<MarkerInput> = {};
-	if (raw.type !== undefined) out.type = asMarkerType(raw.type);
-	if (raw.title !== undefined) out.title = asText(raw.title, 'The title', LIMITS.title, true);
-	if (raw.description !== undefined) {
-		out.description = asText(raw.description, 'The description', LIMITS.description, false);
-	}
-	if (raw.x !== undefined) out.x = asCoord(raw.x);
-	if (raw.y !== undefined) out.y = asCoord(raw.y);
-	if (raw.hidden !== undefined) out.hidden = asBool(raw.hidden);
-	if (raw.seenBy !== undefined) out.seenBy = asSeenBy(db, actor, raw.seenBy);
-	if (raw.image !== undefined) out.image = raw.image === null ? null : asImageFile(raw.image);
-	return out;
 }
 
 // ----------------------------------------------------------------- markers
@@ -893,6 +691,8 @@ function createToken(db: Db, actor: Actor, raw: Record<string, unknown>): Stored
 			countHidden: actor.role === 'gm' && input.countHidden === true,
 			ownerId: owner?.id ?? null,
 			ownerName: owner?.name ?? null,
+			// Put down as someone's character, it is theirs from now on.
+			characterAt: owner && input.character === true ? now : null,
 			hidden,
 			seenBy: hidden ? (input.seenBy ?? []) : [],
 			createdAt: now,
@@ -904,8 +704,10 @@ function createToken(db: Db, actor: Actor, raw: Record<string, unknown>): Stored
 
 /**
  * Puts a copy of a token beside it: the same in everything but where it
- * stands, and never locked, so it can be dragged to its place. Anyone who
- * sees a token can copy it.
+ * stands and what it is called, and never locked, so it can be dragged to
+ * its place. It takes the next number after its name: the copy of "Goblin"
+ * is "Goblin 2", and the copy of that "Goblin 3". Anyone who sees a token
+ * can copy it.
  */
 function duplicateToken(db: Db, actor: Actor, id: string): StoredEvent[] {
 	const { token, deletedAt } = findToken(db, actor, id);
@@ -917,10 +719,17 @@ function duplicateToken(db: Db, actor: Actor, id: string): StoredEvent[] {
 	// Where the map ends that way, to the left instead.
 	const step = (token.size * map.grid.size) / map.width;
 	const taken = db
-		.select({ x: tokens.x, y: tokens.y })
+		.select(tokenColumns)
 		.from(tokens)
 		.where(and(eq(tokens.mapId, token.mapId), isNull(tokens.deletedAt)))
 		.all();
+	// It is numbered after the tokens this person can see: a number that
+	// skipped would tell a player of the goblins they can't.
+	const sight = actor.role === 'gm' ? null : sightOf(map, taken);
+	const viewer = viewerOf(actor);
+	const names = taken
+		.filter((each) => canSeeToken(viewer, each, map.fog, sight))
+		.map((each) => each.name);
 	const free = (x: number) =>
 		x >= 0 &&
 		x <= 1 &&
@@ -936,7 +745,7 @@ function duplicateToken(db: Db, actor: Actor, id: string): StoredEvent[] {
 		.values({
 			id: copy,
 			mapId: token.mapId,
-			name: token.name,
+			name: copyName(token.name, names),
 			color: token.color,
 			outline: token.outline,
 			image: token.image,
@@ -953,6 +762,8 @@ function duplicateToken(db: Db, actor: Actor, id: string): StoredEvent[] {
 			// A copy of someone's token is theirs too: the wolf beside the ranger.
 			ownerId: token.ownerId ?? null,
 			ownerName: token.ownerName ?? null,
+			// But it is not their character: that is the one it was copied from.
+			characterAt: null,
 			hidden: token.hidden,
 			seenBy: token.seenBy,
 			createdAt: now,
@@ -976,6 +787,7 @@ const TOKEN_FIELDS = [
 	'count',
 	'countHidden',
 	'ownerId',
+	'characterAt',
 	'hidden',
 	'seenBy'
 ] as const;
@@ -995,6 +807,8 @@ function tokenDiffers(before: Token, after: Token, field: (typeof TOKEN_FIELDS)[
 	if (field === 'countHidden') return (before.countHidden ?? false) !== (after.countHidden ?? false);
 	// One from before tokens could be someone's is nobody's.
 	if (field === 'ownerId') return (before.ownerId ?? null) !== (after.ownerId ?? null);
+	// And one from before a token could be someone's character is nobody's.
+	if (field === 'characterAt') return (before.characterAt ?? null) !== (after.characterAt ?? null);
 	return before[field] !== after[field];
 }
 
@@ -1031,11 +845,29 @@ function updateToken(
 		fail('forbidden', `The GM keeps the number of “${before.name}”.`);
 	}
 
-	const after: Token = { ...before, ...changes };
+	// Whether it is its owner's character is said apart from the rest: what
+	// is kept is when it was said.
+	const { character, ...rest } = changes;
+	const after: Token = { ...before, ...rest, characterAt: before.characterAt ?? null };
 	if (handed) {
 		const owner = changes.ownerId ? findPlayer(db, actor, changes.ownerId) : null;
 		after.ownerId = owner?.id ?? null;
 		after.ownerName = owner?.name ?? null;
+		// It was the character of whoever had it, and is not the next one's
+		// unless that is said too.
+		after.characterAt = null;
+	}
+	if (character !== undefined) {
+		// A character is someone's: the GM says so of any token that is a
+		// player's, and a player of their own.
+		if (character && !after.ownerId) {
+			fail('invalid', 'Only a token that is a player’s can be their character.');
+		}
+		if (actor.role !== 'gm' && after.ownerId !== actor.userId) {
+			fail('forbidden', 'Only the GM says which token is someone else’s character.');
+		}
+		// Said again of one that is already, it is still said last.
+		after.characterAt = character ? Date.now() : null;
 	}
 	// Revealed to everyone, it is a secret with nobody.
 	if (!after.hidden) after.seenBy = [];
@@ -1070,6 +902,7 @@ function updateToken(
 			countHidden: after.countHidden ?? false,
 			ownerId: after.ownerId ?? null,
 			ownerName: after.ownerName ?? null,
+			characterAt: after.characterAt,
 			hidden: after.hidden,
 			seenBy: after.seenBy,
 			updatedAt: after.updatedAt
@@ -1238,9 +1071,9 @@ function drawingToChange(db: Db, actor: Actor, id: string): Drawing {
 }
 
 /**
- * Rewords a text, recolours a drawing, slides it across the map, hides it
- * from the players or says which of them see it all the same: whichever
- * are asked for.
+ * Rewords a text, recolours a drawing, slides it across the map, turns or
+ * resizes a shape, hides it from the players or says which of them see it
+ * all the same: whichever are asked for.
  */
 function updateDrawing(db: Db, actor: Actor, id: string, rawChanges: unknown): StoredEvent[] {
 	const before = drawingToChange(db, actor, id);
@@ -1251,7 +1084,12 @@ function updateDrawing(db: Db, actor: Actor, id: string, rawChanges: unknown): S
 		after.text = asDrawingText(changes.text);
 	}
 	if (changes.color !== undefined) after.color = asInk(changes.color);
-	if (changes.move !== undefined) after.points = slid(before.points, changes.move);
+	if (changes.points !== undefined) {
+		// A shape is its two points: put elsewhere, it is turned or resized.
+		if (!isTemplate(before.kind)) fail('invalid', 'Only a shape can be turned or resized.');
+		after.points = asDrawingPoints(changes.points, before.kind);
+	}
+	if (changes.move !== undefined) after.points = slid(after.points, changes.move);
 	if (changes.hidden !== undefined || changes.seenBy !== undefined) {
 		if (!canHideDrawing(actor.role)) fail('forbidden', 'Only the GM can hide a drawing.');
 		if (changes.hidden !== undefined) after.hidden = asBool(changes.hidden);
@@ -1884,6 +1722,7 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 			else if (field === 'count') changes.count = before.count ?? null;
 			else if (field === 'countHidden') changes.countHidden = before.countHidden ?? false;
 			else if (field === 'ownerId') changes.ownerId = before.ownerId ?? null;
+			else if (field === 'characterAt') changes.character = before.characterAt != null;
 			else changes[field] = before[field];
 		}
 		return updateToken(db, actor, id, changes, true);

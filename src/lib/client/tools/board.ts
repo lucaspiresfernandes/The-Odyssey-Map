@@ -94,6 +94,11 @@ export type Gesture =
 			bearing: number;
 	  }
 	/**
+	 * A handle of a shape is being dragged: the point of it that the handle
+	 * moves goes with the pointer, and `anchor`, its other point, stays put.
+	 */
+	| { type: 'reshape'; drawing: Drawing; anchor: Point; moved: boolean }
+	/**
 	 * The ruler: dragged from one spot to another, or with `route`, being
 	 * laid a click at a time, each click another bend in it.
 	 */

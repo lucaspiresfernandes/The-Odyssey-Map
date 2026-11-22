@@ -18,7 +18,7 @@
 
 	/**
 	 * What the pen draws: a line, one of the shapes, for the area of a spell,
-	 * a breath, a wall, or a line of text. With the pen in hand each has a
+	 * a breath, a wall, a bolt, or a line of text. With the pen in hand each has a
 	 * number key, in this order: see PEN_KEYS.
 	 */
 	export const PENS: { pen: Pen; icon: ToolIcon; label: string; hint: string }[] = [
@@ -26,6 +26,7 @@
 		{ pen: 'circle', icon: 'circle', label: 'Draw a circle', hint: 'A burst around a spot' },
 		{ pen: 'cone', icon: 'cone', label: 'Draw a cone', hint: 'As wide at its end as it is long' },
 		{ pen: 'rect', icon: 'box', label: 'Draw a box', hint: 'A square or a wall' },
+		{ pen: 'ray', icon: 'ray', label: 'Draw a straight line', hint: 'One cell wide, pointing any way' },
 		{ pen: 'text', icon: 'text', label: 'Draw text', hint: 'Click the map and type' }
 	];
 
