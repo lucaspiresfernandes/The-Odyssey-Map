@@ -71,7 +71,10 @@ describe('the table of keys', () => {
 		R: ['pen', 'region'],
 		M: ['marks', 'marker'],
 		G: ['mine', 'move'],
-		C: ['ink', 'count']
+		C: ['ink', 'count'],
+		// The fog's brush for the GM with the fog in hand, the letters of a text otherwise.
+		'[': ['brushSmaller', 'textSmaller'],
+		']': ['brushBigger', 'textBigger']
 	};
 
 	test('no key does two things in one place', () => {

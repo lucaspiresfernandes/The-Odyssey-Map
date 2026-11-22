@@ -30,6 +30,9 @@
 		{ pen: 'text', icon: 'text', label: 'Draw text', hint: 'Click the map and type' }
 	];
 
+	/** What each of TEXT_SIZES is called, smallest first. */
+	const TEXT_SIZE_NAMES = ['Small', 'Regular', 'Large', 'Huge'];
+
 </script>
 
 <script lang="ts">
@@ -40,7 +43,7 @@
 
 	import type { Snippet } from 'svelte';
 	import { PEN_KEYS, keyLabel } from '#lib/client/keys.ts';
-	import { INK_COLORS, type Token } from '#lib/shared/types.ts';
+	import { INK_COLORS, TEXT_SIZES, type Token } from '#lib/shared/types.ts';
 	import ToolButton from './ToolButton.svelte';
 
 	interface Props {
@@ -53,6 +56,8 @@
 		pen: Pen;
 		/** The colour it draws in. */
 		ink: string;
+		/** How tall the letters it writes are, in cells. */
+		textSize: number;
 		/** A click on a tool picks it up, or with that one in hand, puts it down again. */
 		pick: (tool: BattleTool) => void;
 		/** The tokens on this map that are this person's own, and the one whose turn it is. */
@@ -75,6 +80,7 @@
 		isGm,
 		pen = $bindable(),
 		ink = $bindable(),
+		textSize = $bindable(),
 		pick,
 		myTokens,
 		myTurn,
@@ -140,6 +146,29 @@
 					title="{keyLabel(KEY.ink)} takes the next colour, {keyLabel(KEY.inkBack)} the one before"
 					onclick={() => (ink = option)}
 				></button>
+			{/each}
+		</div>
+	{/if}
+	{#if !toolsFolded && battleTool === 'sketch' && pen === 'text'}
+		<!-- How tall the letters are, out while the pen writes: each a letter
+		     of its own size against the others, smallest first. -->
+		<div
+			class="grid gap-1.5 p-1.5 {floating}"
+			role="radiogroup"
+			aria-label="Size of the text"
+		>
+			{#each TEXT_SIZES as size, i (size)}
+				<button
+					class={['btn w-9 px-0 font-semibold touch:w-11', textSize === size && 'btn-active']}
+					style:font-size="{11 + i * 4}px"
+					role="radio"
+					aria-checked={textSize === size}
+					aria-label="{TEXT_SIZE_NAMES[i]} letters"
+					title="{TEXT_SIZE_NAMES[i]} letters. {keyLabel(KEY.textSmaller)} takes the size below, {keyLabel(
+						KEY.textBigger
+					)} the one above"
+					onclick={() => (textSize = size)}>A</button
+				>
 			{/each}
 		</div>
 	{/if}

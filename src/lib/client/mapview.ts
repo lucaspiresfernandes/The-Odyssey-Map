@@ -78,4 +78,6 @@ export interface Writing {
 	id: string | null;
 	at: Point;
 	color: string;
+	/** How tall its letters are, in cells. */
+	size: number;
 }

@@ -357,6 +357,31 @@ async function run() {
 	await pause(300);
 	check('a flurry of pings is thinned to one', pingsSeen(gmSocket).length === 2, `${pingsSeen(gmSocket).length} delivered`);
 
+	// A die is rolled by the WebSocket server, and everyone is told what it came to.
+	const rollsSeen = (socket: { messages: any[] }) => socket.messages.filter((m) => m.t === 'roll');
+	playerSocket.ws.send(JSON.stringify({ t: 'roll', sides: 20 }));
+	await pause(300);
+	const rolled = rollsSeen(gmSocket)[0]?.roll;
+	check(
+		'the GM sees the die a player rolls',
+		rolled?.name === 'Tester' && rolled.role === 'player' && rolled.sides === 20 &&
+			Number.isInteger(rolled.result) && rolled.result >= 1 && rolled.result <= 20,
+		JSON.stringify(rolled)
+	);
+	check(
+		'and the player is told the same number',
+		rollsSeen(playerSocket).length === 1 && rollsSeen(playerSocket)[0].roll.result === rolled?.result
+	);
+	for (const sides of [7, 0, -6, '20', 1e9, null]) {
+		playerSocket.ws.send(JSON.stringify({ t: 'roll', sides, result: 20 }));
+		await pause(170);
+	}
+	await pause(300);
+	check('a die the table does not have is not rolled', rollsSeen(gmSocket).length === 1, `${rollsSeen(gmSocket).length} delivered`);
+	for (let i = 0; i < 5; i++) playerSocket.ws.send(JSON.stringify({ t: 'roll', sides: 6 }));
+	await pause(300);
+	check('a flurry of rolls is thinned to one', rollsSeen(gmSocket).length === 2, `${rollsSeen(gmSocket).length} delivered`);
+
 	// Where a mouse is, is nobody else's business: nothing passes it on.
 	playerSocket.ws.send(JSON.stringify({ t: 'cursor', at: { mapId, x: 0.25, y: 0.75 } }));
 	playerSocket.ws.send(JSON.stringify({ t: 'hand', at: { mapId } }));

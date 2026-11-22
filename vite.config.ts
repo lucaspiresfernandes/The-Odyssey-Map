@@ -22,6 +22,9 @@ export default defineConfig({
 			// meanwhile, so give a quiet connection minutes rather than the
 			// default 10 seconds.
 			adapter: adapter({
+				// A deploy builds into a folder of its own, beside the build that
+				// is in service: see deploy/deploy.sh.
+				out: process.env.BUILD_DIR || 'build',
 				serverOptions: { maxRequestBodySize: 8 * 1024 * 1024 * 1024, idleTimeout: 240 }
 			})
 		})

@@ -1,9 +1,14 @@
 <script lang="ts">
 	// What floats in the upper left corner of a world map: the date it is in
-	// the world, and who is at the table. A battle map has none of it.
+	// the world, and under it one box with who is at the table and the dice.
+	// A battle map has none of it: its dock has the same, each in a tab.
 
+	import { KEY } from '#lib/client/keys.ts';
+	import type { Die } from '#lib/shared/dice.ts';
 	import { LIMITS, type Presence } from '#lib/shared/types.ts';
 	import Avatar from './Avatar.svelte';
+	import Dice from './Dice.svelte';
+	import ToolButton from './ToolButton.svelte';
 
 	interface Props {
 		isGm: boolean;
@@ -13,9 +18,13 @@
 		meId: string;
 		/** The GM has written a date in the field, or cleared it. */
 		saveDate: (field: HTMLInputElement) => void;
+		/** The dice are out, under who is at the table. */
+		dicing: boolean;
+		/** Rolls one die for the table to see. */
+		roll: (sides: Die) => void;
 	}
 
-	let { isGm, date, online, meId, saveDate }: Props = $props();
+	let { isGm, date, online, meId, saveDate, dicing = $bindable(), roll }: Props = $props();
 
 	/** A bar that floats over the map. */
 	const floating = 'rounded-xl border bg-panel/94 shadow-pop';
@@ -60,22 +69,45 @@
 		{date}
 	</span>
 {/if}
-{#if online.length}
-	<ul class="pointer-events-auto flex shrink-0 p-1.5 {floating}" aria-label="At the table now">
-		{#each online as person (person.id)}
-			<li
-				class="cursor-default not-first:-ml-2"
-				title="{person.name}{person.role === 'gm' ? ' (GM)' : ''}{person.id === meId
-					? ' (you)'
-					: ''}"
-			>
-				<Avatar
-					id={person.id}
-					name={person.name}
-					gm={person.role === 'gm'}
-					class="size-8 border-2 border-panel"
-				/>
-			</li>
-		{/each}
-	</ul>
-{/if}
+<!-- Who is at the table, a face each, and after them the button of the
+     dice, which come out underneath in the same box: a click on one rolls
+     it for the whole table to see. -->
+<div class="pointer-events-auto flex shrink-0 flex-col gap-1.5 p-1.5 {floating}">
+	<div class="flex items-center gap-1.5">
+		{#if online.length}
+			<ul class="flex" aria-label="At the table now">
+				{#each online as person (person.id)}
+					<li
+						class="cursor-default not-first:-ml-2"
+						title="{person.name}{person.role === 'gm' ? ' (GM)' : ''}{person.id === meId
+							? ' (you)'
+							: ''}"
+					>
+						<Avatar
+							id={person.id}
+							name={person.name}
+							gm={person.role === 'gm'}
+							class="size-8 border-2 border-panel"
+						/>
+					</li>
+				{/each}
+			</ul>
+			<span class="w-px self-stretch bg-line"></span>
+		{/if}
+		<ToolButton
+			tip="bottom-start"
+			icon="d20"
+			label="Dice"
+			hint="Roll one for the table to see"
+			shortcut={KEY.dice}
+			active={dicing}
+			expanded={dicing}
+			onclick={() => (dicing = !dicing)}
+		/>
+	</div>
+	{#if dicing}
+		<div class="border-t pt-1.5">
+			<Dice {roll} />
+		</div>
+	{/if}
+</div>

@@ -19,6 +19,8 @@ import type { Board, GestureOf } from './board.ts';
 interface Hand {
 	/** The colour it draws in, writes in and lays a template down in. */
 	ink(): string;
+	/** How tall the letters it writes are, in cells. */
+	textSize(): number;
 	/** Which template it lays down. */
 	shape(): TemplateKind;
 	userId(): string;
@@ -64,9 +66,8 @@ export class Pen {
 
 	/** How tall the letters of the text being typed are, on screen. */
 	readonly writingSize = $derived.by(() => {
-		const { drawings, cell, stage } = this.#board;
-		const size = drawings.find((d) => d.id === this.writing?.id)?.size ?? DRAWING_SIZE.text;
-		return size * cell * stage.view.k;
+		const { cell, stage } = this.#board;
+		return (this.writing?.size ?? DRAWING_SIZE.text) * cell * stage.view.k;
 	});
 
 	// ------------------------------------------------------------- the line
@@ -177,8 +178,8 @@ export class Pen {
 		this.words = drawing?.text ?? '';
 		this.#writingSince = performance.now();
 		this.writing = drawing
-			? { id: drawing.id, at: drawing.points[0], color: drawing.color }
-			: { id: null, at, color: this.#hand.ink() };
+			? { id: drawing.id, at: drawing.points[0], color: drawing.color, size: drawing.size }
+			: { id: null, at, color: this.#hand.ink(), size: this.#hand.textSize() };
 	}
 
 	/** The text is done: kept if there is any and `keep` says so, dropped otherwise. */
@@ -191,8 +192,10 @@ export class Pen {
 		if (keep && text) {
 			if (written.id) send([{ t: 'drawing.update', id: written.id, changes: { text } }]);
 			else {
-				const { at: point, color } = written;
-				send([{ t: 'drawing.create', mapId: map.id, kind: 'text', points: [point], text, color }]);
+				const { at: point, color, size } = written;
+				send([
+					{ t: 'drawing.create', mapId: map.id, kind: 'text', points: [point], text, color, size }
+				]);
 			}
 		}
 		if (!written.id) this.#hand.ondone();

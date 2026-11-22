@@ -23,6 +23,7 @@
 		PENS,
 		type Pen
 	} from '#lib/components/BattleTools.svelte';
+	import DiceRolls from '#lib/components/DiceRolls.svelte';
 	import DisplayLettering from '#lib/components/DisplayLettering.svelte';
 	import Finder from '#lib/components/Finder.svelte';
 	import FogTools from '#lib/components/FogTools.svelte';
@@ -52,7 +53,9 @@
 	import { gridFromBox, milesCount } from '#lib/shared/grid.ts';
 	import { canEditWorld } from '#lib/shared/rules.ts';
 	import {
+		DRAWING_SIZE,
 		INK_COLORS,
+		textSizeStep,
 		FOG_BRUSH,
 		LIMITS,
 		MARKER_TYPES,
@@ -77,6 +80,7 @@
 		type Turns
 	} from '#lib/shared/types.ts';
 	import { brushSize } from '#lib/shared/fog.ts';
+	import type { Die } from '#lib/shared/dice.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -258,6 +262,8 @@
 	let fogSize = $state(FOG_BRUSH.start);
 	/** The colour the pen draws in, text is written in and templates are laid down in. */
 	let ink = $state<string>(INK_COLORS[0]);
+	/** How tall the letters the pen writes are, in cells. */
+	let textSize = $state<number>(DRAWING_SIZE.text);
 	/** Which template the template tool lays down. */
 	let pen = $state<Pen>('line');
 	let form = $state<Form | null>(null);
@@ -342,6 +348,8 @@
 	// dock starts out as its buttons alone: a tray opens when one is clicked.
 	let dockFolded = $state(true);
 	let toolsFolded = $state(false);
+	/** The dice are out in the corner of a world map. A battle map has them as a tab of its dock. */
+	let dicing = $state(false);
 	let turnsFolded = $state(false);
 	let turnOrder = $state<ReturnType<typeof TableDock>>();
 	/** The GM is setting up the grid of this battle map. */
@@ -1233,6 +1241,11 @@
 			}
 			case KEY.exit:
 				return () => (exiting = true);
+			case KEY.dice:
+				// A table display has nobody to roll them.
+				if (display) return null;
+				// On a battle map they are a tab of the dock, which opens for them.
+				return battle ? () => turnOrder?.dice() : () => (dicing = !dicing);
 		}
 		return (isGm ? gmKeyed(key) : null) ?? (battle ? battleKeyed(key, target) : worldKeyed(key, target));
 	}
@@ -1310,6 +1323,9 @@
 		if (drawn) return () => (pen = drawn.pen);
 		if (key === KEY.ink) return () => nextInk(1);
 		if (key === KEY.inkBack) return () => nextInk(-1);
+		if (pen !== 'text') return null;
+		if (key === KEY.textSmaller) return () => (textSize = textSizeStep(textSize, -1));
+		if (key === KEY.textBigger) return () => (textSize = textSizeStep(textSize, 1));
 		return null;
 	}
 
@@ -1359,6 +1375,11 @@
 				return () => (deleting = region);
 		}
 		return null;
+	}
+
+	/** Rolls one die for the table to see: the server rolls it, and tells everyone. */
+	function roll(sides: Die) {
+		if (!live.roll(sides)) say("The dice can't be rolled while the connection is down.", 'failure');
 	}
 
 	/** Nothing on the map is selected any more. */
@@ -1458,6 +1479,7 @@
 				{fogShape}
 				bind:fogSize
 				{ink}
+				{textSize}
 				shape={pen === 'line' || pen === 'text' ? 'circle' : pen}
 				depth={world.trail.length}
 				bind:selectedMarkerId
@@ -1503,6 +1525,8 @@
 				onping={(x, y) => live.ping({ mapId: world.map.id, x, y })}
 			/>
 
+			<DiceRolls meId={data.me.id} {display} />
+
 			<!-- A battle is a moment, not a day on the calendar: its map has no date. -->
 			<DisplayLettering
 				{display}
@@ -1513,9 +1537,9 @@
 			/>
 
 			<!-- What floats in the upper left corner of the map, one under the
-			     other: the date, and who is at the table. A battle map has
-			     neither, but a dock of two tabs instead, the turn order and who
-			     is at the table. Only the boxes take the pointer, so the map between
+			     other: the date, and who is at the table, with the dice. A battle
+			     map has neither, but a dock of three tabs instead: the turn order,
+			     who is at the table, and the dice. Only the boxes take the pointer, so the map between
 			     and under them still does. A table display has the turn order
 			     alone, under the name of the map. A narrow screen keeps its Fit
 			     button in that corner, so there they start lower. -->
@@ -1532,10 +1556,12 @@
 						online={live.online}
 						meId={data.me.id}
 						{saveDate}
+						bind:dicing
+						{roll}
 					/>
 				{/if}
 				{#if battle}
-					<!-- Whose turn it is and who is at the table, in one dock down the
+					<!-- Whose turn it is, who is at the table and the dice, in one dock down the
 					     left side of a battle map. It has what is left of the height,
 					     and scrolls inside that. -->
 					<div class="pointer-events-auto flex min-h-0 flex-col">
@@ -1557,8 +1583,13 @@
 							onchange={setTurns}
 							onnext={passTurn}
 							onback={backTurn}
+							onroll={roll}
 						/>
 					</div>
+				{/if}
+				{#if !display}
+					<!-- On a narrow screen the dice rolled go under these boxes. -->
+					<DiceRolls meId={data.me.id} display={false} docked />
 				{/if}
 			</div>
 
@@ -1580,6 +1611,7 @@
 					{isGm}
 					bind:pen
 					bind:ink
+					bind:textSize
 					{pick}
 					{myTokens}
 					{myTurn}

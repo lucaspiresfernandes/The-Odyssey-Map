@@ -6,11 +6,13 @@
 //
 // The socket also carries what everyone has in hand: a token they are
 // dragging, a distance they are measuring. And pings, which point a spot
-// out to the table for a moment. Those are only ever live: nothing about
-// them is kept, and none of it is sent while offline. Where a mouse is
-// otherwise is never sent.
+// out to the table for a moment, and the dice, which the server rolls and
+// tells everyone of. Those are only ever live: nothing about them is kept,
+// and none of it is sent while offline. Where a mouse is otherwise is never
+// sent.
 
 import { getContext, setContext } from 'svelte';
+import type { Die, Roll } from '#lib/shared/dice.ts';
 import type {
 	ClientMessage,
 	Command,
@@ -61,6 +63,17 @@ const ANSWER_WITHIN = 2500;
 /** How long a ping stays on the map, in milliseconds. */
 export const PING_LASTS = 2600;
 
+/** How long a die that was rolled stays on screen, in milliseconds. */
+export const ROLL_LASTS = 9000;
+
+/** How many of them are on screen at once: an older one makes way for a newer. */
+const ROLLS_SHOWN = 5;
+
+/** A die that was rolled, while it is on screen. `key` tells one from the next. */
+export interface LiveRoll extends Roll {
+	key: number;
+}
+
 /** A ping while it is on the map. `key` tells one from the next. */
 export interface LivePing extends Ping {
 	key: number;
@@ -73,6 +86,8 @@ export class Live {
 	hands = $state.raw<Hand[]>([]);
 	/** The spots being pointed out right now, this browser's own among them. */
 	pings = $state.raw<LivePing[]>([]);
+	/** The dice rolled in the last few seconds, by anyone in the campaign, the newest last. */
+	rolls = $state.raw<LiveRoll[]>([]);
 	/** For the GM: who is asking for a seat they sat in before, the first to ask first. */
 	knocks = $state.raw<Knock[]>([]);
 	/**
@@ -100,6 +115,7 @@ export class Live {
 	/** Who this browser is at the table, once the server has said. */
 	#me: { id: string; name: string; role: Role } | null = null;
 	#pingKey = 0;
+	#rollKey = 0;
 	#pending = new Map<number, Pending>();
 	#nextId = 1;
 	#attempt = 0;
@@ -229,6 +245,9 @@ export class Live {
 				break;
 			case 'ping':
 				this.#pinged(message.ping);
+				break;
+			case 'roll':
+				this.#rolled(message.roll);
 				break;
 			case 'knocks':
 				this.knocks = message.knocks;
@@ -371,6 +390,27 @@ export class Live {
 		setTimeout(() => {
 			this.pings = this.pings.filter((each) => each.key !== key);
 		}, PING_LASTS);
+	}
+
+	/**
+	 * Rolls a die for the whole table to see. The server rolls it, and it
+	 * shows here when the server says what it came to, as it does for
+	 * everyone else. False when there is no connection to roll it over.
+	 */
+	roll(sides: Die): boolean {
+		const ws = this.#ws;
+		if (!ws || this.status !== 'open' || ws.readyState !== WebSocket.OPEN) return false;
+		ws.send(JSON.stringify({ t: 'roll', sides } satisfies ClientMessage));
+		return true;
+	}
+
+	/** A die that was rolled goes on screen, and comes off again by itself. */
+	#rolled(roll: Roll) {
+		const key = ++this.#rollKey;
+		this.rolls = [...this.rolls, { ...roll, key }].slice(-ROLLS_SHOWN);
+		setTimeout(() => {
+			this.rolls = this.rolls.filter((each) => each.key !== key);
+		}, ROLL_LASTS);
 	}
 
 	/** Feeds in events that arrived some other way, such as an HTTP response. */

@@ -1,8 +1,8 @@
 <script lang="ts">
 	// The dock in the upper left corner of a battle map: what the table is
-	// told. It is one box with two tabs, a button each at its top. Click one
+	// told. It is one box with three tabs, a button each at its top. Click one
 	// and what it holds opens under it. Click it again and it is put away,
-	// and the box is its two buttons.
+	// and the box is its three buttons.
 	//
 	// The first tab is whose turn it is, and is the one that is open: the
 	// tokens that take turns, in the order they take them, the one whose turn
@@ -19,13 +19,19 @@
 	//
 	// The second tab is who is at the table now, each by name.
 	//
+	// The third is the dice: a click on one rolls it for the whole table to
+	// see. It is nothing to do with the rolls of the turn order, which the GM
+	// types in.
+	//
 	// A table display has no tabs: it shows the turn order, once there is one.
 
 	import { KEY } from '#lib/client/keys.ts';
 	import { canEndTurn } from '#lib/shared/rules.ts';
 	import { joinedTurns, reorderedTurns, sortedByRolls } from '#lib/shared/turns.ts';
 	import { LIMITS, imageUrl, type Presence, type Token, type Turns } from '#lib/shared/types.ts';
+	import type { Die } from '#lib/shared/dice.ts';
 	import Avatar from './Avatar.svelte';
+	import Dice from './Dice.svelte';
 	import ToolButton from './ToolButton.svelte';
 
 	interface Props {
@@ -58,6 +64,8 @@
 		onnext: () => void;
 		/** The GM takes the turn back: the one before it is on again. */
 		onback: () => void;
+		/** A die was clicked: it is rolled for the table to see. */
+		onroll: (sides: Die) => void;
 	}
 
 	let {
@@ -73,21 +81,29 @@
 		onpick,
 		onchange,
 		onnext,
-		onback
+		onback,
+		onroll
 	}: Props = $props();
 
+	type Tab = 'turns' | 'table' | 'dice';
+
 	/** The tab that is open, or while the dock is collapsed, the one that was open last. */
-	let tab = $state<'turns' | 'table'>('turns');
+	let tab = $state<Tab>('turns');
 	const open = $derived(collapsed ? null : tab);
 
 	/** A button of the dock: it opens its tab, or puts it away when it is the one open. */
-	function toggle(which: 'turns' | 'table') {
+	function toggle(which: Tab) {
 		if (open === which) {
 			collapsed = true;
 			return;
 		}
 		tab = which;
 		collapsed = false;
+	}
+
+	/** The key for the dice: their tab comes out, or is put away when it is the one open. */
+	export function dice() {
+		if (!passive) toggle('dice');
 	}
 
 	/** The tokens that take turns, in order: the ones still on the map. */
@@ -491,6 +507,17 @@
 				expanded={open === 'table'}
 				onclick={() => toggle('table')}
 			/>
+			<ToolButton
+				tip="bottom-start"
+				icon="d20"
+				label="Dice"
+				hint="Roll one for the table to see"
+				shortcut={KEY.dice}
+				fill
+				active={open === 'dice'}
+				expanded={open === 'dice'}
+				onclick={() => toggle('dice')}
+			/>
 		</div>
 
 		{#if open === 'turns'}
@@ -604,6 +631,12 @@
 					<li class="text-xs text-muted">Nobody yet.</li>
 				{/each}
 			</ul>
+		{:else if open === 'dice'}
+			<!-- The dice: a click rolls one, and what it came to is lettered
+			     over the top of the map for everyone. -->
+			<div class="shrink-0 border-t pt-1.5">
+				<Dice roll={onroll} />
+			</div>
 		{/if}
 	</div>
 {/if}

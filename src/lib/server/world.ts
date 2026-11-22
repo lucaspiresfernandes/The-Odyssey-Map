@@ -974,6 +974,16 @@ function asInk(value: unknown): string {
 	return value as string;
 }
 
+function asDrawingSize(value: unknown): number {
+	if (
+		typeof value !== 'number' ||
+		!(value >= LIMITS.drawingSizeMin && value <= LIMITS.drawingSizeMax)
+	) {
+		fail('invalid', 'That drawing could not be kept.');
+	}
+	return value;
+}
+
 function asDrawingText(value: unknown): string {
 	return asText(value, 'The text', LIMITS.drawingText, true);
 }
@@ -997,13 +1007,7 @@ function createDrawing(db: Db, actor: Actor, raw: Record<string, unknown>): Stor
 	const kind = asDrawingKind(raw.kind);
 
 	const points = asDrawingPoints(raw.points, kind);
-	const size = raw.size ?? DRAWING_SIZE[kind];
-	if (
-		typeof size !== 'number' ||
-		!(size >= LIMITS.drawingSizeMin && size <= LIMITS.drawingSizeMax)
-	) {
-		fail('invalid', 'That drawing could not be kept.');
-	}
+	const size = asDrawingSize(raw.size ?? DRAWING_SIZE[kind]);
 	const held = db
 		.select({ n: count() })
 		.from(drawings)
@@ -1041,6 +1045,7 @@ function writeDrawing(db: Db, actor: Actor, before: Drawing, after: Drawing): St
 	if (
 		before.text === after.text &&
 		before.color === after.color &&
+		before.size === after.size &&
 		samePoints(before.points, after.points) &&
 		Boolean(before.hidden) === Boolean(after.hidden) &&
 		sameList(before.seenBy, after.seenBy)
@@ -1053,6 +1058,7 @@ function writeDrawing(db: Db, actor: Actor, before: Drawing, after: Drawing): St
 			points: after.points,
 			text: after.text,
 			color: after.color,
+			size: after.size,
 			hidden: Boolean(after.hidden),
 			seenBy: after.seenBy ?? [],
 			updatedAt: after.updatedAt
@@ -1071,9 +1077,9 @@ function drawingToChange(db: Db, actor: Actor, id: string): Drawing {
 }
 
 /**
- * Rewords a text, recolours a drawing, slides it across the map, turns or
- * resizes a shape, hides it from the players or says which of them see it
- * all the same: whichever are asked for.
+ * Rewords a text or makes its letters another size, recolours a drawing,
+ * slides it across the map, turns or resizes a shape, hides it from the
+ * players or says which of them see it all the same: whichever are asked for.
  */
 function updateDrawing(db: Db, actor: Actor, id: string, rawChanges: unknown): StoredEvent[] {
 	const before = drawingToChange(db, actor, id);
@@ -1084,6 +1090,10 @@ function updateDrawing(db: Db, actor: Actor, id: string, rawChanges: unknown): S
 		after.text = asDrawingText(changes.text);
 	}
 	if (changes.color !== undefined) after.color = asInk(changes.color);
+	if (changes.size !== undefined) {
+		if (before.kind !== 'text') fail('invalid', 'Only a text has a size to change.');
+		after.size = asDrawingSize(changes.size);
+	}
 	if (changes.points !== undefined) {
 		// A shape is its two points: put elsewhere, it is turned or resized.
 		if (!isTemplate(before.kind)) fail('invalid', 'Only a shape can be turned or resized.');
@@ -1702,6 +1712,7 @@ function revert(db: Db, actor: Actor, rawSeq: unknown): StoredEvent[] {
 			...current,
 			text: before.text === after.text ? current.text : before.text,
 			color: before.color === after.color ? current.color : before.color,
+			size: before.size === after.size ? current.size : before.size,
 			points: samePoints(before.points, after.points) ? current.points : before.points,
 			hidden: hid ? Boolean(before.hidden) : current.hidden,
 			seenBy: sameList(before.seenBy, after.seenBy) ? current.seenBy : (before.seenBy ?? [])

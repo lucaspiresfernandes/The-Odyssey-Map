@@ -10,7 +10,22 @@ import {
 	thinOut,
 	touchesBox
 } from './drawing';
-import type { Point } from './types';
+import { TEXT_SIZES, textSizeStep, type Point } from './types';
+
+describe('the sizes a text can be', () => {
+	test('a step goes to the next size, and stops at either end', () => {
+		expect(textSizeStep(0.5, 1)).toBe(1);
+		expect(textSizeStep(0.5, -1)).toBe(0.3);
+		expect(textSizeStep(TEXT_SIZES[0], -1)).toBe(TEXT_SIZES[0]);
+		expect(textSizeStep(TEXT_SIZES.at(-1)!, 1)).toBe(TEXT_SIZES.at(-1)!);
+	});
+
+	test('a size that is none of them steps from the nearest that is', () => {
+		expect(textSizeStep(0.55, 1)).toBe(1);
+		expect(textSizeStep(1.2, -1)).toBe(0.5);
+		expect(textSizeStep(3, -1)).toBe(1);
+	});
+});
 
 describe('a line drawn freehand', () => {
 	test('is thinned to the points that give it its shape', () => {

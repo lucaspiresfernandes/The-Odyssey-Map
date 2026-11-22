@@ -162,6 +162,8 @@
 		 * says which of them it is being used as.
 		 */
 		ink: string;
+		/** How tall the letters `text` writes are, in cells. */
+		textSize: number;
 		/** Which template the `template` tool lays down. */
 		shape: TemplateKind;
 		/** How many maps deep this one is. Decides which way the arrival animation zooms. */
@@ -242,6 +244,7 @@
 		fogShape = 'round',
 		fogSize = $bindable(FOG_BRUSH.start),
 		ink,
+		textSize,
 		shape,
 		depth,
 		selectedMarkerId = $bindable(),
@@ -342,6 +345,7 @@
 	/** The pen of a battle map: its lines, its shapes and its text. */
 	const pen = new Pen(board, {
 		ink: () => ink,
+		textSize: () => textSize,
 		shape: () => shape,
 		userId: () => userId,
 		ondone: () => ondone()

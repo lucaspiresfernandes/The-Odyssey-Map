@@ -1069,6 +1069,32 @@ describe('drawings', () => {
 		}
 	});
 
+	test('a text is written as tall as it is asked, and made another size after', () => {
+		const id = battlefield();
+		const [wrote] = perform(db, player, { t: 'drawing.create', mapId: id, kind: 'text', points: [[0.5, 0.5]], text: 'THE VAULT', size: 2 });
+		const title = wrote.after as Drawing;
+		expect(title.size).toBe(2);
+
+		const [shrunk] = perform(db, player, { t: 'drawing.update', id: title.id, changes: { size: 1 } });
+		expect(shrunk.after).toMatchObject({ size: 1, text: 'THE VAULT' });
+		expect(toLiveEvent(db, shrunk, 'player')!.patch).toMatchObject({ t: 'drawing.upsert', drawing: { size: 1 } });
+		// The size it is already is no change.
+		expect(perform(db, player, { t: 'drawing.update', id: title.id, changes: { size: 1 } })).toHaveLength(0);
+
+		// Undo puts back the size and leaves alone what was reworded since.
+		perform(db, player, { t: 'drawing.update', id: title.id, changes: { text: 'The vault' } });
+		perform(db, player, { t: 'history.revert', seq: shrunk.seq });
+		expect(sees(id).drawings[0]).toMatchObject({ size: 2, text: 'The vault' });
+
+		// Whoever made it and the GM, as with its words. And only a text has a size.
+		expect(refusal(() => perform(db, other, { t: 'drawing.update', id: title.id, changes: { size: 1 } }))).toBe('forbidden');
+		for (const size of [0, 5, -1, NaN, '1', null]) {
+			expect(refusal(() => performReceived(db, player, { t: 'drawing.update', id: title.id, changes: { size } }))).toBe('invalid');
+		}
+		const drawn = line(player, id);
+		expect(refusal(() => perform(db, player, { t: 'drawing.update', id: drawn.id, changes: { size: 1 } }))).toBe('invalid');
+	});
+
 	test('undo rubs out what was drawn, and draws it again', () => {
 		const id = battlefield();
 		const [made] = perform(db, player, { t: 'drawing.create', mapId: id, kind: 'line', points: LINE });

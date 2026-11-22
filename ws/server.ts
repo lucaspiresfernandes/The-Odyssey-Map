@@ -17,13 +17,15 @@
 //   - What a browser has in hand goes straight from one browser to the
 //     others: the token it is dragging, the distance it is measuring, the
 //     spot it is pointing at while its button is held down. So does a ping,
-//     which points a spot out to the table for a moment. None of that is a
+//     which points a spot out to the table for a moment. A die is rolled
+//     here, and what it came to is told to everyone. None of that is a
 //     change to the world, so the app never hears of it, and nothing about
 //     it is kept once the browser disconnects. A token only moves for good
 //     when it is let go: that is a command. Where a mouse is otherwise is
 //     never sent at all.
 
 import type { ServerWebSocket } from 'bun';
+import { isDie, rollDie } from '#lib/shared/dice.ts';
 import {
 	LIMITS,
 	type Broadcast,
@@ -102,6 +104,8 @@ interface Connection {
 	handAt: number;
 	/** When this browser last pinged, for the same reason. */
 	pingedAt: number;
+	/** When it last rolled a die, likewise. */
+	rolledAt: number;
 }
 
 let connections = 0;
@@ -267,7 +271,7 @@ async function forward(ws: Socket, message: Extract<ClientMessage, { t: 'cmd' }>
 	refuse(typeof body?.error === 'string' ? body.error : 'Something went wrong.');
 }
 
-// ----------------------------------------------------------- hands and pings
+// ---------------------------------------------------- hands, pings and dice
 
 /** Sends to everyone in the campaign except the socket it came from. */
 function relay(from: Socket, message: ServerMessage) {
@@ -317,6 +321,29 @@ function ping(ws: Socket, at: unknown) {
 		y: spot.y
 	};
 	relay(ws, { t: 'ping', ping: sent });
+}
+
+/**
+ * A browser rolling a die. It is rolled here, so no browser has a say in
+ * how it lands, and everyone in the campaign is told what it came to,
+ * whichever map they are on: the one who rolled it too, and a table
+ * display. Nothing is kept of it.
+ */
+function roll(ws: Socket, sides: unknown) {
+	if (ws.data.display || !isDie(sides)) return;
+
+	// A handful of dice, one after the other, and no faster.
+	const now = Date.now();
+	if (now - ws.data.rolledAt < 150) return;
+	ws.data.rolledAt = now;
+
+	// Who rolled comes from the connection, never from the message.
+	const { user, role } = ws.data;
+	const text = JSON.stringify({
+		t: 'roll',
+		roll: { userId: user.id, name: user.name, role, sides, result: rollDie(sides) }
+	} satisfies ServerMessage);
+	for (const each of rooms.get(ws.data.campaignId) ?? []) each.send(text);
 }
 
 /** A browser saying what it has in hand, or (with null) that it has let go. */
@@ -491,7 +518,8 @@ const server = Bun.serve({
 			identifiedAt: asked,
 			hand: null,
 			handAt: 0,
-			pingedAt: 0
+			pingedAt: 0,
+			rolledAt: 0
 		};
 		if (server.upgrade(request, { data })) return;
 		return new Response('Expected a WebSocket', { status: 426 });
@@ -547,6 +575,7 @@ const server = Bun.serve({
 			if (message?.t === 'hi') return send(ws, { t: 'hi' });
 			if (message?.t === 'hand') return hold(ws, message.at);
 			if (message?.t === 'ping') return ping(ws, message.at);
+			if (message?.t === 'roll') return roll(ws, message.sides);
 			if (message?.t !== 'cmd' || typeof message.id !== 'number') return;
 
 			const now = Date.now();

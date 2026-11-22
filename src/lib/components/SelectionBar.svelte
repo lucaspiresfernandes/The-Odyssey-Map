@@ -10,8 +10,9 @@
 	// whether its number is kept from the table. Turning and resizing it are
 	// not done from here: the map has handles for those on the token itself. Nor is who
 	// takes turns: that is the turn order's own, in its corner of the map. A
-	// drawing is changed and rubbed out by whoever made it, and by the GM. A
-	// shape that marks out an area selects the tokens inside it.
+	// drawing is changed and rubbed out by whoever made it, and by the GM: a
+	// text is reworded, and its letters made smaller or bigger. A shape that
+	// marks out an area selects the tokens inside it.
 	//
 	// Every button has a key, which the map hands on to `key` below.
 
@@ -22,6 +23,7 @@
 		LIMITS,
 		MARK_LOOKS,
 		isTemplate,
+		textSizeStep,
 		type Command,
 		type Drawing,
 		type Role,
@@ -81,6 +83,9 @@
 	const text = $derived(
 		tokens.length === 0 && drawings.length === 1 && erasable[0]?.kind === 'text' ? erasable[0] : null
 	);
+	/** The sizes a step down and a step up from that text's, each its own at the end of the row. */
+	const smaller = $derived(text ? textSizeStep(text.size, -1) : 0);
+	const bigger = $derived(text ? textSizeStep(text.size, 1) : 0);
 	const allLocked = $derived(tokens.length > 0 && tokens.every((t) => t.locked));
 	/** What of the selection the GM can hide from the players: its tokens, and its drawings. */
 	const hideable = $derived<(Token | Drawing)[]>(gm ? [...tokens, ...drawings] : []);
@@ -244,6 +249,11 @@
 		counting = true;
 	}
 
+	/** Makes the letters of the one text selected this tall, in cells. */
+	function resize(size: number) {
+		if (text && size !== text.size) send([{ t: 'drawing.update', id: text.id, changes: { size } }]);
+	}
+
 	const duplicate = () => oncopy(tokens.map((t) => ({ t: 'token.duplicate', id: t.id })));
 
 	/**
@@ -278,6 +288,8 @@
 			if (one) return () => startLabel(one);
 			return text ? () => onwrite(text) : null;
 		}
+		if (text && pressed === KEY.textSmaller) return () => resize(smaller);
+		if (text && pressed === KEY.textBigger) return () => resize(bigger);
 		if (hideable.length) {
 			// The quick way, with no button of its own: hidden from everyone, or back.
 			if (pressed === KEY.hide) return hide;
@@ -495,6 +507,24 @@
 					label="Change the text"
 					shortcut={KEY.rename}
 					onclick={() => onwrite(text)}
+				/>
+				<ToolButton
+					small
+					{tip}
+					icon="smaller"
+					label="Smaller letters"
+					shortcut={KEY.textSmaller}
+					disabled={smaller === text.size}
+					onclick={() => resize(smaller)}
+				/>
+				<ToolButton
+					small
+					{tip}
+					icon="bigger"
+					label="Bigger letters"
+					shortcut={KEY.textBigger}
+					disabled={bigger === text.size}
+					onclick={() => resize(bigger)}
 				/>
 			{/if}
 			{#if caught.length}

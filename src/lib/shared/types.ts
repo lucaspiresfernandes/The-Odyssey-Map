@@ -1,6 +1,8 @@
 // Types shared by the SvelteKit app, the WebSocket server and the browser.
 // Nothing in here may import server-only code.
 
+import type { Die, Roll } from "./dice";
+
 export type Role = "gm" | "player";
 
 /**
@@ -490,6 +492,27 @@ export const DRAWING_SIZE: Record<DrawingKind, number> = {
 };
 
 /**
+ * How tall a text's letters can be, in cells, smallest first: what the pen
+ * offers, and what a text that is there is stepped through. The second is
+ * what a text is unless it says otherwise.
+ */
+export const TEXT_SIZES = [0.3, 0.5, 1, 2] as const;
+
+/**
+ * The size a step along from this one, bigger with `by` at 1 and smaller at
+ * -1, or the same size back at either end. A size that is none of them goes
+ * to the nearest that is, and on from there.
+ */
+export function textSizeStep(size: number, by: 1 | -1): number {
+  const sizes: readonly number[] = TEXT_SIZES;
+  let at = 0;
+  for (let i = 1; i < sizes.length; i++) {
+    if (Math.abs(sizes[i] - size) < Math.abs(sizes[at] - size)) at = i;
+  }
+  return sizes[Math.min(sizes.length - 1, Math.max(0, at + by))];
+}
+
+/**
  * Something the table drew or wrote on a battle map. Anyone can add one.
  * Changing it or rubbing it out is for whoever made it, and the GM.
  */
@@ -857,6 +880,8 @@ export interface DrawingInput {
 export interface DrawingChanges {
   text?: string;
   color?: string;
+  /** How tall a text's letters are, in cells. Only a text has a size to change. */
+  size?: number;
   /** The GM's to set. */
   hidden?: boolean;
   /** The GM's to set: the players a hidden drawing is a secret with. */
@@ -1165,6 +1190,8 @@ export type ClientMessage =
   | { t: "hand"; at: HandSpot | null }
   /** A spot this person wants the table to look at. */
   | { t: "ping"; at: PingSpot }
+  /** A die this person rolls for the table to see: the server rolls it. */
+  | { t: "roll"; sides: Die }
   /**
    * Asks the server to say it is there: how a browser that was asleep tells
    * a connection that is still good from one that died without a word.
@@ -1191,6 +1218,8 @@ export type ServerMessage =
   | { t: "hand"; hand: Hand }
   | { t: "hand.left"; id: string }
   | { t: "ping"; ping: Ping }
+  /** Someone rolled a die, this browser's own person included. */
+  | { t: "roll"; roll: Roll }
   /** The GM has said what date it is in the world, or with nothing, that there is none. */
   | { t: "date"; date: string }
   /** The GM has taken this browser's seat away: it is no longer at the table. */

@@ -8,14 +8,18 @@
 #
 #   bash deploy/deploy.sh [the commit that was in service before]
 #
-# The service is stopped while the app is built, and Caddy shows the
-# maintenance page meanwhile. Before the new version gets to migrate the
-# database, a copy of it is put aside.
+# The new version is built beside the one in service, which goes on
+# answering meanwhile. The service is stopped only once that build is
+# ready: for a copy of the database to be put aside, before the new version
+# gets to migrate it, and for the two builds to change places. Caddy shows
+# the maintenance page for those few seconds.
 
 set -euo pipefail
 
 SERVICE=odyssey
 KEEP_BACKUPS=10
+# Where the new version is built, while `build` is still in service.
+NEXT=build.next
 
 main() {
 	local previous="${1:-}"
@@ -52,17 +56,28 @@ main() {
 		echo "$into"
 	}
 
+	# The new build takes the place of the one in service, which is kept
+	# beside it until the new one is where it belongs.
+	swap() {
+		rm -rf build.prev || return 1
+		if [ -d build ]; then mv build build.prev || return 1; fi
+		mv "$NEXT" build || return 1
+		rm -rf build.prev
+	}
+
 	# Back to what was in service: its build, and its code beside it. The
 	# migrations are read from the checkout and not from the build, so an old
 	# build must not start beside migrations it knows nothing of.
 	go_back() {
-		rm -rf build
-		if [ -d build.prev ]; then mv build.prev build; fi
+		rm -rf "$NEXT"
+		if [ -d build.prev ]; then
+			rm -rf build
+			mv build.prev build
+		fi
 		if [ -n "$previous" ]; then
 			git reset --quiet --keep "$previous" ||
 				note "could not put the checkout back to $previous"
 		fi
-		sudo systemctl start "$SERVICE"
 	}
 
 	# Asks the app for its front page. The database is opened, and brought up
@@ -88,24 +103,34 @@ main() {
 	# Caddy can't read the home folder, so the maintenance page is copied out.
 	sudo install -D -m 644 deploy/maintenance.html /var/www/maintenance/index.html
 
-	# Keep the build that is in service, to go back to.
-	rm -rf build.prev
-	if [ -d build ]; then mv build build.prev; fi
+	# Built beside the build in service, which nobody has stopped: a build
+	# that fails has cost the table nothing. What an earlier deploy left
+	# half done is cleared away first, and if it stopped between the two
+	# builds changing places, the one it had moved aside is put back.
+	if [ ! -d build ] && [ -d build.prev ]; then mv build.prev build; fi
+	rm -rf "$NEXT" build.prev
+	if ! BUILD_DIR="$NEXT" "$bun" run build; then
+		go_back
+		note "FAILED build, the previous version was never stopped"
+		exit 1
+	fi
 
+	# From here to the start below is all the time the app is away.
 	sudo systemctl stop "$SERVICE"
 
 	if ! saved=$(backup); then
-		note "FAILED to back the database up, restored previous version"
 		go_back
+		sudo systemctl start "$SERVICE"
+		note "FAILED to back the database up, restored previous version"
 		exit 1
 	fi
 
-	if ! "$bun" run build; then
-		note "FAILED build, restored previous version"
+	if ! swap; then
 		go_back
+		sudo systemctl start "$SERVICE"
+		note "FAILED to put the new build in place, restored previous version"
 		exit 1
 	fi
-	rm -rf build.prev
 
 	sudo systemctl start "$SERVICE"
 

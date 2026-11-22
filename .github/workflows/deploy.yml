@@ -13,6 +13,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run test
+      # The production build and both servers, with a GM and a player acting on them.
+      - run: bun run test:e2e
 
   deploy:
     needs: check

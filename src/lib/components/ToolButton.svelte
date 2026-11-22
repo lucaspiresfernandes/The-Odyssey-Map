@@ -29,6 +29,9 @@
 			'M5 3a2 2 0 0 0-2 2 M19 3a2 2 0 0 1 2 2 M21 19a2 2 0 0 1-2 2 M5 21a2 2 0 0 1-2-2 M9 3h1 M14 3h1 M9 21h1 M14 21h1 M3 9v1 M3 14v1 M21 9v1 M21 14v1',
 		draw: 'M3 16c2.5-8 5-8 7-1.5s4.5 4.5 6-2 2.5-5.5 5-3.5',
 		text: 'M4 7V4h16v3 M9 20h6 M12 4v16',
+		// A letter with a minus beside it, and one with a plus: smaller letters, bigger ones.
+		smaller: 'M2 19 8 5l6 14 M4.2 14h7.6 M16 12h6',
+		bigger: 'M2 19 8 5l6 14 M4.2 14h7.6 M16 12h6 M19 9v6',
 		// What is done to a token.
 		label:
 			'M12.59 2.59A2 2 0 0 0 11.17 2H4a2 2 0 0 0-2 2v7.17a2 2 0 0 0 .59 1.42l8.7 8.7a2.43 2.43 0 0 0 3.42 0l6.58-6.58a2.43 2.43 0 0 0 0-3.42Z M7.5 7.5h.01',
@@ -67,6 +70,8 @@
 			'M5 7a4 4 0 1 0 8 0a4 4 0 1 0-8 0 M2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1 M16 3.13a4 4 0 0 1 0 7.75 M22 21v-1a6 6 0 0 0-3.5-5.45',
 		// A die: what each token rolled for its place in the turn order.
 		dice: 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z M8.5 8.5h.01 M15.5 8.5h.01 M12 12h.01 M8.5 15.5h.01 M15.5 15.5h.01',
+		// A die of twenty sides, seen corner on: the dice that are rolled for the table.
+		d20: 'M12 2l9 5v10l-9 5-9-5V7Z M12 8l5.2 8H6.8Z M12 2v6 M21 17l-3.8-1 M3 17l3.8-1',
 		search: 'M4 11a7 7 0 1 0 14 0a7 7 0 1 0-14 0 M21 21l-4.3-4.3',
 		// A keyboard: the sheet of what each key does.
 		keys: 'M4 6h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z M6 10h.01 M10 10h.01 M14 10h.01 M18 10h.01 M8 14h8',

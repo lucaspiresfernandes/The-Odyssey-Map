@@ -28,6 +28,8 @@ export const KEY = {
 	out: 'Alt+ArrowUp',
 	/** Out of the campaign, to the list of them. It asks first. */
 	exit: 'Shift+Q',
+	/** Brings the dice out in the upper left corner, or puts them away. */
+	dice: 'D',
 	putAway: 'Escape',
 	remove: 'Delete',
 	selectAll: 'Ctrl+A',
@@ -52,6 +54,9 @@ export const KEY = {
 	/** With the pen in hand: the next ink, and the one before. 1 to 6 choose what it draws. */
 	ink: 'C',
 	inkBack: 'Shift+C',
+	/** With the pen writing, or a text selected: smaller letters, and bigger ones. */
+	textSmaller: '[',
+	textBigger: ']',
 
 	// A world map.
 	note: 'N',
@@ -214,6 +219,7 @@ export const SHEET: SheetSection[] = [
 			{ keys: [KEY.find, KEY.findToo], does: 'Find a place or a marker' },
 			{ keys: [KEY.undo], does: 'Undo' },
 			{ keys: [KEY.redo, KEY.redoToo], does: 'Redo' },
+			{ keys: [KEY.dice], does: 'Bring out the dice, to roll one for the table' },
 			{ keys: [KEY.putAway], does: 'Put the tool away, then let go of what is selected' },
 			{ keys: [KEY.remove, 'Backspace'], does: 'Delete what is selected' },
 			{ keys: [KEY.selectAll], does: 'Select everything on the map' },
@@ -237,6 +243,10 @@ export const SHEET: SheetSection[] = [
 				does: 'With the pen: a line, a circle, a cone, a box, a straight line, text'
 			},
 			{ keys: [KEY.ink, KEY.inkBack], does: 'With the pen: the next colour, the one before' },
+			{
+				keys: [KEY.textSmaller, KEY.textBigger],
+				does: 'Writing, or with a text selected: smaller letters, bigger ones'
+			},
 			{ keys: [KEY.plainToken], does: 'Put down a plain token' },
 			{ keys: [KEY.mine], does: 'Go to my token' },
 			{ keys: [KEY.palettes], does: 'Fold every palette away, or bring them back' },

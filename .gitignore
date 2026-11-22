@@ -7,6 +7,9 @@ node_modules
 .wrangler
 /.svelte-kit
 /build
+# A deploy's new build while it is made, and the old one while they change places
+/build.next
+/build.prev
 
 # Database and uploaded map images
 /data

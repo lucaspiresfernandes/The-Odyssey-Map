@@ -134,8 +134,8 @@ be made again is the database, `data/odyssey.db`, and the pictures as they were 
 
 ### At the table
 
-These are for running the session, not for building the world. The ping and the finder
-are everyone's. The rest are the GM's.
+These are for running the session, not for building the world. The ping, the dice and
+the finder are everyone's. The rest are the GM's.
 
 - **A ping.** Hold `Alt` and click a spot of any map, or on a touch screen rest a finger
   on it for a moment: rings spread from it in your colour, with your name under it, for
@@ -156,6 +156,16 @@ are everyone's. The rest are the GM's.
   That, and a ping, are all anyone is shown of where you are pointing. Nobody's mouse
   is on anyone else's screen otherwise: not the players', and not the GM's while it
   wanders over what is hidden.
+- **Dice.** The die in the upper left corner of a map, or `D`, brings the dice
+  out under it: d4, d6, d8, d10, d12, d20 and d100. On a battle map it is the
+  third tab of the table's dock, and on a world map it sits after the faces of
+  who is at the table. A click
+  rolls that one die, and everyone in the campaign sees who rolled, which die
+  and what it came to, over the top of whichever map they are on, for a few
+  seconds. So does the table display. For two dice, click twice. The server
+  rolls it, not your browser. That is all there is to it: the app adds nothing
+  up, changes nothing on the map by it, and keeps no list of what was rolled.
+  The dice stay out until their button or `D` puts them away.
 - **The finder.** `Ctrl+K`, or the magnifier at the top, and type a few letters of a
   place, a marker or a token. It searches every map of the campaign, every marker and note on
   them, and on the battle maps every token and what is written there, by name first and
@@ -414,12 +424,13 @@ them. It has three palettes of its own, and each folds away:
   shapes and text: which of them is picked beside it, or with `1` to `6`. The GM's also has the map image, the name, the grid and the fog
   of war. A tool stays in hand until you click it again,
   take another or press `Esc`.
-- **The table's dock**, in the upper left corner, under the date: one box with two
+- **The table's dock**, in the upper left corner, under the date: one box with three
   tabs, a button each at its top. The hourglass is the **turn order**, and is the one
   that is open: see below. The heads are **who is at the table** now, each by name,
-  with the GM marked. Click the tab that is lit and the box is put away, down to its two
+  with the GM marked. The die is the **dice**, to roll one for the table to see. Click
+  the tab that is lit and the box is put away, down to its three
   buttons. On a world map, which has no turn order, who is at the table stays a row of
-  faces.
+  faces, with the die after them.
 
 Everyone has a face of their own, the GM on gold and the players on slate, wherever
 they show: who is at the table, the seats, the knock at the door, and the names to pick
@@ -568,6 +579,10 @@ What is on a battle map:
 - **Text.** Out of the same pen again: with **Draw** in hand and **Draw text** picked
   beside the tools, click the map and type, then press `Enter`. The hand is back once
   it is written. Double-click a text of yours to reword it, whatever is in hand.
+  The four letters that come out beside the colours are its size: small, regular,
+  large and huge, from a note in a corner to the name of a hall, and `[` and `]`
+  step through them. A text that is there is made smaller or bigger the same way:
+  select it, and use the two buttons under it or the same keys.
 - **Selecting several.** With **Select several** in hand, drag a box: every token,
   drawing and text it touches is selected. `Shift`-click adds one or takes one out.
   Drag any of them and the rest come along, and the buttons act on all of them at once.
@@ -653,6 +668,7 @@ Anywhere on a map:
 | `Ctrl+K`, `/` | Find a map or a marker by name, and go there |
 | `Ctrl+Z` | Undo what you did on the map you're looking at |
 | `Ctrl+Shift+Z`, `Ctrl+Y` | Redo |
+| `D` | Bring out the dice, to roll one for the table, or put them away |
 | `Esc` | Put the tool away, then let go of what is selected |
 | `Delete`, `Backspace` | Take off the map what is selected, if it's yours to take off. A region asks first |
 | `Ctrl+A` | Select everything: the tokens and drawings of a battle map, the markers of a world map |
@@ -668,6 +684,7 @@ On a battle map:
 | `Q` `W` `E` `R` `T` | Select and move, select several, measure, draw, point |
 | `1` to `6`, with the pen in hand | Draw a line, a circle, a cone, a box, a straight line, text |
 | `C`, `Shift+C`, with the pen in hand | The next colour, the one before |
+| `[` `]`, with the pen writing or a text selected | Smaller letters, bigger ones |
 | `A` | Put down a plain token |
 | `G` | Go to your own token, if one of the tokens there is yours |
 | `N` | End the turn and go on to the next. The GM always can, a player for their own token, and for one that is nobody's |
@@ -736,6 +753,7 @@ and the tools are in the corner.
 | The scale of a world map | say how many miles across it is | measure, once a map on the way has one |
 | Units, and how a diagonal is counted | say, for a map and the maps inside it | read distances that way |
 | A ping, and the finder | point a spot out, go to anything | point a spot out, go to anything not hidden |
+| The dice | roll one, for everyone to see | roll one, for everyone to see |
 | The date in the world | write it, change it, clear it | read |
 | The turn order, on battle maps | add tokens, sort by dragging or by rolls, start the fight, next turn, back a turn, end the fight | see whose turn it is, among the tokens they can see, and end the turn of their own token, or of one that is nobody's |
 | Fog of war, on battle maps | cover, clear, lift, see through, make it follow the tokens | see what has been cleared, and where it follows the tokens, what the players' tokens see |
@@ -896,6 +914,9 @@ scripts/            run both servers, seed a demo, end-to-end check
 - **Pings skip the app.** A ping goes from browser to browser through the WebSocket
   server alone. It isn't a change to the world, so it is never stored. Where a mouse is
   otherwise is not sent to anyone.
+- **So do the dice.** A browser asks for a die, and the WebSocket server rolls it and
+  tells everyone in the campaign, the one who asked included: `shared/dice.ts`. No
+  browser has a say in how it lands, and the app never hears of it.
 - **So does a token in someone's hand.** While a token is dragged, where it is goes the
   same way, and so does a ruler, and so does the spot someone is pointing at with the
   pointing tool, for as long as their button is down: about twenty times a second, and
@@ -1129,13 +1150,16 @@ And for what came with the party: whose character a token is and what the party 
 told of it, numbered copies, shapes turned and resized by their points, the straight
 line among them, token pictures a player adds and takes out, and the finder knowing
 the tokens and the texts of a battle map.
+And for a text made another size and put back, and the dice: which there are, and that
+each face is as likely as the next.
 
 ```bash
 bun run test:e2e
 ```
 
 Builds the app, starts both servers on spare ports with a throwaway database, and acts as
-a GM and a player over HTTP and WebSockets.
+a GM and a player over HTTP and WebSockets. It runs before every deploy, after the unit
+tests.
 
 ```bash
 bun run check
@@ -1146,27 +1170,36 @@ Type-checks everything.
 ## Deploying
 
 A push to `master` runs [.github/workflows/deploy.yml](.github/workflows/deploy.yml). It
-runs `bun run test`, and if that passes it logs in to the server over SSH, brings the
+runs `bun run test` and `bun run test:e2e`, and if both pass it logs in to the server over SSH, brings the
 checkout there up to the commit that was tested, and runs that commit's own
 [deploy/deploy.sh](deploy/deploy.sh). The script lives here and not on the server, so a
 change to how the app is deployed is a commit like any other.
 
 The script expects what the server was set up with: the checkout in
 `/home/ubuntu/The-Odyssey-Map` with its `.env`, Bun in `~/.bun`, a systemd service called
-`odyssey`, and Caddy serving `/var/www/maintenance` while that service is down. In order,
-it:
+`odyssey`, and Caddy serving `/var/www/maintenance` while that service is down. The
+app goes on answering while the new version is built, and is away only for steps 3 and
+4, a few seconds. In order, the script:
 
 1. Installs dependencies and copies the maintenance page out.
-2. Stops the service, and copies the database into `backups/deploy/`, where the newest
+2. Builds the new version into `build.next`, beside the build in service. If the build
+   fails, the commit that was in service is checked out again and the deploy fails: the
+   app was never stopped.
+3. Stops the service, and copies the database into `backups/deploy/`, where the newest
    ten are kept. This is the database as it was before the new version's migrations.
    SQLite makes the copy ([deploy/copy-database.ts](deploy/copy-database.ts)), so it is
    whole even if a backup job of the server's own is reading the database at that moment.
-3. Builds. If the build fails, the previous build and the previous commit are put back
-   and started, and the deploy fails.
-4. Starts the service and asks the app for its front page, at the `HOST` and `PORT` in
+4. Puts the new build in the place of the old one. If this or the copy fails, the
+   previous build and the previous commit are put back and started, and the deploy fails.
+5. Starts the service and asks the app for its front page, at the `HOST` and `PORT` in
    `.env`. That first request is what opens the database and applies the migrations, so
    an answer means they went through. With no answer in half a minute the deploy fails,
    and says where the copy of the database is.
+
+While step 2 builds, the old version is running beside the new code, and it reads its
+migrations from the checkout. So if the service were restarted in that minute, by a
+crash or by hand, it would apply the new version's migrations before step 3 has made
+its copy. Don't restart the service while a deploy is building.
 
 Each deploy adds a line to `~/deploy.log` on the server. To get a database back, stop the
 service, delete `odyssey.db-wal` and `odyssey.db-shm` from `data/` if they are there, and
@@ -1264,6 +1297,10 @@ the script above.
 - A ping shows where it lands on the map. Someone looking at another part of that map
   gets an arrow to it and is not turned towards it unless they click that, and someone
   on another map is not told.
+- A die is rolled one at a time, in the open, and shown for a few seconds: there is no
+  sum of several, no modifier, no roll for the GM's eyes only, and no list of what was
+  rolled before. Someone who was not looking at the screen then has missed it. A roll
+  is sent to everyone in the campaign, on whichever map they are.
 - A ping, a ruler and a token in someone's hand are passed to every browser in the
   campaign, each of which shows only what is on the map it is on. A player who inspects
   their network traffic can see that the GM pinged or measured on a map they can't
@@ -1303,8 +1340,8 @@ the script above.
   shows with part of it covered.
 - A table display letters names larger, and that is all it does for a far-away screen:
   tokens and pins are the size they are for everyone.
-- The pen draws freehand lines in one thickness, and text is one size: no eraser that
-  rubs out part of a line. Only the GM hides a drawing: a player's are in plain sight.
+- The pen draws freehand lines in one thickness, and text comes in four sizes: no
+  eraser that rubs out part of a line. Only the GM hides a drawing: a player's are in plain sight.
 - A token's label is its name: it can be changed by anyone, but not left empty.
 - A token is half a cell to six cells across, and turns in steps of 15 degrees.
 - The grid is square. Lining it up by a box is as true as the box: over one small
