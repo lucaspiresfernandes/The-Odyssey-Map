@@ -56,9 +56,6 @@
 		// Two tokens inside a ring: what a shape laid on the map catches.
 		inside:
 			'M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0 M7 10a2 2 0 1 0 4 0a2 2 0 1 0-4 0 M13 14.5a2 2 0 1 0 4 0a2 2 0 1 0-4 0',
-		// Three tokens close together: a group saved to put down again.
-		group:
-			'M3.5 8.5a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0-7 0 M13.5 8.5a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0-7 0 M8.5 17a3.5 3.5 0 1 0 7 0a3.5 3.5 0 1 0-7 0',
 		// One head: a player's own token.
 		person: 'M8 7a4 4 0 1 0 8 0a4 4 0 1 0-8 0 M5 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1',
 		// A die: what each token rolled for its place in the turn order.

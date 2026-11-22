@@ -360,14 +360,6 @@ them. It has two palettes of its own, and each folds away with the arrow at its 
   the GM has revealed). Click one and it goes down in the free cell nearest the middle of
   the view. Drag one and it goes down where you let go. The GM's **+** adds pictures to
   the gallery straight from here.
-- **Saved groups**, in the GM's dock, between the plain disc and the pictures. Select
-  tokens, press **Save as a group** and name it: the ambush for tomorrow's road, the
-  patrol, the party itself. It is kept as the tokens are now, with their sizes, marks
-  and numbers, and how they stand to each other. Click or drag it from the dock and they
-  all go down together on any battle map of the campaign, hidden from the players and
-  selected, to drag into place and reveal when the moment comes. Undo takes the whole
-  group off again. The cross on a group throws it away, after asking. The tokens
-  already on the maps are not touched by any of it.
 - **The tools**, in the upper right corner: select and move, select several, measure,
   draw, point. Each has a key: `Q`, `W`, `E`, `R` and `T`, in that order. The pen draws lines,
   shapes and text: which of them is picked beside it. The GM's also has the map image, the name, the grid and the fog
@@ -421,7 +413,7 @@ What is on a battle map:
   press it and the number is kept from the table, for a monster's hit points. It shows
   to you in gold in a broken ring. The players are sent the token without it, hear
   nothing when it changes, and can't set a number on that token themselves. A copy of
-  the token keeps it kept, and so does a saved group.
+  the token keeps it kept.
 - **Marks.** The marks button brings them out. **Down** greys the token and crosses it
   out. The rest are pips on the token's rim: six plain colours, and fourteen small
   icons, each in a colour of its own on a dark pip: a skull, a flame, a bolt, a drop, a
@@ -583,7 +575,6 @@ With tokens or drawings selected there:
 | `Shift+W` | Select the tokens inside the shape |
 | `I` | Put it in the turn order, or take it out, as the GM |
 | `H`, `Shift+H` | Hide it from the players or reveal it, open its visibility, as the GM |
-| `Ctrl+G` | Save what is selected as a group, as the GM |
 
 On a world map:
 
@@ -640,7 +631,6 @@ tokens, and the tools are in the corner.
 | Tokens | create anywhere, give any picture, hide, reveal, show to some players | create where there is no fog, give a revealed picture: what they put down is their own |
 | Any token they can see | move, resize, turn, recolour, outline, label, mark, number, lock, unlock, duplicate, delete | move, resize, turn, recolour, outline, label, mark, number, lock, unlock, duplicate, delete |
 | A token's number, kept | keep it from the table, see it, change it, show it again | nothing: they are sent the token without it |
-| Saved groups of tokens | save the tokens selected, put a group down hidden, throw one away | |
 | Drawings, text and shapes, on battle maps | create, move, change, rub out, anyone's | create, and move, change, rub out their own |
 | Undo and redo | their own changes | their own changes to table notes, tokens and drawings |
 
@@ -810,12 +800,14 @@ scripts/            run both servers, seed a demo, back up, end-to-end check
   that changes only what a player isn't sent is not sent to them at all:
   `visibility.ts`. A player's `count` on such a token is refused whatever it is, so a
   right guess can't be told from a wrong one.
-- **A saved group is rows of its own.** `token_groups` keeps, for each group, what each
-  token starts out as and where it stands from the middle of the group, in cells:
-  `server/groups.ts`. Like the gallery it is no part of the event log. Putting one down
-  is: the browser sends a batch of `token.create`, hidden, which is checked and undone
-  like any other. A picture taken out of the gallery is kept for as long as a group
-  has a token that wears it. Groups go into a campaign's file and come back out of it.
+- **A saved group is rows of its own, and the browser has no buttons for it.**
+  `token_groups` keeps, for each group, what each token starts out as and where it
+  stands from the middle of the group, in cells: `server/groups.ts`, behind
+  `/c/<campaign>/groups`. Like the gallery it is no part of the event log. A picture
+  taken out of the gallery is kept for as long as a group has a token that wears it.
+  Groups go into a campaign's file and come back out of it. The buttons that saved a
+  group and put one down were taken out of the app, ahead of a new design: the groups
+  already saved are still in the database.
 - **A mark is an id in a list.** A token keeps the ids of the marks it wears. How each
   looks, a colour or an icon, is one table: `TOKEN_MARKS` in `shared/types.ts`. A
   new mark is one more line there, and nothing in the database changes.
@@ -912,7 +904,7 @@ shapes, the scale of a world map, the finder, a picture held
 up for the table, and what a token picture starts its tokens out as.
 And for what is kept from some and not from others: closed regions, secrets shared with
 some players and what each of them is sent, and the fog of a world map. And the number on a token, one the GM keeps, shapes that pick their targets,
-groups of tokens saved and put down again, initiative rolls, ending a turn, lining up a grid,
+groups of tokens saved on the server, initiative rolls, ending a turn, lining up a grid,
 and a campaign going out to a file and coming back.
 And for what a real session leans on: a seat asked for and given, new or back, whose token is
 whose and whose turn that makes it, a picture on a marker and who may load it, how long
@@ -982,10 +974,6 @@ Type-checks everything.
 - A token carries one number. It is the whole table's or the GM's alone: there are not
   two, one of each. A player who tries to set a number on a token whose number is kept
   is told the GM keeps it, which says that there is one.
-- A saved group can't be renamed or changed: throw it away and save it again. Throwing
-  one away has no undo. Put down with a click, it lands in the middle of the view, on
-  top of whatever stands there. It always goes down hidden, with nobody owning its
-  tokens and none of them in the turn order.
 - A campaign's file leaves out who plays in it, their secrets and the history that undo
   works from. Importing always makes a new campaign: it can't be merged into one that
   is there.

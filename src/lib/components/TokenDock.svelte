@@ -6,20 +6,8 @@
 	// Click one and it goes down in the middle of the view. Drag it and it
 	// goes down where it is let go. The GM's plus adds pictures to the
 	// gallery from here, and they show up in the dock at once.
-	//
-	// The GM's dock also holds the groups they saved: several tokens that go
-	// down together, hidden, as they stood when they were saved. Each is a
-	// pill between the plain disc and the pictures, clicked or dragged like a
-	// token, with a cross to throw it away.
 
-	import {
-		LIMITS,
-		imageUrl,
-		type GalleryItem,
-		type GalleryResponse,
-		type GroupsResponse,
-		type TokenGroup
-	} from '#lib/shared/types.ts';
+	import { LIMITS, imageUrl, type GalleryItem, type GalleryResponse } from '#lib/shared/types.ts';
 	import { KEY, ariaKey, keyLabel } from '#lib/client/keys.ts';
 	import ToolButton from './ToolButton.svelte';
 
@@ -30,42 +18,24 @@
 		color: string;
 		/** Changes whenever the gallery may have: the dock reads it again. */
 		stamp: number;
-		/** Changes whenever the saved groups may have: the GM's dock reads them again. */
-		groupStamp: number;
 		collapsed: boolean;
 		/**
 		 * A token is wanted: of this picture, or a plain one for null. `drop` is
 		 * where on the screen it was let go, or null for a click.
 		 */
 		onadd: (item: GalleryItem | null, drop: { x: number; y: number } | null) => void;
-		/** A saved group is wanted on the map: dropped there, or clicked. */
-		ongroup: (group: TokenGroup, drop: { x: number; y: number } | null) => void;
 		/** Something went wrong that the person should hear about. */
 		onerror: (text: string) => void;
 	}
 
-	let {
-		campaignId,
-		gm,
-		color,
-		stamp,
-		groupStamp,
-		collapsed = $bindable(),
-		onadd,
-		ongroup,
-		onerror
-	}: Props = $props();
+	let { campaignId, gm, color, stamp, collapsed = $bindable(), onadd, onerror }: Props = $props();
 
 	const ACCEPT = 'image/png,image/jpeg,image/webp,image/gif,image/avif';
 
 	let items = $state<GalleryItem[]>([]);
-	/** The groups the GM saved. A player has none. */
-	let groups = $state.raw<TokenGroup[]>([]);
-	/** The group the GM has pressed the cross of, by id: it asks before it goes. */
-	let discarding = $state<string | null>(null);
 	let uploading = $state(false);
 	let fileInput = $state<HTMLInputElement>();
-	/** A token or a group on its way from the dock to the map, and where the pointer has it. */
+	/** A token on its way from the dock to the map, and where the pointer has it. */
 	let ghost = $state.raw<{ item: Piece; x: number; y: number } | null>(null);
 	let readAt = 0;
 
@@ -84,38 +54,6 @@
 		void [campaignId, stamp];
 		read();
 	});
-
-	async function readGroups() {
-		try {
-			const response = await fetch(`/c/${campaignId}/groups`);
-			const result = (await response.json()) as GroupsResponse;
-			if (result.ok && result.items) groups = result.items;
-		} catch {
-			// The dock keeps what it had.
-		}
-	}
-
-	$effect(() => {
-		void [campaignId, groupStamp];
-		if (gm) readGroups();
-	});
-
-	/** Throws a saved group away, once the GM has said they mean it. */
-	async function discard(group: TokenGroup) {
-		discarding = null;
-		try {
-			const response = await fetch(`/c/${campaignId}/groups`, {
-				method: 'DELETE',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ id: group.id })
-			});
-			const result = (await response.json()) as GroupsResponse;
-			if (!result.ok || !result.items) throw new Error(result.error);
-			groups = result.items;
-		} catch (err) {
-			onerror((err as Error).message || `“${group.name}” couldn't be thrown away.`);
-		}
-	}
 
 	/** A player isn't told when the GM reveals a picture, so reaching for the dock looks again. */
 	function glance() {
@@ -149,15 +87,8 @@
 
 	// ------------------------------------------------------------- dragging
 
-	/** What is taken out of the dock: a token of a picture, a plain one (null), or a saved group. */
-	type Piece = GalleryItem | TokenGroup | null;
-	const isGroup = (piece: Piece): piece is TokenGroup => piece !== null && 'tokens' in piece;
-
-	/** It goes on the map: a group through `ongroup`, a token through `onadd`. */
-	function put(piece: Piece, drop: { x: number; y: number } | null) {
-		if (isGroup(piece)) ongroup(piece, drop);
-		else onadd(piece, drop);
-	}
+	/** What is taken out of the dock: a token of a picture, or a plain one (null). */
+	type Piece = GalleryItem | null;
 
 	let press: { item: Piece; x: number; y: number; id: number } | null = null;
 
@@ -184,12 +115,12 @@
 		const dragged = ghost !== null;
 		press = null;
 		ghost = null;
-		if (completed) put(item, dragged ? { x: e.clientX, y: e.clientY } : null);
+		if (completed) onadd(item, dragged ? { x: e.clientX, y: e.clientY } : null);
 	}
 
 	/** Enter or Space on a token in the dock. A pointer's click was already answered above. */
 	function onclick(e: MouseEvent, item: Piece) {
-		if (e.detail === 0) put(item, null);
+		if (e.detail === 0) onadd(item, null);
 	}
 
 	const piece =
@@ -232,77 +163,6 @@
 				onpointercancel={(e) => onpointerup(e, false)}
 				onclick={(e) => onclick(e, null)}
 			></button>
-			{#each groups as group (group.id)}
-				{#if discarding === group.id}
-					<!-- Thrown away, a group is gone for good: it asks first. -->
-					<span
-						class="flex h-11 shrink-0 items-center gap-1.5 rounded-full border-2 border-danger bg-night pr-1.5 pl-3 text-xs"
-						role="group"
-						aria-label="Throw {group.name} away?"
-					>
-						<span class="max-w-40 truncate">Throw “{group.name}” away?</span>
-						<button class="btn btn-sm btn-danger" onclick={() => discard(group)}>Yes</button>
-						<button class="btn btn-sm" onclick={() => (discarding = null)}>No</button>
-					</span>
-				{:else}
-					<!-- A saved group: the first few of its tokens, its name and how
-					     many it holds. Dashed, like everything that goes down hidden. -->
-					<span class="relative flex shrink-0" data-group={group.id}>
-						<button
-							class="flex h-11 cursor-grab touch-pan-x items-center gap-1.5 rounded-full border-2 border-dashed border-line bg-night pr-7 pl-1 transition-[border-color] duration-120 select-none hover:border-accent active:cursor-grabbing"
-							title="{group.name}: {group.tokens.length} {group.tokens.length === 1
-								? 'token'
-								: 'tokens'}. They go down hidden from the players."
-							aria-label="Put down {group.name}: {group.tokens.length} {group.tokens.length === 1
-								? 'token'
-								: 'tokens'}, hidden from the players"
-							onpointerdown={(e) => onpointerdown(e, group)}
-							{onpointermove}
-							onpointerup={(e) => onpointerup(e, true)}
-							onpointercancel={(e) => onpointerup(e, false)}
-							onclick={(e) => onclick(e, group)}
-						>
-							<span class="pointer-events-none flex -space-x-3.5">
-								{#each group.tokens.slice(0, 3) as token, i (i)}
-									<span
-										class="grid size-8 place-items-center overflow-hidden rounded-full border-2 border-[#12151c] bg-(--c)"
-										style:--c={token.color}
-									>
-										{#if token.image}
-											<img
-												class="size-full object-cover"
-												src={imageUrl(campaignId, token.image, 'thumb')}
-												alt=""
-												loading="lazy"
-												draggable="false"
-											/>
-										{/if}
-									</span>
-								{/each}
-							</span>
-							<span class="pointer-events-none max-w-28 truncate text-xs font-semibold">{group.name}</span>
-							<span class="pointer-events-none text-xs text-muted tabular-nums">{group.tokens.length}</span>
-						</button>
-						<button
-							class="absolute top-1/2 right-1.5 grid size-5 -translate-y-1/2 cursor-pointer place-items-center rounded-full text-muted hover:bg-panel-2 hover:text-danger"
-							title="Throw this group away"
-							aria-label="Throw {group.name} away"
-							onclick={() => (discarding = group.id)}
-						>
-							<svg width="11" height="11" viewBox="0 0 24 24" aria-hidden="true">
-								<path
-									d="M6 6l12 12M18 6 6 18"
-									fill="none"
-									stroke="currentColor"
-									stroke-width="3"
-									stroke-linecap="round"
-								/>
-							</svg>
-						</button>
-					</span>
-				{/if}
-			{/each}
-			{#if groups.length}<span class="w-px shrink-0 self-stretch bg-line"></span>{/if}
 			{#each items as item (item.id)}
 				<button
 					class={[piece, 'bg-night', item.hidden ? 'border-dashed border-line' : 'border-line']}
@@ -354,12 +214,7 @@
 		style:top="{ghost.y}px"
 		style:--c={ghost.item ? 'var(--color-night)' : color}
 	>
-		{#if isGroup(ghost.item)}
-			<!-- A group on its way: how many tokens are coming. -->
-			<span class="grid size-full place-items-center text-sm font-bold text-accent tabular-nums">
-				{ghost.item.tokens.length}
-			</span>
-		{:else if ghost.item}
+		{#if ghost.item}
 			<img
 				class="size-full object-cover"
 				src={imageUrl(campaignId, ghost.item.file, 'thumb')}

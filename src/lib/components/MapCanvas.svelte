@@ -233,8 +233,6 @@
 		onedittoken: (token: Token) => void;
 		/** The GM is to say who sees these tokens. */
 		ontokenvisibility?: (tokens: Token[]) => void;
-		/** The GM saves these tokens as a group, under this name. True once it is kept. */
-		onsavegroup?: (name: string, tokens: Token[]) => Promise<boolean>;
 		/** What this browser has in hand on the map, or null when it holds nothing. */
 		onhand: (at: Holding | null) => void;
 		/** This person is pointing a spot of the map out to the table. */
@@ -282,7 +280,6 @@
 		onmarkervisibility = () => {},
 		fresh = [],
 		onseen,
-		onsavegroup = async () => false,
 		onalign,
 		onedittoken,
 		ontokenvisibility = () => {},
@@ -3799,7 +3796,6 @@
 					}}
 					onclear={() => (selectedIds = [])}
 					onpick={(picked) => (selectedIds = picked.map((token) => token.id))}
-					onsave={onsavegroup}
 					onvisibility={ontokenvisibility}
 				/>
 			</div>

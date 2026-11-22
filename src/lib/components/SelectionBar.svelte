@@ -5,10 +5,9 @@
 	//
 	// A token is the whole table's: its label, its lock, its marks, the number
 	// it carries, its look, copying it, and taking it off the map. Who sees it
-	// is the GM's: one button, which opens the dialog that says so. So are
-	// whether its number is kept from the table, and saving what is selected
-	// as a group to put down again. Turning and resizing it are not done from
-	// here: the map has handles for those on the token itself. Nor is who
+	// is the GM's: one button, which opens the dialog that says so. So is
+	// whether its number is kept from the table. Turning and resizing it are
+	// not done from here: the map has handles for those on the token itself. Nor is who
 	// takes turns: that is the turn order's own, in its corner of the map. A
 	// drawing is changed and rubbed out by whoever made it, and by the GM. A
 	// shape that marks out an area selects the tokens inside it.
@@ -53,8 +52,6 @@
 		onclear: () => void;
 		/** These tokens are to be what is selected, in place of what is. */
 		onpick: (tokens: Token[]) => void;
-		/** The GM saves these tokens as a group, under this name. True once it is kept. */
-		onsave: (name: string, tokens: Token[]) => Promise<boolean>;
 		/** The GM is to say who sees these tokens. */
 		onvisibility: (tokens: Token[]) => void;
 	}
@@ -72,7 +69,6 @@
 		onwrite,
 		onclear,
 		onpick,
-		onsave,
 		onvisibility
 	}: Props = $props();
 
@@ -107,8 +103,6 @@
 	let count = $state('');
 	/** What was typed for it is no number. */
 	let miscounted = $state(false);
-	/** The group is on its way to the server. */
-	let keeping = $state(false);
 	/** How many players every token selected is a secret with. */
 	const sharedWith = $derived(
 		allHidden ? tokens[0].seenBy.filter((id) => tokens.every((t) => t.seenBy.includes(id))).length : 0

@@ -47,8 +47,6 @@
 		type Command,
 		type FindEntry,
 		type GalleryItem,
-		type GroupsResponse,
-		type TokenGroup,
 		type Knock,
 		type MapKind,
 		type Marker,
@@ -324,8 +322,6 @@
 	}
 	/** Goes up whenever the gallery may have changed, so the dock reads it again. */
 	let galleryStamp = $state(0);
-	/** Bumped when a group of tokens is saved, so the dock reads them again. */
-	let groupStamp = $state(0);
 	// The palettes of a battle map fold away, and stay as they were left.
 	let dockFolded = $state(false);
 	let toolsFolded = $state(false);
@@ -825,63 +821,6 @@
 		if (!made) return;
 		battleTool = 'pan';
 		selectedIds = world.tokens.filter((token) => !had.has(token.id)).map((token) => token.id);
-	}
-
-	/**
-	 * A saved group out of the dock: every token of it, as it stood when it
-	 * was saved, around where it was dropped, or for a click, the middle of
-	 * the view. Hidden from the players, selected, and undone as one. The
-	 * first of them goes squarely on the grid and the rest keep their places
-	 * from it, so the group keeps its shape.
-	 */
-	async function addGroup(group: TokenGroup, drop: { x: number; y: number } | null) {
-		if (!canvas || group.tokens.length === 0) return;
-		const dropped = drop && canvas.spotAt(drop.x, drop.y);
-		// Let go anywhere but over the map, it goes back in the dock.
-		if (drop && !dropped) return;
-		const { map } = world;
-		const [cx, cy] = dropped || canvas.middle();
-		const stepX = map.grid.size / map.width;
-		const stepY = map.grid.size / map.height;
-		const lead = group.tokens[0];
-		const from: Point = [cx + lead.dx * stepX, cy + lead.dy * stepY];
-		const onGrid = snapToGrid(map, from, lead.size);
-		const within = (at: number) => Math.min(1, Math.max(0, at));
-		const commands = group.tokens.map(
-			({ dx, dy, ...token }): Command => ({
-				t: 'token.create',
-				mapId: map.id,
-				...token,
-				hidden: true,
-				x: within(cx + dx * stepX + onGrid[0] - from[0]),
-				y: within(cy + dy * stepY + onGrid[1] - from[1])
-			})
-		);
-		const had = new Set(world.tokens.map((token) => token.id));
-		const note = `Put down “${group.name}”, hidden from the players.`;
-		if (!(await send(commands, note))) return;
-		battleTool = 'pan';
-		selectedIds = world.tokens.filter((token) => !had.has(token.id)).map((token) => token.id);
-	}
-
-	/** The GM saves the tokens selected as a group, to put down again from the dock. */
-	async function saveGroup(name: string, tokens: Token[]): Promise<boolean> {
-		try {
-			const response = await fetch(`/c/${campaignId}/groups`, {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ name, tokens: tokens.map((token) => token.id) })
-			});
-			const result = (await response.json()) as GroupsResponse;
-			if (!result.ok) throw new Error(result.error ?? 'Something went wrong.');
-		} catch (err) {
-			say((err as Error).message || "Can't reach the server.", 'failure');
-			return false;
-		}
-		groupStamp++;
-		dockFolded = false;
-		say(`Saved “${name}”. It is in the dock, to put down on any battle map.`, 'success');
-		return true;
 	}
 
 	function saveToken(values: Pick<TokenInput, 'color' | 'outline' | 'image'>) {
@@ -1784,7 +1723,6 @@
 				onedittoken={(token) => (tokenForm = token)}
 				ontokenvisibility={(tokens) =>
 					(visibilityOf = { kind: 'token', ids: tokens.map((token) => token.id) })}
-				onsavegroup={saveGroup}
 				onhand={(at) => {
 					// A display is nobody at the table: it holds nothing.
 					if (!display) live.hold(at && { mapId: world.map.id, ...at });
@@ -2222,10 +2160,8 @@
 						gm={isGm}
 						color={tokenColor}
 						stamp={galleryStamp}
-						{groupStamp}
 						bind:collapsed={dockFolded}
 						onadd={addToken}
-						ongroup={addGroup}
 						onerror={(text) => say(text, 'failure')}
 					/>
 				{:else}
