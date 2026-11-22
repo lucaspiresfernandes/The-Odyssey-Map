@@ -14,6 +14,9 @@ Built with SvelteKit, Bun and TypeScript. No map library, no paid platform, one 
 bun install
 ```
 
+Copy [.env.example](.env.example) to `.env`. It holds the host and the ports, and the
+servers will not start without it.
+
 ```bash
 bun run seed
 ```
@@ -27,8 +30,8 @@ five nested maps, the innermost a battle map with a fight set up on it, and prin
 at the top of [scripts/seed.ts](scripts/seed.ts)). Skip it to start empty and create your
 own GM account.
 
-`bun run dev` starts two servers: the SvelteKit app on port 5173 and the WebSocket server
-on port 3001.
+`bun run dev` starts two servers: the SvelteKit app on `PORT` (5173 in the example) and the
+WebSocket server on `WS_PORT` (3001).
 
 ## Running a session
 
@@ -65,7 +68,8 @@ To let other devices on your network reach it:
 bun run dev:lan
 ```
 
-Then share `http://<your-ip>:5173`. Your firewall has to allow ports 5173 and 3001.
+Then share `http://<your-ip>:5173`. Your firewall has to allow ports 5173 and 3001. Setting
+`HOST=0.0.0.0` in `.env` does the same as `--lan`, for every start.
 
 For a real session, run the production build instead of the dev server:
 
@@ -77,7 +81,7 @@ bun run build
 bun run start:lan
 ```
 
-That serves the app on port 3000 (set `PORT` to change it). Everything is stored in
+That serves the app on `PORT` from `.env`, the same port as in development. Everything is stored in
 `data/`: the database and the pictures in the gallery.
 
 One campaign can be taken out as a single file, and put back in: **Export** beside a
@@ -989,17 +993,20 @@ does not do that work.
 
 ## Configuration
 
-All optional. Copy [.env.example](.env.example) to `.env` to change a default.
+Copy [.env.example](.env.example) to `.env`. `bun run dev` and `bun run start` read it, and
+a variable already set in the shell wins over the file. `HOST`, `PORT` and `WS_PORT` are
+required; the rest are optional.
 
 | Variable | Default | |
 |---|---|---|
+| `HOST` | | where both servers listen: `127.0.0.1` for this machine only, `0.0.0.0` for every network |
 | `DATA_DIR` | `data` | database and uploaded images |
 | `DATABASE_URL` | `file:` the database in `DATA_DIR` | where the database is, for another file or another driver |
 | `STORAGE_URL` | `file:` and `DATA_DIR` | where the pictures are kept, for another folder or another storage |
-| `PORT` | `3000` | app port in production |
-| `WS_PORT` | `3001` | WebSocket server port |
-| `APP_URL` | set by `bun run dev` / `start` | where the WebSocket server forwards requests to the app |
-| `BRIDGE_SECRET` | set by `bun run dev` / `start` | shared by the two servers, so only the app can have events delivered |
+| `PORT` | | app port, in development and in production |
+| `WS_PORT` | | WebSocket server port |
+| `APP_URL` | `http://127.0.0.1:` and `PORT` | where the WebSocket server forwards requests to the app |
+| `BRIDGE_SECRET` | a new one on every start | shared by the two servers, so only the app can have events delivered |
 | `PUBLIC_WS_URL` | | full WebSocket URL, when a reverse proxy puts both servers on one origin |
 | `ORIGIN` | | public address of the app, when it sits behind a proxy |
 
