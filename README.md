@@ -793,6 +793,7 @@ src/routes/         the SvelteKit app: pages, plus HTTP endpoints for the galler
                     pictures and a command fallback
 src/lib/components/ the map canvas and the pieces it is made of, marker cards, forms
 ws/server.ts        the WebSocket server: a bridge between browsers and the app
+deploy/             how a push to master reaches the server: see "Deploying"
 scripts/            run both servers, seed a demo, end-to-end check
 ```
 
@@ -1032,7 +1033,10 @@ bun run db:generate
 ```
 
 That writes a new SQL file into `drizzle/`. Commit it with the schema change. The app
-applies any migrations it hasn't seen yet when it starts, so there is nothing else to run.
+applies any migrations it hasn't seen yet when it first opens the database, which is on
+the first request after it starts, so there is nothing else to run. They go in together
+or not at all: if one fails, the database stays as it was and the app answers with errors
+until it is put right.
 
 ### Keeping the data somewhere else
 
@@ -1130,6 +1134,40 @@ bun run check
 ```
 
 Type-checks everything.
+
+## Deploying
+
+A push to `master` runs [.github/workflows/deploy.yml](.github/workflows/deploy.yml). It
+runs `bun run test`, and if that passes it logs in to the server over SSH, brings the
+checkout there up to the commit that was tested, and runs that commit's own
+[deploy/deploy.sh](deploy/deploy.sh). The script lives here and not on the server, so a
+change to how the app is deployed is a commit like any other.
+
+The script expects what the server was set up with: the checkout in
+`/home/ubuntu/The-Odyssey-Map` with its `.env`, Bun in `~/.bun`, a systemd service called
+`odyssey`, and Caddy serving `/var/www/maintenance` while that service is down. In order,
+it:
+
+1. Installs dependencies and copies the maintenance page out.
+2. Stops the service, and copies the database into `backups/deploy/`, where the newest
+   ten are kept. This is the database as it was before the new version's migrations.
+   SQLite makes the copy ([deploy/copy-database.ts](deploy/copy-database.ts)), so it is
+   whole even if a backup job of the server's own is reading the database at that moment.
+3. Builds. If the build fails, the previous build and the previous commit are put back
+   and started, and the deploy fails.
+4. Starts the service and asks the app for its front page, at the `HOST` and `PORT` in
+   `.env`. That first request is what opens the database and applies the migrations, so
+   an answer means they went through. With no answer in half a minute the deploy fails,
+   and says where the copy of the database is.
+
+Each deploy adds a line to `~/deploy.log` on the server. To get a database back, stop the
+service, delete `odyssey.db-wal` and `odyssey.db-shm` from `data/` if they are there, and
+copy `odyssey.db` from its folder in `backups/deploy/` over the one in `data/`.
+
+A backup job on the server that copies the database's files as they are, with `cp`,
+`rsync` or `tar`, can catch them halfway through a change, during a deploy or at any other
+time. One that asks SQLite for the copy can't: `sqlite3 data/odyssey.db ".backup …"`, or
+the script above.
 
 ## Known limits
 

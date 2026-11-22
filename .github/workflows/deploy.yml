@@ -26,4 +26,14 @@ jobs:
         run: |
           install -m 600 /dev/null key
           printf '%s\n' "$KEY" > key
-          ssh -i key -o StrictHostKeyChecking=accept-new "$USER_NAME@$HOST" /home/ubuntu/deploy.sh
+          # The checkout on the server is brought up to the commit that was
+          # tested here, and then that commit's own deploy/deploy.sh is run.
+          # It is told what was in service before, to go back to.
+          ssh -i key -o StrictHostKeyChecking=accept-new "$USER_NAME@$HOST" "
+            set -e
+            cd /home/ubuntu/The-Odyssey-Map
+            was=\$(git rev-parse HEAD)
+            git fetch --quiet origin master
+            git merge --quiet --ff-only $GITHUB_SHA
+            bash deploy/deploy.sh \"\$was\"
+          "
