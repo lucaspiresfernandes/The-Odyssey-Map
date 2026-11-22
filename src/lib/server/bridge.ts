@@ -75,8 +75,28 @@ export function announce(db: Db, events: StoredEvent[]): Promise<void> {
 }
 
 /**
- * Tells the GM who is asking for a seat they sat in before, in place of
- * whoever was asking a moment ago. Nobody else is told.
+ * Who is at a campaign's table this minute, by user id. The one thing the
+ * app asks the WebSocket server, which alone knows who is connected: a seat
+ * whose player is there is nobody else's to ask for. If it can't be
+ * reached, nobody is at the table through it, so the answer is nobody.
+ */
+export async function onlineAt(campaignId: string): Promise<string[]> {
+	try {
+		const response = await fetch(`${BRIDGE_URL}/online?campaign=${encodeURIComponent(campaignId)}`, {
+			headers: { authorization: `Bearer ${process.env.BRIDGE_SECRET ?? ''}` },
+			signal: AbortSignal.timeout(2000)
+		});
+		if (!response.ok) return [];
+		const ids: unknown = await response.json();
+		return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Tells the GM who is asking for a seat, in place of whoever was asking a
+ * moment ago. Nobody else is told.
  */
 export function knocked(db: Db, campaignId: string): Promise<void> {
 	return send({ campaignId, events: [], knocks: knocksOf(db, campaignId) });

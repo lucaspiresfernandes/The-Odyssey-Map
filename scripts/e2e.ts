@@ -1032,18 +1032,37 @@ async function run() {
 	check('a guest imports nothing', (await sendIn(player, archive)).status === 403);
 	check('nor is a file that is not a campaign taken', (await sendIn(gm, new TextEncoder().encode('nothing of the kind'))).status === 400);
 
-	// A seat got back into: someone with no login asks for the player's
-	// seat, only the GM hears of it, and a yes logs that browser in as them.
+	// A seat got back into: someone with no login asks for a player's seat,
+	// only the GM hears of it, and a yes logs that browser in as them. Not
+	// while the player is at the table, though: a seat holds one browser.
+	const wanderer = new Visitor();
+	await sitDown(wanderer, 'Wanderer');
+	const wandererSocket = wanderer.connect(campaign);
+	await wandererSocket.opened;
+	await pause(300);
+	const playerId: string = wandererSocket.messages[0]?.user.id;
 	const returning = new Visitor();
 	const seats = await (await returning.request(invite)).text();
-	const playerId: string = playerSocket.messages[0]?.user.id;
-	check('the invite link offers the seats that are taken', seats.includes('Tester') && seats.includes(playerId));
-	const asked = await returning.form(`${invite}?/claim`, { seat: playerId });
+	check('the invite link offers the seats that are taken', seats.includes('Wanderer') && seats.includes(playerId));
+	check('and says whose player is at the table', seats.includes('at the table'));
+	const early = await ask(returning, playerId);
+	await pause(300);
+	check('a seat whose player is at the table is nobody else\'s to ask for', early.status === 400 && returning.seat === '' && door().length === 0, `status ${early.status} ${JSON.stringify(door())}`);
+	wandererSocket.ws.close();
+	await pause(300);
+	const asked = await ask(returning, playerId);
 	await pause(400);
 	const knocks: any[] = gmSocket.messages.findLast((m) => m.t === 'knocks')?.knocks ?? [];
 	const overheard = [playerSocket, displaySocket].some((socket) => socket.messages.some((m) => m.t === 'knocks'));
-	check('asking for one reaches the GM', asked.status === 200 && returning.seat !== '' && knocks.length === 1 && knocks[0].name === 'Tester' && knocks[0].taken === true, JSON.stringify(knocks));
+	check('once they have left, asking for it reaches the GM', asked.status === 200 && returning.seat !== '' && knocks.length === 1 && knocks[0].name === 'Wanderer' && knocks[0].taken === true, JSON.stringify(knocks));
 	check('and nobody else', !overheard);
+	// They come back to the table before the GM has answered.
+	const backFirst = wanderer.connect(campaign);
+	await backFirst.opened;
+	await pause(300);
+	check('nobody is let into a seat whose player came back meanwhile', (await answerSeat(gm, knocks[0]?.id, true)).status === 409 && (await seatOf(returning)) === 'waiting');
+	backFirst.ws.close();
+	await pause(300);
 	const seatStatus = () => seatOf(returning);
 	check('until the GM answers, they wait, logged in as nobody', (await seatStatus()) === 'waiting' && returning.cookie === '');
 	const answer = (who: Visitor, grant: boolean) => answerSeat(who, knocks[0]?.id, grant);
@@ -1052,6 +1071,7 @@ async function run() {
 	await pause(300);
 	check('and is told nobody is waiting any more', gmSocket.messages.findLast((m) => m.t === 'knocks')?.knocks.length === 0);
 	check('a yes logs that browser in', (await seatStatus()) === 'granted' && returning.cookie !== '' && returning.seat === '');
+	check('and logs out the browser that sat there before', (await wanderer.request(mapPath)).status === 303);
 	const backSocket = returning.connect(campaign);
 	await backSocket.opened;
 	await pause(300);

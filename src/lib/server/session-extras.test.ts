@@ -246,8 +246,8 @@ describe('a seat at the table', () => {
 describe('the seats there are to pick from', () => {
 	test('the link offers the seats with no login, and says which have someone in them', async () => {
 		expect(seatsOf(db, campaignId)).toEqual([
-			{ id: player.userId, name: 'Mira', taken: false },
-			{ id: other.userId, name: 'Tovin', taken: false },
+			{ id: player.userId, name: 'Mira', taken: false, here: false },
+			{ id: other.userId, name: 'Tovin', taken: false, here: false },
 		]);
 		expect(freeSeats(db, campaignId)).toBe(2);
 
@@ -296,6 +296,52 @@ describe('the seats there are to pick from', () => {
 			name: 'Mira',
 			taken: true,
 		});
+	});
+
+	test('a seat whose player is at the table is nobody else’s to ask for, or to be let into', () => {
+		const atTable = [gm.userId, player.userId];
+		expect(
+			seatsOf(db, campaignId, atTable).map((seat) => [seat.name, seat.here]),
+		).toEqual([
+			['Mira', true],
+			['Tovin', false],
+		]);
+		expect(refusal(() => knock(db, campaignId, player.userId, atTable))).toBe(
+			'conflict',
+		);
+		expect(knocksOf(db, campaignId)).toHaveLength(0);
+		// The seat beside it is asked for as ever.
+		knock(db, campaignId, other.userId, atTable);
+		expect(knocksOf(db, campaignId)).toHaveLength(1);
+
+		// Asked for while they were away, they have come back before the GM answered.
+		const held = knock(db, campaignId, player.userId);
+		const asked = knocksOf(db, campaignId).find(
+			(each) => each.userId === player.userId,
+		)!;
+		expect(refusal(() => answerKnock(db, gm, asked.id, true, atTable))).toBe(
+			'conflict',
+		);
+		// The asking stays, to be turned away, or let in once they have left.
+		expect(seatAnswer(db, campaignId, held, true).status).toBe('waiting');
+		answerKnock(db, gm, asked.id, false, atTable);
+		expect(seatAnswer(db, campaignId, held).status).toBe('refused');
+	});
+
+	test('a seat holds one browser: the one let in takes it over', () => {
+		const before = createSession(db, player.userId);
+		const beside = createSession(db, other.userId);
+		const held = knock(db, campaignId, player.userId);
+		answerKnock(db, gm, knocksOf(db, campaignId)[0].id, true);
+		// The yes alone logs nobody out: it is the browser coming to hear it that sits down.
+		expect(getSessionUser(db, before)?.id).toBe(player.userId);
+		expect(seatAnswer(db, campaignId, held, true).status).toBe('granted');
+		expect(getSessionUser(db, before)?.id).toBe(player.userId);
+
+		expect(seatAnswer(db, campaignId, held).status).toBe('granted');
+		expect(getSessionUser(db, before)).toBeNull();
+		// Nobody else's login is touched.
+		expect(getSessionUser(db, beside)?.id).toBe(other.userId);
 	});
 
 	test('a yes makes nobody a player who was not one: it seats them as who the GM made', () => {

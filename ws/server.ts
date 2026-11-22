@@ -462,6 +462,19 @@ async function publish(request: Request): Promise<Response> {
 	return new Response('ok');
 }
 
+/**
+ * The app asking who is at a campaign's table this minute, by user id. It is
+ * the one thing the app has to ask: who is connected is known only here.
+ * Nobody else may ask.
+ */
+function online(request: Request, url: URL): Response {
+	if (request.headers.get('authorization') !== `Bearer ${SECRET}`) {
+		return new Response('Forbidden', { status: 403 });
+	}
+	const ids = presence(url.searchParams.get('campaign') ?? '').map((each) => each.id);
+	return Response.json(ids);
+}
+
 // --------------------------------------------------------------- the server
 
 const server = Bun.serve({
@@ -472,6 +485,7 @@ const server = Bun.serve({
 		const url = new URL(request.url);
 		if (url.pathname === '/health') return new Response('ok');
 		if (url.pathname === '/publish') return publish(request);
+		if (url.pathname === '/online') return online(request, url);
 		if (!originAllowed(request, url)) return new Response('Forbidden', { status: 403 });
 
 		const campaignId = url.searchParams.get('campaign') ?? '';

@@ -16,8 +16,10 @@
 		return ({ update }: { update: () => Promise<void> }) => update();
 	};
 
-	/** Some seat has someone in it already. */
-	const anyTaken = $derived(data.seats.some((seat) => seat.taken));
+	/** Some seat has someone in it already, who is away: theirs to ask back. */
+	const anyTaken = $derived(data.seats.some((seat) => seat.taken && !seat.here));
+	/** The player of some seat is at the table this minute: nobody else's to ask for. */
+	const anyHere = $derived(data.seats.some((seat) => seat.here));
 
 	// While the GM is being asked, the answer is looked for every couple of
 	// seconds. A yes seats this browser, and the map opens.
@@ -116,20 +118,31 @@
 				<div class="flex flex-wrap gap-2">
 					{#each data.seats as seat (seat.id)}
 						<button
-							class={['btn max-w-full', !seat.taken && 'btn-primary']}
+							class={['btn max-w-full', !seat.taken && !seat.here && 'btn-primary']}
 							name="seat"
 							value={seat.id}
+							disabled={seat.here}
 						>
 							<span class="truncate">{seat.name}</span>
-							{#if seat.taken}<span class="shrink-0 text-xs text-muted">taken</span>{/if}
+							{#if seat.here}
+								<span class="shrink-0 text-xs text-muted">at the table</span>
+							{:else if seat.taken}
+								<span class="shrink-0 text-xs text-muted">taken</span>
+							{/if}
 						</button>
 					{/each}
 				</div>
 				{#if form?.message}<p class="text-sm text-danger">{form.message}</p>{/if}
 				{#if anyTaken}
 					<p class="text-[13px] text-muted">
-						A name that is taken has someone sitting there. If it is yours, pick it all the same:
-						the GM lets you back in, with your notes and everything you were shown.
+						A name that is taken has been sat in before. If it is yours, pick it all the same: the
+						GM lets you back in, with your notes and everything you were shown, and the browser
+						that sat there is logged out.
+					</p>
+				{/if}
+				{#if anyHere}
+					<p class="text-[13px] text-muted">
+						Whoever is at the table keeps their seat: it can't be picked while they are there.
 					</p>
 				{/if}
 				{#if data.user}

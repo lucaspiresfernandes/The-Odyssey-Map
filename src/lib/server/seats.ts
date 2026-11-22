@@ -11,6 +11,12 @@
 // notes. So a seat with someone in it can be asked for as well: the GM is
 // asked, and on a yes that browser is logged in as the player they were.
 //
+// A seat holds one browser. While its player is at the table, nobody else
+// can ask for it or be let into it. And a browser let into a seat takes it
+// over: whichever sat there before is logged out. Who is at the table is
+// known to the WebSocket server alone, so whoever calls in here asks it
+// first and hands the answer over as `online`.
+//
 // The asking is called a knock. It is the GM's to answer, because the
 // invite link alone must be enough neither to sit down nor to become
 // someone else.
@@ -51,17 +57,21 @@ export const KNOCK_LASTS = 10 * 60 * 1000;
 export const SEAT_COOKIE = 'odyssey_seat';
 
 /** A seat as the invite link offers it: a name, and whether someone sits there already. */
-export type OfferedSeat = Pick<Seat, 'id' | 'name' | 'taken'>;
+export type OfferedSeat = Pick<Seat, 'id' | 'name' | 'taken'> & {
+	/** Its player is at the table this minute: the seat is nobody else's to ask for. */
+	here: boolean;
+};
 
 /**
  * The seats of a campaign someone could ask for on the invite link: its
  * players with no login of their own, in the order they were made. A
- * player with an account logs in with it instead.
+ * player with an account logs in with it instead. `online` is who is at
+ * the table this minute, by user id.
  */
-export function seatsOf(db: Db, campaignId: string): OfferedSeat[] {
+export function seatsOf(db: Db, campaignId: string, online: string[] = []): OfferedSeat[] {
 	return rosterOf(db, campaignId)
 		.filter((seat) => seat.guest)
-		.map(({ id, name, taken }) => ({ id, name, taken }));
+		.map(({ id, name, taken }) => ({ id, name, taken, here: online.includes(id) }));
 }
 
 /**
@@ -90,12 +100,23 @@ const seated = and(
  * someone in it, to get back into from another browser. Returns what the
  * browser is to hold, to hear the answer by: only a hash of it is kept.
  * Asking again for the same seat takes the place of the earlier asking.
+ * A seat whose player is at the table, among `online`, is not asked for.
  */
-export function knock(db: Db, campaignId: string, userId: unknown): string {
+export function knock(db: Db, campaignId: string, userId: unknown, online: string[] = []): string {
 	return db.transaction(
 		(tx) => {
-			if (typeof userId !== 'string' || !seatsOf(tx, campaignId).some((seat) => seat.id === userId)) {
+			const seat =
+				typeof userId === 'string'
+					? seatsOf(tx, campaignId, online).find((each) => each.id === userId)
+					: undefined;
+			if (!seat || typeof userId !== 'string') {
 				throw new ActionError('not_found', 'That seat is not at this table.');
+			}
+			if (seat.here) {
+				throw new ActionError(
+					'conflict',
+					`${seat.name} is at the table right now. Nobody else can sit in their seat.`
+				);
 			}
 			const now = Date.now();
 			// What nobody is waiting on any more is swept out as new ones come in.
@@ -149,13 +170,32 @@ export function knocksOf(db: Db, campaignId: string): Knock[] {
 		.all();
 }
 
-/** The GM lets someone into the seat they asked for, or doesn't. */
-export function answerKnock(db: Db, actor: Actor, id: unknown, grant: unknown): void {
+/**
+ * The GM lets someone into the seat they asked for, or doesn't. Nobody is
+ * let into a seat whose player has come to the table since it was asked
+ * for, among `online`: the asking stays, for the GM to turn away.
+ */
+export function answerKnock(
+	db: Db,
+	actor: Actor,
+	id: unknown,
+	grant: unknown,
+	online: string[] = []
+): void {
 	if (!canEditWorld(actor.role)) {
 		throw new ActionError('forbidden', 'Only the GM lets someone into a seat.');
 	}
 	if (typeof id !== 'string' || typeof grant !== 'boolean') {
 		throw new ActionError('invalid', 'Malformed request.');
+	}
+	if (grant) {
+		const asked = knocksOf(db, actor.campaignId).find((each) => each.id === id);
+		if (asked && online.includes(asked.userId)) {
+			throw new ActionError(
+				'conflict',
+				`${asked.name} is at the table right now. Nobody else can sit in their seat.`
+			);
+		}
 	}
 	const answered = db
 		.update(seatClaims)
@@ -192,6 +232,9 @@ export interface SeatAnswer {
  * whose seat it is. The asking is used up by being read, so it lets one
  * browser in, once. With `peek` it is only looked at, and stays to be
  * read. A seat the GM took away meanwhile is `gone`.
+ *
+ * A seat holds one browser: the reading that seats this one logs out
+ * whichever sat there before. Whoever calls this logs the new one in.
  */
 export function seatAnswer(
 	db: Db,
@@ -226,6 +269,9 @@ export function seatAnswer(
 			tx.delete(seatClaims).where(eq(seatClaims.id, claim.id)).run();
 			if (claim.status === 'refused') return { status: 'refused', name, taken };
 			const user: User = { id: claim.userId, name, isGuest: claim.passwordHash === null };
+			// Only a seat with no account behind it can be asked for, so these
+			// are logins the GM gave, and no password's.
+			if (user.isGuest) tx.delete(sessions).where(eq(sessions.userId, user.id)).run();
 			return { status: 'granted', name, taken, user };
 		},
 		{ behavior: 'immediate' }

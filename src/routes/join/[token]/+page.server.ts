@@ -1,5 +1,5 @@
 import { error, fail, redirect, type RequestEvent } from '@sveltejs/kit';
-import { knocked } from '#lib/server/bridge.ts';
+import { knocked, onlineAt } from '#lib/server/bridge.ts';
 import { findCampaignByInvite, getMembership } from '#lib/server/campaigns.ts';
 import { getDb } from '#lib/server/db.ts';
 import {
@@ -20,7 +20,7 @@ function campaignOf(event: RequestEvent) {
 	return campaign;
 }
 
-export const load: PageServerLoad = (event) => {
+export const load: PageServerLoad = async (event) => {
 	const db = getDb();
 	const campaign = campaignOf(event);
 	const { user } = event.locals;
@@ -41,8 +41,9 @@ export const load: PageServerLoad = (event) => {
 		// one makes this browser the player they pick.
 		user,
 		// The seats the GM made, to pick one's own name among. One with
-		// someone in it is theirs to ask back, from another browser.
-		seats: seatsOf(db, campaign.id),
+		// someone in it is theirs to ask back, from another browser: but not
+		// while its player is at the table.
+		seats: seatsOf(db, campaign.id, await onlineAt(campaign.id)),
 		waiting: waiting ? { name: asked.name ?? '', taken: asked.taken ?? false } : null
 	};
 };
@@ -58,9 +59,10 @@ export const actions: Actions = {
 		const { user } = event.locals;
 		if (user && getMembership(db, campaign.id, user.id)) redirect(303, `/c/${campaign.id}`);
 		const seat = (await event.request.formData()).get('seat');
+		const online = await onlineAt(campaign.id);
 		try {
 			forgetKnock(db, event.cookies.get(SEAT_COOKIE));
-			event.cookies.set(SEAT_COOKIE, knock(db, campaign.id, seat), {
+			event.cookies.set(SEAT_COOKIE, knock(db, campaign.id, seat, online), {
 				...cookieOptions(event),
 				maxAge: KNOCK_LASTS / 1000
 			});

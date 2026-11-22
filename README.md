@@ -128,6 +128,10 @@ and that `uploads/` folder the same way. `AUTO_BACKUP=off` skips it.
   the same way, told that it is a seat asked back, and **Let them in** logs that browser
   in as the player they were: with their notes, their tokens and every secret they were
   let in on.
+- **One browser to a seat.** While a player is at the table, their name on the invite
+  link is marked **at the table** and can't be picked, and nobody is let into their
+  seat. A browser let into a seat takes it over: the one that sat there before is
+  logged out. So a player who changes device asks for their seat again each time.
 - **The seats are yours to look after.** **Seats**, in the menu at the left end of the bar
   over the map, or `Shift+P`, lists every player of the campaign. A seat is a name and
   nothing else: no login, no password. Make one for each player ahead of the session,
@@ -820,6 +824,13 @@ scripts/            run both servers, seed a demo, back up, end-to-end check
   on the row. The browser that asked looks for it every two seconds, and it is a yes
   read there that logs it in as the player. That uses the row up: `seats.ts`. Nothing
   about it is an event, and there is no undo.
+- **The app asks who is at the table.** Who is connected is known to the WebSocket
+  server alone, and it is the one thing the app asks it: `/online`, behind the same
+  secret as `/publish`, read by `onlineAt` in `bridge.ts`. A seat whose player is
+  among them is not offered, not asked for and not given: `knock` and `answerKnock`
+  in `seats.ts` are handed the answer. If the WebSocket server can't be reached,
+  nobody is at the table through it, and the answer is nobody. The yes that seats a
+  browser deletes the seat's other logins, and has any socket still on one shown out.
 - **A seat is free while no browser is logged in as its player.** That is read off the
   `sessions` table, never stored: `freeSeats` in `seats.ts`. The invite dialog counts
   the free seats each time it opens, and a table display asked for the invite is handed
@@ -1071,9 +1082,12 @@ Type-checks everything.
   most eight people wait at once, and one per seat: a second asking for the same name
   takes the place of the first.
 - A player is a browser cookie. A browser that has lost it gets the seat back by asking
-  for it on the invite link. A browser holds one login: someone who plays in two
-  campaigns from the same browser asks for their seat again each time they change
-  tables.
+  for it on the invite link. A browser holds one login, and a seat one browser: someone
+  who plays in two campaigns from the same browser, or in one campaign from two
+  devices, asks for their seat again each time they change.
+- A player counts as at the table while a map is open in their browser and connected.
+  A phone that has gone to sleep is not, and its seat can be asked for: it is still the
+  GM who says yes.
 - A seat counts as taken for as long as a browser is logged in as its player, which is
   up to 180 days after they last sat down, whether or not they are at the table. With
   every seat taken **Invite** has nothing to share. Someone coming back uses the link

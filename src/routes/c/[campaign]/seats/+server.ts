@@ -7,7 +7,7 @@
 // is no undo.
 
 import { type RequestHandler } from '@sveltejs/kit';
-import { knocked } from '#lib/server/bridge.ts';
+import { knocked, onlineAt } from '#lib/server/bridge.ts';
 import { getDb } from '#lib/server/db.ts';
 import { answerKnock, createSeat, rosterOf } from '#lib/server/seats.ts';
 import { requireMemberApi } from '#lib/server/session.ts';
@@ -55,8 +55,10 @@ export const POST: RequestHandler = async (event) => {
 		}
 	}
 
+	// Nobody is let into a seat whose player is at the table.
+	const online = body?.grant === true ? await onlineAt(actor.campaignId) : [];
 	try {
-		answerKnock(getDb(), actor, body?.id, body?.grant);
+		answerKnock(getDb(), actor, body?.id, body?.grant, online);
 		return Response.json({ ok: true } satisfies SeatResponse);
 	} catch (err) {
 		return refusal(err);
