@@ -37,7 +37,6 @@ import {
 	latestSeq,
 	mapColumns,
 	markerColumns,
-	readParty,
 	regionColumns,
 	targetMap,
 	tokenColumns
@@ -255,29 +254,6 @@ export function findable(db: Db, campaignId: string, who: Who): FindEntry[] {
 }
 
 /**
- * Who can open a map of this campaign besides the GM: everyone at the table,
- * or when a region on the way there keeps the table out, the players who
- * are let in all the same, by user id. Null if there is no such map.
- */
-export function audienceOf(
-	db: Db,
-	campaignId: string,
-	mapId: string
-): { table: boolean; only: string[] } | null {
-	const map = db
-		.select({ id: maps.id })
-		.from(maps)
-		.where(and(eq(maps.id, mapId), eq(maps.campaignId, campaignId)))
-		.get();
-	if (!map) return null;
-	if (!isConcealed(db, mapId)) return { table: true, only: [] };
-	const only = playersOf(db, campaignId)
-		.filter((player) => !isConcealed(db, mapId, { role: 'player', userId: player.id }))
-		.map((player) => player.id);
-	return { table: false, only };
-}
-
-/**
  * What a map shows while it has no image of its own: the part of the image
  * of a map further out that lies under the way here. Null when no map on
  * the way has an image, and for a battle map, which is a table of its own:
@@ -348,9 +324,6 @@ export function getMapSnapshot(
 			.orderBy(drawings.createdAt)
 			.all();
 
-		// The party never stands where players are kept out. The check is
-		// the net under that rule.
-		const party = readParty(tx, campaignId);
 		const tokenList = tokensOn(tx, map, who);
 
 		return {
@@ -361,7 +334,6 @@ export function getMapSnapshot(
 			markers: markerList,
 			tokens: tokenList,
 			drawings: drawingList,
-			party: party && !isConcealed(tx, party.mapId, who) ? party : null,
 			miles: milesOf(tx, map),
 			dayMiles: dayMilesOf(tx, map),
 			lastSeq: latestSeq(tx, campaignId)

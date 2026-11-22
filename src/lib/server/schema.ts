@@ -67,6 +67,11 @@ export const campaigns = sqliteTable('campaigns', {
 	shownFile: text('shown_file'),
 	/** The players that picture is held up for, by user id. Empty for the whole table. */
 	shownTo: text('shown_to', { mode: 'json' }).$type<string[]>().notNull().default([]),
+	/**
+	 * The date it is in the world, in the GM's own words: its calendar is
+	 * the setting's and not ours, so nothing here reads it. Empty for none.
+	 */
+	date: text('date').notNull().default(''),
 	createdAt: integer('created_at').notNull()
 });
 
@@ -102,7 +107,7 @@ export const maps = sqliteTable(
 		grid: text('grid', { mode: 'json' }).$type<Grid>().notNull().default(DEFAULT_GRID),
 		/** How many feet one cell of the grid stands for. */
 		cellFeet: real('cell_feet').notNull().default(DEFAULT_CELL_FEET),
-		/** The fog of war: whether it is on, and where it has been cleared. On a world map the party clears it. */
+		/** The fog of war: whether it is on, and where it has been cleared. */
 		fog: text('fog', { mode: 'json' }).$type<Fog>().notNull().default(NO_FOG),
 		/** Whose turn it is on a battle map, and who comes after. */
 		turns: text('turns', { mode: 'json' }).$type<Turns>().notNull().default(NO_TURNS),
@@ -186,20 +191,6 @@ export const tokenGroups = sqliteTable(
 	},
 	(t) => [index('token_groups_campaign').on(t.campaignId)]
 );
-
-// Where each campaign's party is: one row at most, on one of its world
-// maps. It goes with that map when the region leading there is deleted.
-export const parties = sqliteTable('parties', {
-	campaignId: text('campaign_id')
-		.primaryKey()
-		.references(() => campaigns.id, { onDelete: 'cascade' }),
-	mapId: text('map_id')
-		.notNull()
-		.references(() => maps.id, { onDelete: 'cascade' }),
-	x: real('x').notNull(),
-	y: real('y').notNull(),
-	updatedAt: integer('updated_at').notNull()
-});
 
 export const markers = sqliteTable(
 	'markers',

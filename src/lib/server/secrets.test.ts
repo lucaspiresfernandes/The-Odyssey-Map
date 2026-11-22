@@ -1,17 +1,18 @@
 // What is kept from some players and not from others: regions that are
 // closed, things hidden from the table and shown to a few, a picture held
-// up for a few, and the fog of a world map, which the party lifts.
+// up for a few, and the fog of a world map.
 
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { createGuest, registerUser } from './auth';
 import { actorFor, createCampaign, getMembership, joinCampaign } from './campaigns';
 import { openDb, type Db } from './db';
 import { addToGallery, canLoadImage, newImageFile, showToTable, shownTo } from './gallery';
-import { audienceOf, findable, getMapSnapshot, playersOf } from './queries';
+import { findable, getMapSnapshot, playersOf } from './queries';
 import { toLiveEvent } from './visibility';
-import { ActionError, perform, undoable, viewerOf, type Actor } from './world';
+import { ActionError, perform, performReceived, viewerOf, type Actor } from './world';
 import { isFogged } from '../shared/fog';
-import type { Marker, Patch, Point, Region, StoredEvent, Token, Viewer } from '../shared/types';
+import type { Marker, Patch, Point, Rect, Region, StoredEvent, Token, Viewer } from '../shared/types';
+import type { CommandOf } from '../shared/types';
 
 let db: Db;
 let gm: Actor;
@@ -58,7 +59,7 @@ function refusal(fn: () => unknown): string {
 	return 'allowed';
 }
 
-function draw(name: string, on = mapId, extra: Record<string, unknown> = {}): Region {
+function draw(name: string, on = mapId, extra: Partial<CommandOf<'region.create'>> = {}): Region {
 	const events = perform(db, gm, { t: 'region.create', mapId: on, name, points: SQUARE, ...extra });
 	return events[1].after as Region;
 }
@@ -120,18 +121,10 @@ describe('a closed region', () => {
 		expect(sent(renamed, 'player')).toMatchObject({ t: 'region.upsert', region: { name: 'The Old Tomb' } });
 		expect(sent(renamed, gm)).toMatchObject({ t: 'map.upsert' });
 	});
-
-	test('the party is never in one', () => {
-		const tomb = draw('The Tomb', mapId, { closed: true });
-		expect(refusal(() => perform(db, gm, { t: 'party.move', mapId: tomb.targetMapId, x: 0.5, y: 0.5 }))).toBe('conflict');
-		perform(db, gm, { t: 'region.update', id: tomb.id, closed: false });
-		perform(db, gm, { t: 'party.move', mapId: tomb.targetMapId, x: 0.5, y: 0.5 });
-		expect(refusal(() => perform(db, gm, { t: 'region.update', id: tomb.id, closed: true }))).toBe('conflict');
-	});
 });
 
 describe('a secret with some of the players', () => {
-	const marker = (extra: Record<string, unknown> = {}) =>
+	const marker = (extra: Partial<CommandOf<'marker.create'>> = {}) =>
 		perform(db, gm, { t: 'marker.create', mapId, kind: 'world', title: 'The cache', x: 0.5, y: 0.5, ...extra })[0];
 
 	test('the players of a campaign are the ones who joined, not the GM', () => {
@@ -211,11 +204,6 @@ describe('a secret with some of the players', () => {
 		expect(sent(noted, mira)).toMatchObject({ t: 'marker.upsert' });
 		expect(sent(noted, odo)).toBeNull();
 		expect(sent(noted, 'player')).toBeNull();
-
-		// The GM can bring her along there, and not the table.
-		expect(audienceOf(db, gm.campaignId, inner.targetMapId)).toEqual({ table: false, only: [mira.userId] });
-		// But the party stands where everyone can.
-		expect(refusal(() => perform(db, gm, { t: 'party.move', mapId: vault.targetMapId, x: 0.5, y: 0.5 }))).toBe('conflict');
 	});
 
 	test('a hidden token is seen, and moved, by the players it is shared with', () => {
@@ -271,19 +259,20 @@ describe('a picture held up for some of the players', () => {
 
 describe('the fog of a world map', () => {
 	const fog = (id = mapId) => sees(id, gm)!.map.fog;
-	const cover = (id = mapId) => perform(db, gm, { t: 'map.update', id, fog: { on: true, clear: [], spots: [] } });
+	const cover = (clear: Rect[] = [], id = mapId) =>
+		perform(db, gm, { t: 'map.update', id, fog: { on: true, clear } });
+	/** The corner of the map that the first region is drawn in. */
+	const NEAR: Rect = [0, 0, 0.5, 0.5];
 
-	test('each map has its own, and it hides what the party has not been near', () => {
+	test('each map has its own, and it hides what the GM has not cleared', () => {
 		const port = draw('Port Varr');
 		draw('The Far Keep', mapId, { points: FAR });
 		perform(db, gm, { t: 'marker.create', mapId, kind: 'world', title: 'Near', x: 0.3, y: 0.3 });
 		perform(db, gm, { t: 'marker.create', mapId, kind: 'world', title: 'Far', x: 0.8, y: 0.2 });
 		perform(db, mira, { t: 'marker.create', mapId, kind: 'player', title: 'Our note', x: 0.8, y: 0.25 });
-		perform(db, gm, { t: 'party.move', mapId, x: 0.28, y: 0.28 });
 
-		const [covered] = cover();
-		// The party sees around itself from the moment the fog comes down.
-		expect(fog().spots).toHaveLength(1);
+		const [covered] = cover([NEAR]);
+		expect(fog()).toEqual({ on: true, clear: [NEAR] });
 		expect(isFogged(fog(), [0.28, 0.28])).toBe(false);
 		expect(isFogged(fog(), [0.8, 0.8])).toBe(true);
 
@@ -308,58 +297,39 @@ describe('the fog of a world map', () => {
 		expect(fog(port.targetMapId).on).toBe(false);
 	});
 
-	test('it lifts where the party goes, and undoing the move brings it back', () => {
+	test('clearing a part opens the region there, and undo shuts it again', () => {
 		const keep = draw('The Far Keep', mapId, { points: FAR });
-		perform(db, gm, { t: 'party.move', mapId, x: 0.2, y: 0.2 });
 		cover();
+		expect(sees(mapId)!.regions).toHaveLength(0);
 		expect(sees(keep.targetMapId)).toBeNull();
 
-		const moved = perform(db, gm, { t: 'party.move', mapId, x: 0.8, y: 0.8 });
-		expect(moved.map((e) => e.entity)).toEqual(['party', 'map']);
-		expect(fog().spots).toHaveLength(2);
+		const [cleared] = perform(db, gm, { t: 'map.update', id: mapId, fog: { clear: [[0.6, 0.6, 1, 1]] } });
 		expect(sees(mapId)!.regions.map((r) => r.name)).toEqual(['The Far Keep']);
 		expect(sees(keep.targetMapId)).not.toBeNull();
-		// Standing where it stood before clears nothing new.
-		expect(perform(db, gm, { t: 'party.move', mapId, x: 0.8, y: 0.801 }).map((e) => e.entity)).toEqual(['party']);
 
-		// One step back: the newest change first, as the browser asks for them.
-		for (const seq of undoable(moved).reverse()) perform(db, gm, { t: 'history.revert', seq });
-		expect(fog().spots).toHaveLength(1);
+		perform(db, gm, { t: 'history.revert', seq: cleared.seq });
+		expect(fog()).toEqual({ on: true, clear: [] });
 		expect(sees(mapId)!.regions).toHaveLength(0);
-	});
-
-	test('dragged across the map, the party uncovers the way it went: planted, only where it lands', () => {
-		perform(db, gm, { t: 'party.move', mapId, x: 0.1, y: 0.5 });
-		cover();
-		perform(db, gm, { t: 'party.move', mapId, x: 0.9, y: 0.5, along: true });
-		expect(isFogged(fog(), [0.5, 0.5])).toBe(false);
-		expect(isFogged(fog(), [0.5, 0.9])).toBe(true);
-		// Put down somewhere else with the tool, it has not been in between.
-		perform(db, gm, { t: 'party.move', mapId, x: 0.9, y: 0.05 });
-		perform(db, gm, { t: 'party.move', mapId, x: 0.1, y: 0.05 });
-		expect(isFogged(fog(), [0.5, 0.05])).toBe(true);
-		expect(isFogged(fog(), [0.1, 0.05])).toBe(false);
-	});
-
-	test('the party is let through it: going into a region clears the way there', () => {
-		const keep = draw('The Far Keep', mapId, { points: FAR });
-		cover();
-		expect(fog().spots).toBeUndefined();
 		expect(sees(keep.targetMapId)).toBeNull();
-		perform(db, gm, { t: 'party.move', mapId: keep.targetMapId, x: 0.5, y: 0.5 });
-		// On the map outside, the fog lifts around the region the party is in.
-		expect(isFogged(fog(), [0.8, 0.8])).toBe(false);
-		expect(sees(keep.targetMapId)!.party?.mapId).toBe(keep.targetMapId);
+	});
+
+	test('the round patches a party marker once cleared are no part of it', () => {
+		cover();
+		// They are not the marks a brush leaves, and are not kept.
+		const patched = { clear: [], spots: [[0.5, 0.5, 0.1, 0.1]] };
+		expect(perform(db, gm, { t: 'map.update', id: mapId, fog: patched })).toHaveLength(0);
+		expect(fog()).toEqual({ on: true, clear: [] });
+		expect(isFogged(fog(), [0.5, 0.5])).toBe(true);
+		// Nor is there a party to move through it.
+		expect(refusal(() => performReceived(db, gm, { t: 'party.move', mapId, x: 0.5, y: 0.5 }))).toBe('invalid');
 	});
 
 	test('lifting it is one change, and takes back with undo', () => {
-		perform(db, gm, { t: 'party.move', mapId, x: 0.2, y: 0.2 });
-		cover();
-		const [lifted] = perform(db, gm, { t: 'map.update', id: mapId, fog: { on: false, clear: [], spots: [] } });
+		cover([NEAR]);
+		const [lifted] = perform(db, gm, { t: 'map.update', id: mapId, fog: { on: false, clear: [] } });
 		expect(fog()).toEqual({ on: false, clear: [] });
 		perform(db, gm, { t: 'history.revert', seq: lifted.seq });
-		expect(fog().on).toBe(true);
-		expect(fog().spots).toHaveLength(1);
+		expect(fog()).toEqual({ on: true, clear: [NEAR] });
 		expect(refusal(() => perform(db, mira, { t: 'map.update', id: mapId, fog: { on: false } }))).toBe('forbidden');
 	});
 });

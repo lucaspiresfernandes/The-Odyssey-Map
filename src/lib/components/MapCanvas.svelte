@@ -15,8 +15,10 @@
 	// spots they point out with a ping, and where they point for as long as
 	// they hold the button down with the pointing tool.
 
-	import { untrack } from 'svelte';
+	import { untrack, type Snippet } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
+	import { devicePixelRatio } from 'svelte/reactivity/window';
+	import { KEY, ariaKey, chord, isTyping, keyLabel, usesArrows } from '#lib/client/keys.ts';
 	import { frameOf } from '#lib/shared/backdrop.ts';
 	import {
 		boxOf,
@@ -29,7 +31,15 @@
 		thinOut,
 		touchesBox
 	} from '#lib/shared/drawing.ts';
-	import { cellBox, cleared, covered, fogPath } from '#lib/shared/fog.ts';
+	import {
+		boxed,
+		brushMarks,
+		brushReach,
+		brushSize,
+		marked,
+		stampPath,
+		sweepPath
+	} from '#lib/shared/fog.ts';
 	import {
 		cellsToFeet,
 		feetAlong,
@@ -45,13 +55,15 @@
 	} from '#lib/shared/grid.ts';
 	import {
 		canChangeDrawing,
+		canEditMarkerKind,
 		canEditWorld,
-		canMoveParty,
-		canMoveToken
+		canMoveToken,
+		canRemoveMarker
 	} from '#lib/shared/rules.ts';
 	import { tileLevelFor, tileLevels, tilesIn, type Tile } from '#lib/shared/tiles.ts';
 	import {
 		DRAWING_SIZE,
+		FOG_BRUSH,
 		LIMITS,
 		ROTATION_STEP,
 		MARK_LOOKS,
@@ -62,20 +74,20 @@
 		type Backdrop,
 		type Command,
 		type Drawing,
+		type Fog,
+		type FogMark,
 		type Grid,
 		type Hand,
 		type HandSpot,
 		type MapInfo,
 		type MarkLook,
 		type Marker,
-		type Party,
 		type Ping,
 		type Player,
 		type Point,
 		type Rect,
 		type Region,
 		type Role,
-		type Sight,
 		type TemplateKind,
 		type Token,
 		type TokenInput
@@ -99,8 +111,6 @@
 		tokens: Token[];
 		/** What has been drawn and written on a battle map. */
 		drawings: Drawing[];
-		/** Where the party is, on this map or on another. */
-		party: Party | null;
 		/** How many miles across a world map is, or null when nothing says. */
 		miles: number | null;
 		/** How many miles a day's travel covers on a world map: what the ruler tells time by. */
@@ -128,13 +138,17 @@
 		/**
 		 * `pan` is the hand: it moves the map, and on a battle map selects and
 		 * drags what is on it. `place` waits for a click that positions a
-		 * marker, `draw` outlines a region. The rest are a battle map's:
-		 * `select` drags a box around several things, `sketch` draws a line
-		 * freehand, `text` waits for a click to start writing at, `template`
-		 * drags out the area of a spell. `reveal` and `cover` are the GM's:
-		 * each drags a box that the fog of war is cleared from, or put back
-		 * over. So is `align`, which drags a box over the squares of the map's
-		 * own picture to line the grid up by. `measure` drags a ruler across
+		 * marker, `draw` outlines a region. `select` drags a box around
+		 * several things, to select them together: the tokens and drawings of
+		 * a battle map, the markers of a world map. Whatever is in hand, the
+		 * middle button of a mouse moves the map. A battle map has `sketch`,
+		 * which draws a line
+		 * freehand, `text`, which waits for a click to start writing at,
+		 * `template`, which drags out the area of a spell, and for the GM
+		 * `align`, which drags a box over the squares of the map's own picture
+		 * to line the grid up by. `reveal` and `cover` are the GM's on either
+		 * kind of map: one clears the fog of war from where it is used, the
+		 * other puts it back. See `fogShape`. `measure` drags a ruler across
 		 * either kind of map. With `point` in hand, on either, the table is
 		 * shown where the pointer is for as long as its button is held down.
 		 */
@@ -151,6 +165,17 @@
 			| 'template'
 			| 'reveal'
 			| 'cover';
+			/**
+			 * What `reveal` and `cover` do it with: a brush swept over the map,
+			 * `round` or `square`.
+			 */
+			fogShape?: 'round' | 'square';
+			/**
+			 * How big that brush is: its radius, or half the side of a square one,
+			 * as a part of the map's longer side. The wheel changes it, with Shift
+			 * held.
+			 */
+			fogSize?: number;
 		/**
 		 * The colour `sketch` draws in, `text` writes in and a template is laid
 		 * down in. To the table those three are one tool, the pen: the page
@@ -163,12 +188,14 @@
 		depth: number;
 		selectedMarkerId: string | null;
 		selectedRegionId: string | null;
-		/** The tokens and drawings selected on a battle map, by id. */
-		selectedIds: string[];
-		/** The GM has clicked the party's banner: the button that removes it is out. */
-		selectedParty: boolean;
 		/**
-		 * Carries out what was done to tokens and drawings. Resolves once the
+		 * The tokens and drawings selected on a battle map, by id. On a world
+		 * map, the markers selected together.
+		 */
+		selectedIds: string[];
+		/**
+		 * Carries out what was done to tokens, drawings, or several markers
+		 * at once. Resolves once the
 		 * server has done it, or refused. `note` is said when it has, with a
 		 * way to undo.
 		 */
@@ -181,18 +208,17 @@
 		ondrawn: (points: Point[]) => void;
 		onenter: (region: Region) => void;
 		onreshape: (region: Region, points: Point[]) => Promise<boolean>;
-		/** The party was dragged to another spot of this map. Resolves once it stands there, or was refused. */
-		onparty: (x: number, y: number) => Promise<boolean>;
-		/** The party is to be taken off the maps. */
-		onpartyremove: () => void;
+		/**
+		 * The buttons for the region that is selected, which the map floats over
+		 * it. `tip` is the side their tooltips come out on: away from the region.
+		 */
+		regionBar?: Snippet<[region: Region, tip: 'top' | 'bottom']>;
 		onedit: (marker: Marker) => void;
 		onmove: (marker: Marker) => void;
 		ondelete: (marker: Marker) => void;
 		onhide: (marker: Marker, hidden: boolean) => void;
-		/** The GM chose which players see a hidden marker. */
-		onshare: (marker: Marker, seenBy: string[]) => void;
-		/** The GM holds the picture of a marker up for the whole table. */
-		onshowmarker?: (marker: Marker) => void;
+		/** The GM is to say who sees these world markers. */
+		onmarkervisibility?: (markers: Marker[]) => void;
 		/**
 		 * The markers and regions that are new to whoever is looking, by id:
 		 * revealed, or out of the fog, since they last looked. Each glints until
@@ -205,6 +231,8 @@
 		onalign: (box: Rect) => void;
 		/** The rest of what a token is, is to be changed: its picture, its colour, its outline. */
 		onedittoken: (token: Token) => void;
+		/** The GM is to say who sees these tokens. */
+		ontokenvisibility?: (tokens: Token[]) => void;
 		/** The GM saves these tokens as a group, under this name. True once it is kept. */
 		onsavegroup?: (name: string, tokens: Token[]) => Promise<boolean>;
 		/** What this browser has in hand on the map, or null when it holds nothing. */
@@ -220,7 +248,6 @@
 		markers,
 		tokens,
 		drawings,
-		party,
 		miles,
 		dayMiles,
 		hands,
@@ -232,13 +259,14 @@
 		aligned = null,
 		passive = false,
 		tool,
+		fogShape = 'round',
+		fogSize = $bindable(FOG_BRUSH.start),
 		ink,
 		shape,
 		depth,
 		selectedMarkerId = $bindable(),
 		selectedRegionId = $bindable(),
 		selectedIds = $bindable(),
-		selectedParty = $bindable(false),
 		send,
 		ondone,
 		onplace,
@@ -246,19 +274,18 @@
 		ondrawn,
 		onenter,
 		onreshape,
-		onparty,
-		onpartyremove,
+		regionBar,
 		onedit,
 		onmove,
 		ondelete,
 		onhide,
-		onshare,
-		onshowmarker,
+		onmarkervisibility = () => {},
 		fresh = [],
 		onseen,
 		onsavegroup = async () => false,
 		onalign,
 		onedittoken,
+		ontokenvisibility = () => {},
 		onhand,
 		onping
 	}: Props = $props();
@@ -279,6 +306,8 @@
 	let view = $state.raw<View>({ x: 0, y: 0, k: 1 });
 	let ready = $state(false);
 	let dragging = $state(false);
+	/** The middle button of a mouse is down: it moves the map, whatever tool is in hand. */
+	let handing = $state(false);
 	let hoveredMarkerId = $state<string | null>(null);
 	let hoveredRegionId = $state<string | null>(null);
 	let draft = $state<Point[]>([]);
@@ -289,10 +318,16 @@
 	let cardH = $state(0);
 	let barW = $state(0);
 	let barH = $state(0);
+	let regionBarW = $state(0);
+	let regionBarH = $state(0);
+	/** How tall each region's name stands on screen, by the region's id: a long one runs to more lines. */
+	const nameHeights = $state<Record<string, number>>({});
 	let bar = $state<ReturnType<typeof SelectionBar>>();
+	let card = $state<ReturnType<typeof MarkerCard>>();
 	/**
 	 * What this person has in hand: one token or drawing, or a whole
-	 * selection picked up by one of its own, the `lead`. `origins` is where
+	 * selection picked up by one of its own, the `lead`. On a world map it
+	 * is the markers selected together. `origins` is where
 	 * each of them was when it was picked up (a drawing by its first point).
 	 * `by` is how far the pointer has taken them, and `rest` how far they
 	 * will have gone once let go: the lead token comes down on the grid, and
@@ -366,11 +401,15 @@
 	let cast = $state.raw<{ kind: TemplateKind; points: [Point, Point]; color: string }[]>([]);
 	/** The box being dragged around things to select them: one corner, and the other. */
 	let marquee = $state.raw<[Point, Point] | null>(null);
+	/** Where the GM has swept the brush over the fog so far, with its button still down. */
+	let sweep = $state.raw<Point[] | null>(null);
 	/**
-	 * The box the GM is dragging over the fog, to clear it there or to put
-	 * it back: from, to, and whether Alt is keeping it off the grid.
+	 * The fog as the GM last left it, until the server has it so for
+	 * everyone: the next thing done to it is done to this.
 	 */
-	let veil = $state.raw<{ from: Point; to: Point; free: boolean } | null>(null);
+	let fogSent = $state.raw<Fog | null>(null);
+	/** What was done to the fog goes to the server one after the other: each is the whole of it. */
+	let fogQueue: Promise<unknown> = Promise.resolve();
 	/** The box the GM is dragging over the squares of the map's picture: one corner, and the other. */
 	let aligning = $state.raw<[Point, Point] | null>(null);
 	/**
@@ -378,11 +417,6 @@
 	 * as long as they hold it down with the pointing tool in hand.
 	 */
 	let pointing = $state.raw<Point | null>(null);
-	/**
-	 * Where the GM is dragging the party to. Once let go it waits here, no
-	 * longer `held`, until the server has moved it for everyone.
-	 */
-	let leading = $state.raw<{ at: Point; held: boolean } | null>(null);
 	/** A text being typed onto the map: a new one, or with an `id`, one being reworded. */
 	let writing = $state.raw<{ id: string | null; at: Point; color: string } | null>(null);
 	/** What has been typed of it so far. Kept apart, so the box has it to the last. */
@@ -451,7 +485,7 @@
 	// Markers take priority over the region beneath them: they sit above the
 	// regions and get the pointer first, so hovering one shows its card.
 	const active = $derived.by(() => {
-		if (tool !== 'pan') return null;
+		if (tool !== 'pan' || carry?.held) return null;
 		const id = hoveredMarkerId ?? selectedMarkerId;
 		return markers.find((m) => m.id === id) ?? null;
 	});
@@ -487,54 +521,6 @@
 		const timer = setTimeout(() => onseen?.(id), LOOKED_AT);
 		return () => clearTimeout(timer);
 	});
-
-	// ------------------------------------------------------------ the party
-
-	/** The GM moves the party by dragging it. */
-	const canLead = $derived(canMoveParty(role) && !passive);
-	/** Where the party stands on this map, if this is the map it is on. */
-	const partySpot = $derived.by((): Point | null => {
-		if (!party || party.mapId !== map.id) return null;
-		return leading?.at ?? [party.x, party.y];
-	});
-	/** The region of this map that the party is somewhere inside of, when it is further in. */
-	const partyRegionId = $derived(
-		party && party.mapId !== map.id
-			? (regions.find((region) => party.trail.includes(region.targetMapId))?.id ?? null)
-			: null
-	);
-
-	/** How tall the party's banner stands on screen, and how far right of its pole the middle of it is. */
-	const BANNER = { height: 46, middle: 12 };
-	/** The size of the button that floats over a selected banner, once it has been laid out. */
-	let partyBarW = $state(0);
-	let partyBarH = $state(0);
-	/** The banner is selected, and standing still to have a button over it. */
-	const partyPicked = $derived(selectedParty && canLead && tool === 'pan' && !leading);
-	/** Where that button goes: over the banner, or under its foot where the screen ends above. */
-	const partyBar = $derived.by(() => {
-		if (!partyPicked || !partySpot) return null;
-		const [x, y] = partySpot;
-		const middle = x + BANNER.middle / (W * view.k);
-		const spot = cardSpot([middle, y], BANNER.height + 8, 8, partyBarW, partyBarH);
-		return spot && { ...spot, under: spot.top > y * H * view.k + view.y };
-	});
-
-	// One thing is selected at a time, and only a banner that is there to click.
-	$effect(() => {
-		if (selectedMarkerId || selectedRegionId || !partySpot || !canLead || tool !== 'pan') {
-			selectedParty = false;
-		}
-	});
-
-	/** A click on the banner selects it, and another lets it go. */
-	function pickParty() {
-		const picked = !selectedParty;
-		selectedMarkerId = null;
-		selectedRegionId = null;
-		selectedIds = [];
-		selectedParty = picked;
-	}
 
 	// ---------------------------------------------------------- battle maps
 
@@ -704,21 +690,150 @@
 	const canGrabDrawing = (drawing: Drawing) => canChangeDrawing(role, userId, drawing);
 	const canGrab = (thing: Token | Drawing) =>
 		isToken(thing) ? canGrabToken(thing) : canGrabDrawing(thing);
+	const isMarker = (thing: Token | Drawing | Marker): thing is Marker => 'title' in thing;
+	/** A marker is moved by whoever may change it: the GM any of them, a player the table's notes. */
+	const canGrabMarker = (marker: Marker) => canEditMarkerKind(role, marker.kind);
 
 	/** The hand is out on a battle map: what is on it can be selected and dragged. */
 	const selecting = $derived(battle && tool === 'pan' && !passive);
+	/** The GM has the fog's brush in hand: it paints as it is swept, and its outline shows what it reaches. */
+	const brushing = $derived(tool === 'reveal' || tool === 'cover');
+	/** The marks the brush in hand leaves, swept through these spots. */
+	const sweptMarks = (cover: boolean, swept: Point[]) =>
+		brushMarks(cover, swept, { width: W, height: H }, fogSize, fogShape === 'square');
+	/** How far the brush reaches across the map and down it, in map space. */
+	const reach = $derived(brushReach({ width: W, height: H }, fogSize));
+	/** The fog as this person left it, the server's answer still to come or not. */
+	const fogNow = $derived(fogSent ?? map.fog);
+	/** The fog as it is drawn: with the sweep being made, as it will be once the brush is lifted. */
+	const fog = $derived(
+		sweep && brushing ? marked(fogNow, sweptMarks(tool === 'cover', sweep)) : fogNow
+	);
+	/** Where the outline of the brush is: under the pointer, kept on the map. */
+	const brushAt = $derived.by((): Point | null => {
+		if (!brushing) return null;
+		if (cursor) return clamped(cursor);
+		return sweep ? sweep[sweep.length - 1] : null;
+	});
+
 	/**
-	 * The box being dragged over the fog, as it will be cleared or covered:
-	 * whole cells on a battle map, unless Alt is held. A world map has no
-	 * cells, and the box is as it was dragged.
+	 * Makes these marks on the fog. It shows at once, and is the fog the next
+	 * marks are made on, whether or not the server has answered for these.
 	 */
-	const veilBox = $derived(veil && cellBox(map, veil.from, veil.to, veil.free || !battle));
+	function markFog(marks: FogMark[]) {
+		const next = marked(fogNow, marks);
+		// Fog that is off has nothing to clear, and comes back as it was.
+		if (next === fogNow) return;
+		fogSent = next;
+		// The marks are said even when there are none: left unsaid, the server keeps the ones it has.
+		const whole = { on: next.on, clear: next.clear, marks: next.marks ?? [] };
+		fogQueue = fogQueue
+			.then(() => send([{ t: 'map.update', id: map.id, fog: whole }]))
+			.then(() => {
+				if (fogSent === next) fogSent = null;
+			});
+	}
 	const selectedTokens = $derived(
 		selecting ? tokens.filter((t) => selectedIds.includes(t.id)) : []
 	);
 	const selectedDrawings = $derived(
 		selecting ? drawings.filter((d) => selectedIds.includes(d.id)) : []
 	);
+	/**
+	 * The markers of a world map selected together: a box was dragged around
+	 * them, or they were clicked with Shift held. Dragging one moves them
+	 * all, and their buttons float under them.
+	 */
+	const selectedMarkers = $derived(
+		!battle && !passive ? markers.filter((m) => selectedIds.includes(m.id)) : []
+	);
+	const pickedMarkerIds = $derived(new Set(selectedMarkers.map((m) => m.id)));
+
+	/** Where a marker is drawn: in this person's hand if it is in it, or where it stands. */
+	const markerSpot = (marker: Marker): Point => inHandAt(marker.id) ?? [marker.x, marker.y];
+
+	/**
+	 * Where the buttons for those markers float: under the lowest of them,
+	 * or over the top of them all when that is too low on the screen.
+	 */
+	const markerBarPosition = $derived.by(() => {
+		if (carry?.held || marquee || tool !== 'pan' || selectedMarkers.length === 0) return null;
+		const box = boxOf(selectedMarkers.map(markerSpot));
+		const sx = ((box.x0 + box.x1) / 2) * W * view.k + view.x;
+		const top = box.y0 * H * view.k + view.y - PIN_HEIGHT;
+		const bottom = box.y1 * H * view.k + view.y;
+		if (sx < -30 || sx > cw + 30 || bottom < -30 || top > ch + 30) return null;
+		const under = bottom + 8;
+		const fits = under + barH <= ch - 6;
+		return {
+			left: Math.min(Math.max(sx - barW / 2, 8), Math.max(8, cw - barW - 8)),
+			top: fits ? under : Math.max(6, top - 8 - barH),
+			under: fits
+		};
+	});
+
+	/**
+	 * Where the buttons for the selected region float: right over its name,
+	 * however big the region is. With no room up there they go under the
+	 * name, clear of the line that says how to get in. A name that is off
+	 * screen leaves them at the edge it went out by, for as long as some of
+	 * the region is in sight. They are out of the way while a corner is in hand.
+	 */
+	const regionBarPosition = $derived.by(() => {
+		if (!selectedRegion || tool !== 'pan' || reshape || selectedMarkers.length > 0) return null;
+		const box = boxOf(selectedRegion.points);
+		if (
+			box.x1 * W * view.k + view.x < 0 ||
+			box.x0 * W * view.k + view.x > cw ||
+			box.y1 * H * view.k + view.y < 0 ||
+			box.y0 * H * view.k + view.y > ch
+		) {
+			return null;
+		}
+		const [x, y] = labelSpot(selectedRegion.points);
+		const sx = x * W * view.k + view.x;
+		const sy = y * H * view.k + view.y;
+		// The name is lettered around its spot: half of it is above, half below.
+		const half = (nameHeights[selectedRegion.id] ?? 20) / 2;
+		const over = sy - half - 6 - regionBarH;
+		const above = over >= 6;
+		const top = Math.min(
+			Math.max(above ? over : sy + half + 24, 6),
+			Math.max(6, ch - regionBarH - 6)
+		);
+		// The tooltips come out away from the name, where the screen has room for them.
+		const tip = above ? top >= 64 : top + regionBarH + 64 > ch;
+		return {
+			left: Math.min(Math.max(sx - regionBarW / 2, 8), Math.max(8, cw - regionBarW - 8)),
+			top,
+			tip: tip ? ('top' as const) : ('bottom' as const)
+		};
+	});
+
+	/** The world markers among the ones selected together: what the GM hides, and says who sees. */
+	const selectedPins = $derived(selectedMarkers.filter((m) => m.kind === 'world'));
+
+	/** Hides the selected world markers from the players, or with all of them hidden, shows them again. */
+	function hideMarkers() {
+		const pins = selectedMarkers.filter((m) => m.kind === 'world');
+		const hidden = !pins.every((m) => m.hidden);
+		send(
+			pins
+				.filter((m) => m.hidden !== hidden)
+				.map((m) => ({ t: 'marker.update', id: m.id, changes: { hidden } }))
+		);
+	}
+
+	/** Takes the selected markers off the map: all of them the GM's to take, a player's own notes theirs. */
+	function removeMarkers() {
+		const gone = selectedMarkers.filter((m) => canRemoveMarker(role, userId, m));
+		if (!gone.length) return;
+		selectedIds = [];
+		send(
+			gone.map((m) => ({ t: 'marker.delete', id: m.id })),
+			gone.length === 1 ? `Deleted “${gone[0].title}”.` : `Deleted ${gone.length} markers.`
+		);
+	}
 
 	/**
 	 * The token that wears handles to turn and resize it by: the only one
@@ -930,7 +1045,7 @@
 		if (tool !== 'sketch') stroke = null;
 		if (tool !== 'select') marquee = null;
 		if (tool !== 'template') casting = null;
-		if (tool !== 'reveal' && tool !== 'cover') veil = null;
+		if (tool !== 'reveal' && tool !== 'cover') sweep = null;
 		if (tool !== 'align') aligning = null;
 		if (tool !== 'point') pointing = null;
 	});
@@ -1046,6 +1161,21 @@
 			const [x1, y1] = toMap(rect.right, rect.bottom);
 			if (x0 <= box.x1 && x1 >= box.x0 && y0 <= box.y1 && y1 >= box.y0) caught.push(drawing.id);
 		}
+		if (!battle) {
+			// A pin stands on its spot, and is as big on screen at any zoom: it is
+			// caught by the box around it.
+			const wide = 16 / (view.k * W);
+			const tall = PIN_HEIGHT / (view.k * H);
+			for (const marker of markers) {
+				if (!canGrabMarker(marker)) continue;
+				const apart =
+					marker.x - wide > box.x1 ||
+					marker.x + wide < box.x0 ||
+					marker.y - tall > box.y1 ||
+					marker.y < box.y0;
+				if (!apart) caught.push(marker.id);
+			}
+		}
 		selectedIds = add ? [...new Set([...selectedIds, ...caught])] : caught;
 		selectedMarkerId = null;
 		selectedRegionId = null;
@@ -1058,6 +1188,55 @@
 		if (await send(commands)) {
 			selectedIds = tokens.filter((t) => !had.has(t.id)).map((t) => t.id);
 		}
+	}
+
+	/**
+	 * Puts away whatever box is out beside what is selected: a label being
+	 * typed, the marks, the players of a secret. True if one was.
+	 */
+	export function shut(): boolean {
+		return !!bar?.shut();
+	}
+
+	/**
+	 * Selects everything there is to select: the tokens and drawings of a
+	 * battle map, the markers of a world map that are this person's to move.
+	 */
+	function selectAll() {
+		selectedIds = battle
+			? [...tokens.map((token) => token.id), ...drawings.map((drawing) => drawing.id)]
+			: markers.filter(canGrabMarker).map((marker) => marker.id);
+		selectedMarkerId = null;
+		selectedRegionId = null;
+	}
+
+	/** Which way each arrow key goes, in cells. */
+	const STEPS: Record<string, Point> = {
+		ArrowLeft: [-1, 0],
+		ArrowRight: [1, 0],
+		ArrowUp: [0, -1],
+		ArrowDown: [0, 1]
+	};
+
+	/**
+	 * Walks the tokens selected one cell that way, each coming down on the
+	 * grid. False when none of them is there to be moved. `held` says the key
+	 * is being held down: a press is one step.
+	 */
+	function walk([dx, dy]: Point, held: boolean): boolean {
+		const movers = selectedTokens.filter(canGrabToken);
+		if (movers.length === 0) return false;
+		if (held) return true;
+		const moves: Command[] = [];
+		for (const token of movers) {
+			const next: Point = [token.x + (dx * cell) / W, token.y + (dy * cell) / H];
+			// At the edge of the map they all stay put, so that a group keeps its shape.
+			if (!inside(next)) return true;
+			const [x, y] = snapToGrid(map, next, token.size);
+			moves.push({ t: 'token.update', id: token.id, changes: { x, y } });
+		}
+		send(moves);
+		return true;
 	}
 
 	/** Where on the map a spot of the screen is, or null when it is off the map. */
@@ -1208,33 +1387,12 @@
 		fit();
 	}
 
-	/** What of the map is on screen: the spot in the middle, and how much shows across and down. */
-	export function sight(): Sight {
-		return {
-			x: (cw / 2 - view.x) / (view.k * W),
-			y: (ch / 2 - view.y) / (view.k * H),
-			w: cw / (view.k * W),
-			h: ch / (view.k * H)
-		};
-	}
-
 	/** Brings a spot of the map to the middle of the screen, as close up as it is now. */
 	export function centreOn([x, y]: Point) {
 		if (cw === 0 || ch === 0) return;
 		fitting = false;
 		const k = view.k;
 		animateTo(bounded({ k, x: cw / 2 - x * W * k, y: ch / 2 - y * H * k }), 400);
-	}
-
-	/**
-	 * Brings the same part of the map on screen here: the same middle, and
-	 * zoomed so that all of what they saw fits, whatever shape this screen is.
-	 */
-	export function lookAt(seen: Sight) {
-		if (cw === 0 || ch === 0) return;
-		const k = within(Math.min(cw / (seen.w * W), ch / (seen.h * H)), minK, maxK);
-		fitting = false;
-		animateTo(bounded({ k, x: cw / 2 - seen.x * W * k, y: ch / 2 - seen.y * H * k }), 600);
 	}
 
 	function zoomBy(factor: number) {
@@ -1287,10 +1445,10 @@
 				casting = null;
 				cast = [];
 				marquee = null;
-				veil = null;
+				sweep = null;
+				fogSent = null;
 				aligning = null;
 				pointing = null;
-				leading = null;
 				writing = null;
 			}
 			shown = { key, id: map.id, depth };
@@ -1391,6 +1549,35 @@
 
 	$effect(() => () => clearTimeout(tileTimer));
 
+	// ----------------------------------------------------------- sharpening
+
+	// Zoomed in past its own pixels a picture is stretched, and the browser
+	// stretches it soft. An unsharp mask puts the edges back: the picture,
+	// plus its difference from a blurred copy of itself. See the filter in
+	// the markup.
+
+	/** How much of that difference is added at full zoom. 0 leaves the picture as it is. */
+	const SHARPEN = 0.9;
+	/** How far the blurred copy is blurred, in pixels of the picture. */
+	const SHARPEN_RADIUS = 0.7;
+	// Safari draws a filtered picture at its unzoomed size and stretches that,
+	// which is softer than no filter at all. Every browser on an iPhone or an
+	// iPad is Safari underneath.
+	const filtersStretch =
+		typeof navigator !== 'undefined' && /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+	/**
+	 * How much to sharpen at this zoom. Nothing until the picture is shown
+	 * larger than its own pixels, then more with the zoom, so it never pops.
+	 */
+	const sharpen = $derived.by(() => {
+		if (filtersStretch) return 0;
+		// Screen pixels to one pixel of the picture.
+		const stretch = view.k * blownUp * (devicePixelRatio.current ?? 1);
+		return SHARPEN * within(stretch - 1, 0, 1);
+	});
+	/** What each image of the picture wears while there is something to sharpen. */
+	const sharpening = $derived(sharpen > 0 ? 'url(#sharpen)' : undefined);
+
 	// ------------------------------------------------------------- gestures
 
 	type Gesture =
@@ -1403,6 +1590,8 @@
 				moved: boolean;
 				/** Held still long enough to ping: letting go is then not a tap. */
 				pinged?: boolean;
+				/** The middle button of a mouse began it: it only ever moves the map. */
+				hand?: boolean;
 				target: Element;
 		  }
 		| { type: 'pinch'; distance: number; k: number; wx: number; wy: number }
@@ -1419,7 +1608,7 @@
 		| {
 				type: 'grab';
 				/** The one under the pointer. A token snaps to the grid, and the rest follow it. */
-				lead: Token | Drawing;
+				lead: Token | Drawing | Marker;
 				/** Where everything that comes along was when it was picked up. */
 				origins: Record<string, Point>;
 				/** How far it can all go each way before something leaves the map. */
@@ -1453,14 +1642,12 @@
 		| { type: 'template' }
 		/** `add` keeps what was already selected. */
 		| { type: 'marquee'; add: boolean }
-		/** A box over the fog of war, to clear it there or to put it back. */
-		| { type: 'veil'; how: 'reveal' | 'cover' }
+		/** The brush, swept over the fog of war to clear it there or to put it back. */
+		| { type: 'sweep'; how: 'reveal' | 'cover' }
 		/** A box over the squares of the map's picture, to line the grid up by. */
 		| { type: 'align' }
 		/** The pointer held down with the pointing tool: the table is shown where it is. */
-		| { type: 'point'; sx: number; sy: number; at: number; moved: boolean }
-		/** The party, in the GM's hand. */
-		| { type: 'lead'; sx: number; sy: number; moved: boolean; target: Element };
+		| { type: 'point'; sx: number; sy: number; at: number; moved: boolean };
 
 	const pointers = new Map<number, { x: number; y: number }>();
 	let gesture: Gesture | null = null;
@@ -1648,11 +1835,29 @@
 	function onpointerdown(e: PointerEvent) {
 		trackHover(e);
 		if (e.pointerType === 'mouse') {
-			if (e.button !== 0) return;
+			if (e.button !== 0 && e.button !== 1) return;
 			pointers.clear();
 		}
 		stopAnimation();
 		pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+		// The middle button moves the map and does nothing else, whatever tool
+		// is in hand and whatever is under the pointer.
+		if (e.pointerType === 'mouse' && e.button === 1) {
+			e.preventDefault();
+			handing = true;
+			gesture = {
+				type: 'pan',
+				sx: e.clientX,
+				sy: e.clientY,
+				vx: view.x,
+				vy: view.y,
+				moved: false,
+				hand: true,
+				target: e.target as Element
+			};
+			return;
+		}
 
 		if (pointers.size === 2) {
 			// A second finger makes it a pinch, and drops whatever the first one held.
@@ -1663,10 +1868,9 @@
 			stroke = null;
 			casting = null;
 			marquee = null;
-			veil = null;
+			sweep = null;
 			aligning = null;
 			pointing = null;
-			if (leading?.held) leading = null;
 			const mid = midpoint();
 			gesture = {
 				type: 'pinch',
@@ -1773,9 +1977,9 @@
 		}
 
 		if (tool === 'reveal' || tool === 'cover') {
-			const at = toMap(e.clientX, e.clientY);
-			veil = { from: at, to: at, free: e.altKey };
-			gesture = { type: 'veil', how: tool };
+			// The brush paints from where it is put down: a press alone is a dab.
+			sweep = [clamped(toMap(e.clientX, e.clientY))];
+			gesture = { type: 'sweep', how: tool };
 			capture(e.pointerId);
 			return;
 		}
@@ -1797,12 +2001,6 @@
 			return;
 		}
 
-		// The party, under the GM's pointer: it is led to another spot of the map.
-		if (canLead && tool === 'pan' && target.closest('[data-party]')) {
-			gesture = { type: 'lead', sx: e.clientX, sy: e.clientY, moved: false, target };
-			return;
-		}
-
 		// A token or a drawing that is this person's to move is picked up.
 		// Anything else is part of the map: pressing it pans, clicking it
 		// selects it. With Shift held a click adds to the selection, so
@@ -1810,6 +2008,16 @@
 		const thing = selecting ? (tokenAt(target) ?? drawingAt(target)) : null;
 		if (thing && canGrab(thing) && !e.shiftKey) {
 			const grab = pickUp(thing, e, target);
+			gesture = grab;
+			awaitPing(e, grab);
+			return;
+		}
+
+		// On a world map, one of the markers selected together is picked up
+		// with the rest of them. Any other marker is part of the map.
+		const pin = tool === 'pan' && !e.shiftKey ? markerAt(target) : null;
+		if (pin && pickedMarkerIds.has(pin.id) && canGrabMarker(pin)) {
+			const grab = pickUpMarkers(pin, e, target);
 			gesture = grab;
 			awaitPing(e, grab);
 			return;
@@ -1863,11 +2071,42 @@
 		};
 	}
 
+	function markerAt(target: Element): Marker | null {
+		const id = target.closest<HTMLElement>('[data-marker-id]')?.dataset.markerId;
+		return markers.find((m) => m.id === id) ?? null;
+	}
+
+	/** Picks up the markers selected together, by one of them. */
+	function pickUpMarkers(
+		lead: Marker,
+		e: PointerEvent,
+		target: Element
+	): Extract<Gesture, { type: 'grab' }> {
+		const origins: Record<string, Point> = {};
+		for (const marker of selectedMarkers) {
+			if (canGrabMarker(marker)) origins[marker.id] = [marker.x, marker.y];
+		}
+		const box = boxOf(Object.values(origins));
+		return {
+			type: 'grab',
+			lead,
+			origins,
+			room: { x0: -box.x0, x1: 1 - box.x1, y0: -box.y0, y1: 1 - box.y1 },
+			sx: e.clientX,
+			sy: e.clientY,
+			moved: false,
+			target
+		};
+	}
+
 	/** What to ask of the server once something carried has been put down. */
 	function movesOf(origins: Record<string, Point>, [dx, dy]: Point): Command[] {
 		const commands: Command[] = [];
 		for (const [id, [x, y]] of Object.entries(origins)) {
-			if (tokens.some((t) => t.id === id)) {
+			if (markers.some((m) => m.id === id)) {
+				const changes = { x: within(x + dx, 0, 1), y: within(y + dy, 0, 1) };
+				commands.push({ t: 'marker.update', id, changes });
+			} else if (tokens.some((t) => t.id === id)) {
 				const changes = { x: within(x + dx, 0, 1), y: within(y + dy, 0, 1) };
 				commands.push({ t: 'token.update', id, changes });
 			} else {
@@ -1878,7 +2117,10 @@
 	}
 
 	function onpointermove(e: PointerEvent) {
-		if (tool === 'draw' && e.pointerType === 'mouse') cursor = toMap(e.clientX, e.clientY);
+		// The outline being drawn and the ring of the fog's brush follow the mouse.
+		if ((tool === 'draw' || brushing) && e.pointerType === 'mouse') {
+			cursor = toMap(e.clientX, e.clientY);
+		}
 		// The end of a ruler being laid follows the mouse between clicks.
 		if (routing && measure && e.pointerType === 'mouse' && !pointers.has(e.pointerId)) {
 			measure = [...measure.slice(0, -1), aim(e)];
@@ -1932,19 +2174,21 @@
 				let by = fit([(e.clientX - g.sx) / (view.k * W), (e.clientY - g.sy) / (view.k * H)]);
 				let rest = by;
 				// A token comes down on the grid, and takes the others the same
-				// way. With Alt held it stays exactly where it is put.
-				if (isToken(g.lead) && !e.altKey) {
-					const { x, y, size } = g.lead;
+				// way. With Alt held it stays exactly where it is put. A marker
+				// of a world map has no grid to come down on.
+				const lead = isMarker(g.lead) ? null : g.lead;
+				if (lead && isToken(lead) && !e.altKey) {
+					const { x, y, size } = lead;
 					const [rx, ry] = snapToGrid(map, [x + by[0], y + by[1]], size);
 					rest = fit([rx - x, ry - y]);
-				} else if (!isToken(g.lead) && isTemplate(g.lead.kind) && !e.altKey) {
+				} else if (lead && !isToken(lead) && isTemplate(lead.kind) && !e.altKey) {
 					// A shape keeps to the grid it was drawn on, and all the way
 					// there, so the cells it covers can be read while it moves. A
 					// box goes from corner to corner of the cells. A circle and a
 					// cone start from a corner, the middle of a cell or of a side.
-					const [x, y] = g.lead.points[0];
+					const [x, y] = lead.points[0];
 					const to: Point = [x + by[0], y + by[1]];
-					const [rx, ry] = g.lead.kind === 'rect' ? snapToGrid(map, to, 2) : snapToHalfCell(map, to);
+					const [rx, ry] = lead.kind === 'rect' ? snapToGrid(map, to, 2) : snapToHalfCell(map, to);
 					rest = by = fit([rx - x, ry - y]);
 				}
 				carry = {
@@ -1952,7 +2196,7 @@
 					origins: g.origins,
 					by,
 					rest,
-					measured: isToken(g.lead),
+					measured: !!lead && isToken(lead),
 					held: true
 				};
 			}
@@ -1996,8 +2240,11 @@
 			casting = { from: casting.from, to: toMap(e.clientX, e.clientY), free: e.altKey };
 		} else if (g?.type === 'marquee' && marquee) {
 			marquee = [marquee[0], toMap(e.clientX, e.clientY)];
-		} else if (g?.type === 'veil' && veil) {
-			veil = { from: veil.from, to: toMap(e.clientX, e.clientY), free: e.altKey };
+		} else if (g?.type === 'sweep' && sweep) {
+			// A new spot once the brush has gone a little of its own reach on.
+			const at = clamped(toMap(e.clientX, e.clientY));
+			const [lx, ly] = sweep[sweep.length - 1];
+			if (Math.hypot((at[0] - lx) / reach[0], (at[1] - ly) / reach[1]) >= 0.04) sweep = [...sweep, at];
 		} else if (g?.type === 'align' && aligning) {
 			aligning = [aligning[0], clamped(toMap(e.clientX, e.clientY))];
 		} else if (g?.type === 'point') {
@@ -2005,14 +2252,6 @@
 				g.moved = true;
 			}
 			pointing = clamped(toMap(e.clientX, e.clientY));
-		} else if (g?.type === 'lead') {
-			const far = Math.hypot(e.clientX - g.sx, e.clientY - g.sy);
-			if (!g.moved && far > (e.pointerType === 'mouse' ? 4 : 10)) {
-				g.moved = true;
-				dragging = true;
-				capture(e.pointerId);
-			}
-			if (g.moved) leading = { at: clamped(toMap(e.clientX, e.clientY)), held: true };
 		}
 	}
 
@@ -2039,7 +2278,8 @@
 
 		gesture = null;
 		dragging = false;
-		if (g?.type === 'pan' && !g.moved && !g.pinged && completed) tap(e, g.target);
+		handing = false;
+		if (g?.type === 'pan' && !g.moved && !g.pinged && !g.hand && completed) tap(e, g.target);
 		if (g?.type === 'measure') {
 			const now = performance.now();
 			const twice =
@@ -2076,14 +2316,10 @@
 			marquee = null;
 			if (box && completed) catchIn(box, g.add);
 		}
-		if (g?.type === 'veil') {
-			const box = veilBox;
-			veil = null;
-			if (box && completed) {
-				const fog = g.how === 'reveal' ? cleared(map.fog, box) : covered(map.fog, box);
-				// Fog that is off has nothing to clear, and comes back as it was.
-				if (fog !== map.fog) send([{ t: 'map.update', id: map.id, fog }]);
-			}
+		if (g?.type === 'sweep') {
+			const swept = sweep;
+			sweep = null;
+			if (swept && completed) markFog(sweptMarks(g.how === 'cover', swept));
 		}
 		if (g?.type === 'point') {
 			pointing = null;
@@ -2099,22 +2335,6 @@
 			const meant =
 				box && (box[2] - box[0]) * W * view.k >= 8 && (box[3] - box[1]) * H * view.k >= 8;
 			if (box && meant && completed) onalign(box);
-		}
-		if (g?.type === 'lead') {
-			const led = leading;
-			if (g.moved && led && completed) {
-				// Kept where it was let go until the server has moved it, so it
-				// never flickers back to where it stood.
-				const settled = { at: led.at, held: false };
-				leading = settled;
-				onparty(led.at[0], led.at[1]).then(() => {
-					if (leading === settled) leading = null;
-				});
-			} else {
-				leading = null;
-				// Not dragged anywhere: it was a click, which selects it.
-				if (!g.moved && completed) pickParty();
-			}
 		}
 		if (g?.type === 'grab') {
 			const held = carry;
@@ -2209,9 +2429,13 @@
 		}
 
 		if (tool === 'draw') {
-			if (draft.length >= 3 && (double || nearFirstCorner(e))) return finishDraft();
-			if (!double && inside(point)) draft.push(point);
-			lastTap = { at: now, x: e.clientX, y: e.clientY, regionId: null, thingId: null };
+			// Only the first corner closes the region. A click on the corner just
+			// laid, a double click included, does nothing: it would only stack a
+			// second corner on top of it.
+			if (draft.length >= 3 && nearCorner(e, draft[0])) return finishDraft();
+			const last = draft.at(-1);
+			if (last && nearCorner(e, last, 0.5)) return;
+			if (inside(point)) draft.push(point);
 			return;
 		}
 
@@ -2242,13 +2466,26 @@
 			return;
 		}
 
-		// The party is not a spot of the map: clicking it starts nothing here.
-		// The GM's click on it never gets this far: it selects the banner.
-		if (target.closest('[data-party]')) return;
-		selectedParty = false;
-
 		const markerId = target.closest<HTMLElement>('[data-marker-id]')?.dataset.markerId;
 		if (markerId) {
+			const marker = markers.find((m) => m.id === markerId);
+			if (e.shiftKey && !battle && !passive && marker && canGrabMarker(marker)) {
+				// With Shift, a click adds a marker to the ones selected together,
+				// or takes it away from them. One whose card was pinned is the
+				// first of them.
+				const pinned = markers.find((m) => m.id === selectedMarkerId && m.id !== markerId);
+				const had =
+					pinned && canGrabMarker(pinned) && !selectedIds.includes(pinned.id)
+						? [...selectedIds, pinned.id]
+						: selectedIds;
+				selectedIds = had.includes(markerId)
+					? had.filter((id) => id !== markerId)
+					: [...had, markerId];
+				selectedMarkerId = null;
+				selectedRegionId = null;
+				lastTap.at = 0;
+				return;
+			}
 			selectedMarkerId = selectedMarkerId === markerId ? null : markerId;
 			selectedRegionId = null;
 			selectedIds = [];
@@ -2290,12 +2527,14 @@
 
 	// ------------------------------------------------------ drawing regions
 
-	function nearFirstCorner(e: PointerEvent): boolean {
+	/** Whether the pointer is on a corner of the draft. The first one is drawn
+	 *  larger than the rest, so the others are given a smaller reach. */
+	function nearCorner(e: PointerEvent, [x, y]: Point, reach = 1): boolean {
 		const rect = viewport!.getBoundingClientRect();
-		const [x, y] = draft[0];
 		const sx = x * W * view.k + view.x + rect.left;
 		const sy = y * H * view.k + view.y + rect.top;
-		return Math.hypot(e.clientX - sx, e.clientY - sy) < (e.pointerType === 'mouse' ? 14 : 24);
+		const within = (e.pointerType === 'mouse' ? 14 : 24) * reach;
+		return Math.hypot(e.clientX - sx, e.clientY - sy) < within;
 	}
 
 	function finishDraft() {
@@ -2312,34 +2551,88 @@
 		}
 	});
 
+	// The keys of the map itself: what is selected on it, what a tool is in
+	// the middle of, and the view. The page listens first, for the tools and
+	// everything around the map, and a key it took is not pressed twice.
 	function onkeydown(e: KeyboardEvent) {
-		if (e.target instanceof Element && e.target.closest('input, textarea, select, dialog')) return;
+		if (e.defaultPrevented) return;
+		if (e.target instanceof Element && e.target.closest('dialog')) return;
+		// In a text field, a letter is a letter.
+		if (isTyping(e.target)) return;
+		if (pressed(chord(e), e)) e.preventDefault();
+	}
+
+	/** Does what a key does on the map as it stands. True if it was one of the map's. */
+	function pressed(key: string, e: KeyboardEvent): boolean {
+		const held = e.repeat;
+		const remove = key === KEY.remove || key === 'Backspace';
 		// Delete takes off the map whatever is selected on it.
-		if (selecting && selectedIds.length && (e.key === 'Delete' || e.key === 'Backspace')) {
-			e.preventDefault();
-			if (!e.repeat) bar?.remove();
-			return;
+		if (selecting && selectedIds.length && remove) {
+			if (!held) bar?.remove();
+			return true;
 		}
-		if (partyPicked && (e.key === 'Delete' || e.key === 'Backspace')) {
-			e.preventDefault();
-			if (!e.repeat) onpartyremove();
-			return;
+		// The same for the markers selected together on a world map.
+		if (selectedMarkers.length && tool === 'pan' && remove) {
+			if (!held) removeMarkers();
+			return true;
 		}
 		// A ruler being laid along a road: Enter ends it, Backspace takes a bend back.
-		if (tool === 'measure' && routing && (e.key === 'Enter' || e.key === 'Backspace')) {
-			e.preventDefault();
-			if (e.key === 'Enter') endRoute();
+		if (tool === 'measure' && routing && (key === 'Enter' || key === 'Backspace')) {
+			if (key === 'Enter') endRoute();
 			else unbend();
-			return;
+			return true;
 		}
-		if (tool !== 'draw') return;
-		if (e.key === 'Enter' && draft.length >= 3) {
-			e.preventDefault();
+		// A region being drawn: Enter closes it, Backspace takes a corner back.
+		if (tool === 'draw' && key === 'Enter' && draft.length >= 3) {
 			finishDraft();
-		} else if (e.key === 'Backspace') {
-			e.preventDefault();
-			draft.pop();
+			return true;
 		}
+		if (tool === 'draw' && key === 'Backspace') {
+			draft.pop();
+			return true;
+		}
+
+		if (tool === 'pan' && !passive) {
+			if (key === KEY.selectAll) {
+				if (!held) selectAll();
+				return true;
+			}
+			// What is selected on a battle map: the arrows walk its tokens, and
+			// every button under it has a key.
+			if (selecting && selectedIds.length) {
+				const step = STEPS[key];
+				if (step && !usesArrows(e.target) && walk(step, held)) return true;
+				if (bar?.key(key, held)) return true;
+			}
+			// A marker with its card pinned: the buttons on the card.
+			if (card?.key(key, held)) return true;
+			// Markers selected together are hidden and revealed together, and
+			// who sees them is said for all of them at once.
+			if (key === KEY.hide && canShape && selectedPins.length) {
+				if (!held) hideMarkers();
+				return true;
+			}
+			if (key === KEY.share && canShape && selectedPins.length) {
+				if (!held) onmarkervisibility(selectedPins);
+				return true;
+			}
+		}
+
+		// The view: the arrows move the map, plus and minus zoom, zero fits it.
+		// Wherever the focus is, unless the arrows have a job of their own there.
+		const move = STEPS[key];
+		if (move) {
+			if (usesArrows(e.target)) return false;
+			fitting = false;
+			stopAnimation();
+			view = bounded({ k: view.k, x: view.x - move[0] * 80, y: view.y - move[1] * 80 });
+			return true;
+		}
+		if (key === KEY.zoomIn || key === '=') zoomBy(1.6);
+		else if (key === KEY.zoomOut) zoomBy(1 / 1.6);
+		else if (key === KEY.fit) fit();
+		else return false;
+		return true;
 	}
 
 	// Wheel listeners added through the template can be passive, and a
@@ -2349,6 +2642,12 @@
 		if (!element) return;
 		const onwheel = (e: WheelEvent) => {
 			e.preventDefault();
+			if (brushing && e.shiftKey) {
+				// With Shift held, some browsers turn the wheel on its side.
+				const turned = (e.deltaY || e.deltaX) * (e.deltaMode === 1 ? 16 : 1);
+				fogSize = brushSize(fogSize * Math.exp(-turned * 0.0016));
+				return;
+			}
 			stopAnimation();
 			fitting = false;
 			const rect = viewport!.getBoundingClientRect();
@@ -2361,40 +2660,17 @@
 		return () => element.removeEventListener('wheel', onwheel);
 	});
 
-	/** Keyboard control of the view, for when the map itself has focus. */
-	function onsurfacekeydown(e: KeyboardEvent) {
-		if (e.target !== surface) return;
-		const step = 80;
-		const moves: Record<string, [number, number]> = {
-			ArrowLeft: [step, 0],
-			ArrowRight: [-step, 0],
-			ArrowUp: [0, step],
-			ArrowDown: [0, -step]
-		};
-		const move = moves[e.key];
-		if (move) {
-			fitting = false;
-			stopAnimation();
-			view = bounded({ k: view.k, x: view.x + move[0], y: view.y + move[1] });
-		} else if (e.key === '+' || e.key === '=') {
-			zoomBy(1.6);
-		} else if (e.key === '-') {
-			zoomBy(1 / 1.6);
-		} else if (e.key === '0') {
-			fit();
-		} else {
-			return;
-		}
-		e.preventDefault();
-	}
-
 	function toggleMarker(e: KeyboardEvent, marker: Marker) {
 		if (e.key !== 'Enter' && e.key !== ' ') return;
 		e.preventDefault();
 		selectedMarkerId = selectedMarkerId === marker.id ? null : marker.id;
 	}
 
-	/** A token with the focus: Enter selects it, the arrow keys walk it a cell at a time. */
+	/**
+	 * A token with the focus: Enter selects it, the arrow keys walk it a cell
+	 * at a time. One that is selected is walked with the rest of what is,
+	 * by the keys of the map.
+	 */
 	function tokenKey(e: KeyboardEvent, token: Token) {
 		// On a table display nothing is picked up or moved.
 		if (passive) return;
@@ -2411,7 +2687,7 @@
 			ArrowDown: [0, 1]
 		};
 		const step = steps[e.key];
-		if (!step || !canGrabToken(token)) return;
+		if (!step || !canGrabToken(token) || selectedIds.includes(token.id)) return;
 		e.preventDefault();
 		if (e.repeat) return;
 		const next: Point = [token.x + (step[0] * cell) / W, token.y + (step[1] * cell) / H];
@@ -2483,23 +2759,32 @@
 	<div
 		class={[
 			'absolute inset-0 touch-none select-none [-webkit-touch-callout:none] focus-visible:-outline-offset-2',
-			tool === 'text'
-				? 'cursor-text'
-				: tool !== 'pan'
-					? 'cursor-crosshair'
-					: dragging
-						? 'cursor-grabbing'
-						: 'cursor-grab'
+			handing
+				? 'cursor-grabbing'
+				: tool === 'text'
+					? 'cursor-text'
+					: tool !== 'pan'
+						? 'cursor-crosshair'
+						: dragging
+							? 'cursor-grabbing'
+							: 'cursor-grab'
 		]}
 		data-tool={tool}
-		style:cursor={tool === 'point' && !passive ? (pointing ? 'none' : POINT_CURSOR) : undefined}
+		style:cursor={tool === 'point' && !passive && !handing
+			? pointing
+				? 'none'
+				: POINT_CURSOR
+			: undefined}
 		bind:this={surface}
 		role="application"
 		aria-label="Map of {map.name}. Arrow keys pan, plus and minus zoom, zero fits the map."
 		tabindex="0"
-		onkeydown={onsurfacekeydown}
 		{onpointerdown}
 		{onpointermove}
+		onmousedown={(e) => {
+			// The middle button moves the map: the browser's own scrolling by it stays out of it.
+			if (e.button === 1) e.preventDefault();
+		}}
 		onpointerup={(e) => release(e, true)}
 		onpointercancel={(e) => release(e, false)}
 		onpointerleave={clearHover}
@@ -2528,6 +2813,41 @@
 							? `scale(${blownUp}) translate(${-source.x}px, ${-source.y}px)`
 							: undefined}
 					>
+						<!-- Each image is sharpened on its own. Sharpened as one picture,
+						     the hairline where two tiles meet would be sharpened too, into a
+						     line across the map. -->
+						<svg class="absolute h-0 w-0" aria-hidden="true">
+							<filter
+								id="sharpen"
+								x="0"
+								y="0"
+								width="100%"
+								height="100%"
+								color-interpolation-filters="sRGB"
+							>
+								<!-- Measured in pixels of the picture, so it grows with the zoom. -->
+								<feGaussianBlur stdDeviation={SHARPEN_RADIUS} result="soft" />
+								<!-- At the edge of an image the blur fades to nothing, which would
+								     sharpen into a bright rim. Made opaque, it is the average of
+								     what is inside the image, and then it is cut back to its shape. -->
+								<feColorMatrix
+									in="soft"
+									type="matrix"
+									values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0 1"
+									result="opaque"
+								/>
+								<feComposite in="opaque" in2="SourceGraphic" operator="in" result="cut" />
+								<feComposite
+									in="SourceGraphic"
+									in2="cut"
+									operator="arithmetic"
+									k1="0"
+									k2={1 + sharpen}
+									k3={-sharpen}
+									k4="0"
+								/>
+							</filter>
+						</svg>
 						<img
 							class="block h-full w-full [-webkit-user-drag:none]"
 							src={picture}
@@ -2535,6 +2855,7 @@
 							width={source.width}
 							height={source.height}
 							draggable="false"
+							style:filter={sharpening}
 						/>
 						{#if tiling.of === image}
 							{#each [...tiling.under, ...tiling.over] as tile (tile.src)}
@@ -2547,6 +2868,7 @@
 									style:top="{tile.top}px"
 									style:width="{tile.width}px"
 									style:height="{tile.height}px"
+									style:filter={sharpening}
 									onload={() => tileArrived(tile.src)}
 									onerror={() => tileArrived(tile.src)}
 								/>
@@ -2878,7 +3200,6 @@
 			{#each orderedRegions as region (region.id)}
 				{@const [x, y] = labelSpot(pointsOf(region))}
 				{@const lit = litRegionId === region.id}
-				{@const camped = partyRegionId === region.id}
 				{@const shut = shutOf(region)}
 				{@const open = canShape || !region.closed}
 				<div
@@ -2889,25 +3210,14 @@
 					]}
 					style:left="{x * W}px"
 					style:top="{y * H}px"
+					bind:clientHeight={null, (tall) => (nameHeights[region.id] = tall ?? 0)}
 				>
 					<strong
 						class={[
 							'block font-serif leading-[1.2] font-semibold tracking-[0.02em] wrap-anywhere transition-[opacity,color] duration-150',
-							lit ? 'text-white' : camped ? 'text-[#fff8e4]' : 'text-[#fff8e4] opacity-55'
+							lit ? 'text-white' : 'text-[#fff8e4] opacity-55'
 						]}
-						>{#if camped}<!-- The party's banner, before the name of the region it is
-							     somewhere inside of: the way to it from here. --><svg
-								class="mr-1 inline-block size-[0.95em] -translate-y-px drop-shadow-[0_0_2px_rgb(8_10_15/0.9)]"
-								viewBox="0 0 24 24"
-								role="img"
-								aria-label="The party is in here:"
-							>
-								<path
-									class="fill-accent stroke-[#12151c] stroke-[1.5] [stroke-linejoin:round]"
-									d="M5 3.5h15l-4 5 4 5H5Z"
-								/>
-								<path class="stroke-[#fff8e4] stroke-[2.5] [stroke-linecap:round]" d="M5 3v19" />
-							</svg>{/if}{#if region.closed}<!-- A lock before the name of a region that is
+						>{#if region.closed}<!-- A lock before the name of a region that is
 							     not open to players yet. --><svg
 								class="mr-1 inline-block size-[0.8em] -translate-y-px drop-shadow-[0_0_2px_rgb(8_10_15/0.9)]"
 								viewBox="0 0 24 24"
@@ -3176,14 +3486,15 @@
 				{/each}
 			{/if}
 
-			<!-- The fog of war: one dark sheet with a hole for each part that has
-			     been cleared. Players can't see through it. The GM can, enough to
-			     tell what is under it. On a battle map it lies over everything
-			     that stands there, and the box being dragged to clear some or
-			     cover some is drawn with it. On a world map it lies under the
-			     pins and the party, which lifts it by going places: there the
-			     holes are round, and soft at the edge. -->
-			{#if map.fog.on || veilBox}
+			<!-- The fog of war: one dark sheet, cut through a mask. The mask is
+			     the marks made on the fog in the order they were made, each one
+			     black where it cleared and white where it covered again: the
+			     line a round brush swept along, as wide as the brush, what a
+			     square one went over, or a box. Players can't see through the
+			     fog. The GM can, enough to tell what is under it. On a battle
+			     map it lies over everything that stands there, and on a world
+			     map under the pins. The outline of the brush is drawn with it. -->
+			{#if fog.on || brushAt}
 				<svg
 					class={['pointer-events-none absolute inset-0 overflow-visible', battle && 'z-2']}
 					viewBox="0 0 {W} {H}"
@@ -3191,22 +3502,38 @@
 					height={H}
 					aria-hidden="true"
 				>
-					{#if map.fog.on && map.fog.spots?.length}
-						<!-- Round holes overlap, so they are cut with a mask: black where
-						     the fog has lifted, fading out towards the rim of each. -->
+					{#if fog.on}
 						<defs>
-							<radialGradient id="fog-spot">
-								<stop offset="0" stop-color="black" />
-								<stop offset="0.72" stop-color="black" />
-								<stop offset="1" stop-color="black" stop-opacity="0" />
-							</radialGradient>
-							<mask id="fog-holes" maskUnits="userSpaceOnUse" x="0" y="0" width={W} height={H}>
+							<mask id="fog-marks" maskUnits="userSpaceOnUse" x="0" y="0" width={W} height={H}>
 								<rect width={W} height={H} fill="white" />
-								{#each map.fog.clear as [x0, y0, x1, y1], i (i)}
+								{#each fog.clear as [x0, y0, x1, y1], i (i)}
 									<rect x={x0 * W} y={y0 * H} width={(x1 - x0) * W} height={(y1 - y0) * H} fill="black" />
 								{/each}
-								{#each map.fog.spots as [cx, cy, rx, ry], i (i)}
-									<ellipse cx={cx * W} cy={cy * H} rx={rx * W} ry={ry * H} fill="url(#fog-spot)" />
+								{#each fog.marks ?? [] as mark, i (i)}
+									{@const paint = mark.cover ? 'white' : 'black'}
+									{#if 'box' in mark}
+										{@const [x0, y0, x1, y1] = mark.box}
+										<rect x={x0 * W} y={y0 * H} width={(x1 - x0) * W} height={(y1 - y0) * H} fill={paint} />
+									{:else if mark.square}
+										<!-- Drawn in brushes, like the line below: filled, since a
+										     line that wide would turn its ends with the way it goes. -->
+										<path
+											d={stampPath(mark)}
+											transform="scale({mark.r[0] * W} {mark.r[1] * H})"
+											fill={paint}
+										/>
+									{:else}
+										<!-- Drawn in brushes: a line two across is as wide as the brush. -->
+										<path
+											d={sweepPath(mark)}
+											transform="scale({mark.r[0] * W} {mark.r[1] * H})"
+											fill="none"
+											stroke={paint}
+											stroke-width="2"
+											stroke-linecap="round"
+											stroke-linejoin="round"
+										/>
+									{/if}
 								{/each}
 							</mask>
 						</defs>
@@ -3214,27 +3541,30 @@
 							class={canShape ? 'fill-[#0b0d12]/55' : 'fill-[#0d1017]'}
 							width={W}
 							height={H}
-							mask="url(#fog-holes)"
-						/>
-					{:else if map.fog.on}
-						<path
-							class={canShape ? 'fill-[#0b0d12]/55' : 'fill-[#0d1017]'}
-							fill-rule="evenodd"
-							d={fogPath(map.fog, W, H)}
+							mask="url(#fog-marks)"
 						/>
 					{/if}
-					{#if veilBox}
-						{@const [x0, y0, x1, y1] = veilBox}
-						<rect
-							class={[
-								'stroke-[1.5] stroke-steady [stroke-dasharray:5_4]',
-								tool === 'cover' ? 'fill-[#0b0d12]/45 stroke-[#fff8e4]' : 'fill-white/20 stroke-white'
-							]}
-							x={x0 * W}
-							y={y0 * H}
-							width={(x1 - x0) * W}
-							height={(y1 - y0) * H}
-						/>
+					{#if brushAt}
+						<!-- What the brush reaches from where it is: dark under light, to show on any map. -->
+						{@const ring = { cx: brushAt[0] * W, cy: brushAt[1] * H, rx: reach[0] * W, ry: reach[1] * H }}
+						{@const dark = 'fill-none stroke-[#0c0e14]/60 stroke-[3.5] stroke-steady'}
+						{@const light = [
+							'stroke-[1.5] stroke-steady',
+							tool === 'cover' ? 'fill-[#0b0d12]/25 stroke-[#fff8e4]' : 'fill-white/10 stroke-white'
+						]}
+						{#if fogShape === 'square'}
+							{@const sides = {
+								x: ring.cx - ring.rx,
+								y: ring.cy - ring.ry,
+								width: ring.rx * 2,
+								height: ring.ry * 2
+							}}
+							<rect class={dark} {...sides} />
+							<rect class={light} {...sides} />
+						{:else}
+							<ellipse class={dark} {...ring} />
+							<ellipse class={light} {...ring} />
+						{/if}
 					{/if}
 				</svg>
 			{/if}
@@ -3244,8 +3574,10 @@
 			     like paper tags, so the two can be told apart at a glance. -->
 			{#each orderedMarkers as marker (marker.id)}
 				{@const type = markerType(marker.type)}
-				{@const selected = selectedMarkerId === marker.id}
+				{@const picked = pickedMarkerIds.has(marker.id)}
+				{@const selected = selectedMarkerId === marker.id || picked}
 				{@const raised = active?.id === marker.id}
+				{@const [mx, my] = markerSpot(marker)}
 				{@const shape = [
 					'block',
 					selected ? 'pin-selected' : 'pin-shadow group-focus-visible:pin-focused',
@@ -3255,18 +3587,23 @@
 					class={[
 						'group absolute origin-bottom -translate-x-1/2 -translate-y-full scale-(--inv) cursor-pointer text-[#12151c] [-webkit-tap-highlight-color:transparent] focus-visible:outline-none',
 						(selected || raised) && 'z-1',
-						tool !== 'pan' && 'pointer-events-none opacity-60'
+						// With another tool in hand they are part of the picture. The
+						// box that selects them shows them as they are.
+						tool !== 'pan' && 'pointer-events-none',
+						tool !== 'pan' && tool !== 'select' && 'opacity-60',
+						picked && tool === 'pan' && (carry?.held ? 'cursor-grabbing' : 'cursor-grab')
 					]}
 					data-marker-id={marker.id}
-					style:left="{marker.x * W}px"
-					style:top="{marker.y * H}px"
+					data-picked={picked ? '' : undefined}
+					style:left="{mx * W}px"
+					style:top="{my * H}px"
 					style:--c={type.color}
 					aria-label="{type.label}: {marker.title}{marker.hidden
 						? canShape
 							? ' (hidden from players)'
 							: ' (a secret)'
 						: ''}{fresh.includes(marker.id) ? ' (new)' : ''}"
-					aria-pressed={selectedMarkerId === marker.id}
+					aria-pressed={selected}
 					tabindex={tool === 'pan' ? 0 : -1}
 					onfocus={() => (hoveredMarkerId = marker.id)}
 					onblur={() => hoveredMarkerId === marker.id && (hoveredMarkerId = null)}
@@ -3313,55 +3650,6 @@
 					</span>
 				</button>
 			{/each}
-
-			<!-- The party: a banner planted where it stands, the same size on screen
-			     at any zoom. It glides to wherever it is moved to, so the table sees
-			     the road it took. Not in the hand that is dragging it. -->
-			{#if partySpot}
-				{@const [x, y] = partySpot}
-				<div
-					class={[
-						'absolute top-0 left-0 z-1 size-0',
-						!leading &&
-							'transition-[translate] duration-700 ease-in-out motion-reduce:transition-none'
-					]}
-					style:translate="{x * W}px {y * H}px"
-				>
-					<div
-						class={[
-							'absolute top-0 left-0 origin-[7px_100%] -translate-x-[7px] -translate-y-full scale-(--inv) [-webkit-tap-highlight-color:transparent]',
-							tool !== 'pan' && 'pointer-events-none opacity-60',
-							canLead && (leading?.held ? 'cursor-grabbing' : 'cursor-grab')
-						]}
-						data-party
-						role={canLead ? 'button' : 'img'}
-						tabindex={canLead ? 0 : undefined}
-						aria-label="The party is here"
-						aria-pressed={canLead ? selectedParty : undefined}
-						title={canLead ? 'The party · drag to move it, click to select it' : 'The party'}
-						onkeydown={(e) => {
-							if (!canLead || (e.key !== 'Enter' && e.key !== ' ')) return;
-							e.preventDefault();
-							pickParty();
-						}}
-					>
-						<svg
-							class={['block', leading?.held || partyPicked ? 'pin-selected' : 'pin-shadow']}
-							viewBox="0 0 38 46"
-							width="38"
-							height="46"
-							aria-hidden="true"
-						>
-							<path class="stroke-[#12151c] stroke-[5] [stroke-linecap:round]" d="M7 43V5" />
-							<path
-								class="fill-accent stroke-[#12151c] stroke-[1.5] [stroke-linejoin:round]"
-								d="M7 5h28l-7 9 7 9H7Z"
-							/>
-							<path class="stroke-[#fff8e4] stroke-[2.5] [stroke-linecap:round]" d="M7 43V5" />
-						</svg>
-					</div>
-				</div>
-			{/if}
 
 			<!-- A spot someone is pointing out: rings spreading from it in their
 			     colour (--c), with their name under it, gone again after a moment.
@@ -3466,6 +3754,7 @@
 				bind:clientHeight={cardH}
 			>
 				<MarkerCard
+					bind:this={card}
 					marker={active}
 					campaignId={map.campaignId}
 					{role}
@@ -3477,35 +3766,7 @@
 					{ondelete}
 					{onhide}
 					{players}
-					onshare={canShape ? onshare : undefined}
-					onshow={canShape ? onshowmarker : undefined}
-				/>
-			</div>
-		{/if}
-
-		<!-- The one thing to do with a selected banner besides dragging it: over
-		     it, like the buttons of a selected token are under theirs. -->
-		{#if partyPicked}
-			<div
-				class={[
-					'absolute flex rounded-xl border border-[#55607a] bg-panel/94 p-1 shadow-pop',
-					partyBar && partyBarW > 0 ? 'pointer-events-auto' : 'invisible'
-				]}
-				style:left="{partyBar?.left ?? 0}px"
-				style:top="{partyBar?.top ?? 0}px"
-				bind:clientWidth={partyBarW}
-				bind:clientHeight={partyBarH}
-				role="toolbar"
-				aria-label="The party"
-			>
-				<ToolButton
-					small
-					danger
-					tip={partyBar?.under ? 'bottom' : 'top'}
-					icon="delete"
-					label="Remove the party marker"
-					hint="Takes it off the map for everyone"
-					onclick={onpartyremove}
+					onvisibility={canShape ? (marker) => onmarkervisibility([marker]) : undefined}
 				/>
 			</div>
 		{/if}
@@ -3526,10 +3787,8 @@
 					tokens={selectedTokens}
 					drawings={selectedDrawings}
 					inside={insideSelected}
-					turns={map.turns}
 					{role}
 					{userId}
-					{players}
 					tip={barPosition?.under === false ? 'top' : 'bottom'}
 					{send}
 					oncopy={copy}
@@ -3541,7 +3800,85 @@
 					onclear={() => (selectedIds = [])}
 					onpick={(picked) => (selectedIds = picked.map((token) => token.id))}
 					onsave={onsavegroup}
+					onvisibility={ontokenvisibility}
 				/>
+			</div>
+		{/if}
+
+		<!-- The buttons for the markers selected together on a world map,
+		     floating under them the same way. -->
+		{#if selectedMarkers.length > 0}
+			{@const pins = selectedPins}
+			{@const hidden = pins.filter((m) => m.hidden).length}
+			{@const mine = selectedMarkers.filter((m) => canRemoveMarker(role, userId, m))}
+			{@const tip = markerBarPosition?.under === false ? 'top' : 'bottom'}
+			<div
+				class={['absolute', markerBarPosition && barW > 0 ? 'pointer-events-auto' : 'invisible']}
+				style:left="{markerBarPosition?.left ?? 0}px"
+				style:top="{markerBarPosition?.top ?? 0}px"
+				bind:clientWidth={barW}
+				bind:clientHeight={barH}
+			>
+				<div
+					class="flex items-center gap-1 rounded-xl border border-[#55607a] bg-panel/94 p-1 shadow-pop"
+					role="toolbar"
+					aria-label="Selected markers"
+				>
+					<span class="px-1.5 text-xs whitespace-nowrap text-muted tabular-nums">
+						{selectedMarkers.length} selected
+					</span>
+					{#if canShape && pins.length}
+						<ToolButton
+							small
+							{tip}
+							icon={hidden ? 'hide' : 'reveal'}
+							label="Visibility"
+							hint={pins.length < selectedMarkers.length
+								? 'Of the world markers among them'
+								: !hidden
+									? 'Everyone sees them'
+									: hidden < pins.length
+										? 'Some of them are hidden'
+										: 'They are hidden'}
+							shortcut={KEY.share}
+							active={hidden > 0}
+							onclick={() => onmarkervisibility(pins)}
+						/>
+					{/if}
+					<ToolButton
+						small
+						{tip}
+						icon="delete"
+						label="Delete"
+						hint={mine.length === 0
+							? 'None of these are yours to delete'
+							: mine.length < selectedMarkers.length
+								? `The ${mine.length} that are yours to delete`
+								: 'Ctrl+Z brings them back'}
+						shortcut={KEY.remove}
+						danger
+						disabled={mine.length === 0}
+						onclick={removeMarkers}
+					/>
+				</div>
+			</div>
+		{/if}
+
+		<!-- The buttons for the region selected on a world map, floating over its
+		     name. Out of sight until their size is known, and while the
+		     region is off screen or a corner of it is in hand. -->
+		{#if regionBar && canShape && selectedRegion && tool === 'pan'}
+			<div
+				class={[
+					'absolute',
+					regionBarPosition && regionBarW > 0 ? 'pointer-events-auto' : 'invisible'
+				]}
+				style:left="{regionBarPosition?.left ?? 0}px"
+				style:top="{regionBarPosition?.top ?? 0}px"
+				bind:clientWidth={regionBarW}
+				bind:clientHeight={regionBarH}
+			>
+				{@render regionBar(selectedRegion, regionBarPosition?.tip ?? 'top')}
 			</div>
 		{/if}
 
@@ -3614,7 +3951,9 @@
 			</p>
 		{:else if tool === 'select'}
 			<p class={hint}>
-				Drag a box around what you want to select.
+				{battle
+					? 'Drag a box around what you want to select.'
+					: 'Drag a box around the markers to move, hide or delete together.'}
 				<span class={keys}>Shift adds to the selection · Esc cancels</span>
 			</p>
 		{:else if tool === 'sketch'}
@@ -3624,17 +3963,23 @@
 			</p>
 		{:else if tool === 'reveal'}
 			<p class={hint}>
-				{#if map.fog.on}
-					Drag a box over what the players may see.
-					<span class={keys}>{#if battle}Alt leaves the grid ·{/if} Esc puts it away</span>
+				{#if fogNow.on}
+					Paint over what the players may see.
+					<span class={keys}>
+						{keyLabel(KEY.brushSmaller)} {keyLabel(KEY.brushBigger)} size the brush ·
+						{keyLabel(KEY.fogSwap)} covers instead · Esc puts it away
+					</span>
 				{:else}
 					There is no fog on this map yet. Cover some of it first.
 				{/if}
 			</p>
 		{:else if tool === 'cover'}
 			<p class={hint}>
-				Drag a box over what the fog should cover.
-				<span class={keys}>{#if battle}Alt leaves the grid ·{/if} Esc puts it away</span>
+				Paint over what the fog should cover.
+				<span class={keys}>
+					{keyLabel(KEY.brushSmaller)} {keyLabel(KEY.brushBigger)} size the brush ·
+					{#if fogNow.on}{keyLabel(KEY.fogSwap)} clears instead ·{/if} Esc puts it away
+				</span>
 			</p>
 		{:else if tool === 'point'}
 			<p class={hint}>
@@ -3656,20 +4001,21 @@
 		{/if}
 
 		<!-- In the bottom corner, beside the tools. A narrow screen gives the
-		     whole bottom edge to the tools, so there it sits in the top corner:
-		     the right one, or on a battle map, where the tools are docked in
-		     that one, the left. Fingers zoom by pinching, which leaves only Fit
-		     to offer them. A table display has none: its keys still zoom. -->
+		     whole bottom edge to the tools, so there it sits in a top corner:
+		     the left one, since tools are docked in the right. Fingers zoom by
+		     pinching, which leaves only Fit to offer them. A table display has
+		     none: its keys still zoom. -->
 		<div
 			class={[
-				'pointer-events-auto absolute right-3.5 bottom-3.5 grid overflow-hidden rounded-[10px] border bg-panel max-[720px]:top-3.5 max-[720px]:bottom-auto',
-				battle && 'max-[720px]:right-auto max-[720px]:left-3.5',
+				'pointer-events-auto absolute right-3.5 bottom-3.5 grid overflow-hidden rounded-[10px] border bg-panel max-[720px]:top-3.5 max-[720px]:right-auto max-[720px]:bottom-auto max-[720px]:left-3.5',
 				passive && 'hidden'
 			]}
 		>
 			<button
 				class="{zoomButton} border-b text-[19px] touch:hidden"
 				aria-label="Zoom in"
+				aria-keyshortcuts={ariaKey(KEY.zoomIn)}
+				title="Zoom in ({keyLabel(KEY.zoomIn)})"
 				onclick={() => zoomBy(1.6)}
 			>
 				+
@@ -3677,11 +4023,19 @@
 			<button
 				class="{zoomButton} border-b text-[19px] touch:hidden"
 				aria-label="Zoom out"
+				aria-keyshortcuts={ariaKey(KEY.zoomOut)}
+				title="Zoom out ({keyLabel(KEY.zoomOut)})"
 				onclick={() => zoomBy(1 / 1.6)}
 			>
 				−
 			</button>
-			<button class="{zoomButton} text-xs" aria-label="Fit the whole map" onclick={fit}>Fit</button>
+			<button
+				class="{zoomButton} text-xs"
+				aria-label="Fit the whole map"
+				aria-keyshortcuts={ariaKey(KEY.fit)}
+				title="Fit the whole map ({keyLabel(KEY.fit)})"
+				onclick={fit}>Fit</button
+			>
 		</div>
 	</div>
 </div>

@@ -6,7 +6,15 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import sharp from 'sharp';
 import { exportCampaign, importCampaign, ImportError } from './archive';
 import { createGuest, registerUser, type User } from './auth';
-import { actorFor, createCampaign, getMembership, joinCampaign, listCampaigns } from './campaigns';
+import {
+	actorFor,
+	createCampaign,
+	dateOf,
+	getMembership,
+	joinCampaign,
+	listCampaigns,
+	setDate
+} from './campaigns';
 import { openDb, type Db } from './db';
 import { addToGallery, listGallery, newImageFile } from './gallery';
 import { getMapSnapshot } from './queries';
@@ -18,6 +26,7 @@ import { ActionError, perform, undoable, viewerOf, type Actor } from './world';
 import { gridFromBox } from '../shared/grid';
 import { countFrom, sortedByRolls } from '../shared/turns';
 import type { MapInfo, Point, Region, Token } from '../shared/types';
+import type { CommandOf } from '../shared/types';
 
 let db: Db;
 let owner: User;
@@ -55,12 +64,12 @@ function refusal(fn: () => unknown): string {
 	return 'allowed';
 }
 
-function draw(name: string, on = mapId, extra: Record<string, unknown> = {}): Region {
+function draw(name: string, on = mapId, extra: Partial<CommandOf<'region.create'>> = {}): Region {
 	const events = perform(db, gm, { t: 'region.create', mapId: on, name, points: SQUARE, ...extra });
 	return events[1].after as Region;
 }
 
-function token(name: string, extra: Record<string, unknown> = {}): Token {
+function token(name: string, extra: Partial<CommandOf<'token.create'>> = {}): Token {
 	const [made] = perform(db, gm, { t: 'token.create', mapId: field, name, x: 0.5, y: 0.5, ...extra });
 	return made.after as Token;
 }
@@ -239,12 +248,12 @@ describe('a campaign in one file', () => {
 		perform(db, gm, { t: 'region.update', id: crypt.id, seenBy: [player.userId] });
 		perform(db, gm, { t: 'marker.create', mapId, kind: 'world', title: 'The cache', x: 0.5, y: 0.5, hidden: true });
 		perform(db, player, { t: 'marker.create', mapId, kind: 'player', title: 'Our camp', x: 0.6, y: 0.6 });
-		perform(db, gm, { t: 'party.move', mapId, x: 0.2, y: 0.2 });
 		const ogre = token('Ogre', { image: face.file, count: 59, marks: ['red'] });
 		perform(db, gm, { t: 'map.update', id: field, turns: { order: [ogre.id], current: ogre.id, rolls: { [ogre.id]: 14 } } });
 		perform(db, player, { t: 'drawing.create', mapId: field, kind: 'text', points: [[0.3, 0.3]], text: 'Trap!' });
 		const gone = token('Goblin');
 		perform(db, gm, { t: 'token.delete', id: gone.id });
+		setDate(db, gm, '3rd of Eleasis, 1492 DR');
 
 		const out = exportCampaign(db, gm.campaignId);
 		expect(out.name).toBe('The Sunless Reach');
@@ -255,6 +264,9 @@ describe('a campaign in one file', () => {
 
 		expect(copy.id).not.toBe(gm.campaignId);
 		expect(listCampaigns(db, other.id).map((c) => [c.name, c.role])).toEqual([['The Sunless Reach', 'gm']]);
+		// The story is where it had got to.
+		expect(copy.date).toBe('3rd of Eleasis, 1492 DR');
+		expect(dateOf(db, copy.id)).toBe('3rd of Eleasis, 1492 DR');
 		const root = getMapSnapshot(db, copy.id, copy.rootMapId, 'gm')!;
 		expect(root.map).toMatchObject({ name: 'The Sunless Reach', miles: 600, width: 40, height: 30 });
 		expect(root.map.imageFile).not.toBe(chart.file);
@@ -269,7 +281,6 @@ describe('a campaign in one file', () => {
 			['The cache', 'world', true, 'keeper'],
 			['Our camp', 'player', false, 'Mira']
 		]);
-		expect(root.party).toMatchObject({ mapId: copy.rootMapId, x: 0.2, y: 0.2 });
 
 		const bridge = root.regions[0].targetMapId;
 		const fight = getMapSnapshot(db, copy.id, bridge, 'gm')!;
@@ -287,8 +298,9 @@ describe('a campaign in one file', () => {
 
 		// The new campaign is one like any other, and the old one is as it was.
 		const them = actorFor(other, getMembership(db, copy.id, other.id)!);
-		expect(perform(db, them, { t: 'party.move', mapId: copy.rootMapId, x: 0.4, y: 0.4 })).toHaveLength(1);
-		expect(getMapSnapshot(db, gm.campaignId, mapId, 'gm')!.party).toMatchObject({ x: 0.2, y: 0.2 });
+		const find = { t: 'marker.create', mapId: copy.rootMapId, kind: 'world', title: 'A new find', x: 0.4, y: 0.4 } as const;
+		expect(perform(db, them, find)).toHaveLength(1);
+		expect(getMapSnapshot(db, gm.campaignId, mapId, 'gm')!.markers).toHaveLength(2);
 		// And the same file is good for another.
 		const second = await importCampaign(db, other, streamOf(file));
 		expect(second.id).not.toBe(copy.id);

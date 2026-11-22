@@ -20,6 +20,7 @@ import {
 	deletedMaps,
 	eventsAfter,
 	perform,
+	performReceived,
 	undoable,
 	type Actor
 } from './world';
@@ -34,6 +35,7 @@ import {
 	type StoredEvent,
 	type Token
 } from '../shared/types';
+import type { Command, CommandOf } from '../shared/types';
 
 let db: Db;
 let gm: Actor;
@@ -73,7 +75,7 @@ function refusal(fn: () => unknown): string {
 	return 'allowed';
 }
 
-function worldMarker(extra: Record<string, unknown> = {}): Marker {
+function worldMarker(extra: Partial<CommandOf<'marker.create'>> = {}): Marker {
 	const [event] = perform(db, gm, {
 		t: 'marker.create',
 		mapId,
@@ -204,11 +206,11 @@ describe('player markers', () => {
 	test('anyone at the table can add and edit them', () => {
 		const marker = note(player);
 		perform(db, other, { t: 'marker.update', id: marker.id, changes: { description: 'Meet here at dawn' } });
-		perform(db, gm, { t: 'marker.update', id: marker.id, changes: { type: 'danger' } });
+		perform(db, gm, { t: 'marker.update', id: marker.id, changes: { type: 'note' } });
 
 		const [now] = getMapSnapshot(db, gm.campaignId, mapId, 'player')!.markers;
 		expect(now.description).toBe('Meet here at dawn');
-		expect(now.type).toBe('danger');
+		expect(now.type).toBe('note');
 		// Editing a note does not make it yours.
 		expect(now.authorId).toBe(player.userId);
 	});
@@ -417,7 +419,7 @@ describe('nested maps', () => {
 });
 
 describe('maps that borrow their picture', () => {
-	const draw = (on: string, name: string, extra: Record<string, unknown> = {}) =>
+	const draw = (on: string, name: string, extra: Partial<CommandOf<'region.create'>> = {}) =>
 		perform(db, gm, { t: 'region.create', mapId: on, name, points: SQUARE, ...extra })[1].after as Region;
 	const backdrop = (id: string, role: 'gm' | 'player' = 'player') =>
 		getMapSnapshot(db, gm.campaignId, id, role)!.backdrop;
@@ -501,7 +503,7 @@ describe('maps that borrow their picture', () => {
 
 describe('hidden regions', () => {
 	/** Draws a region and returns it, with the events that drawing it made. */
-	function draw(name: string, on = mapId, extra: Record<string, unknown> = {}) {
+	function draw(name: string, on = mapId, extra: Partial<CommandOf<'region.create'>> = {}) {
 		const events = perform(db, gm, { t: 'region.create', mapId: on, name, points: SQUARE, ...extra });
 		return { events, region: events[1].after as Region };
 	}
@@ -599,20 +601,20 @@ describe('hidden regions', () => {
 	test('only the GM hides and reveals', () => {
 		const { region } = draw('The Cellar');
 		expect(refusal(() => perform(db, player, { t: 'region.update', id: region.id, hidden: true }))).toBe('forbidden');
-		expect(refusal(() => perform(db, gm, { t: 'region.update', id: region.id, hidden: 'yes' }))).toBe('invalid');
+		expect(refusal(() => performReceived(db, gm, { t: 'region.update', id: region.id, hidden: 'yes' }))).toBe('invalid');
 		expect(perform(db, gm, { t: 'region.update', id: region.id, hidden: false })).toHaveLength(0);
 	});
 });
 
 describe('battle maps', () => {
 	/** A battle map behind a region of the first map, and that region. */
-	function battlefield(extra: Record<string, unknown> = {}) {
+	function battlefield(extra: Partial<CommandOf<'region.create'>> = {}) {
 		const events = perform(db, gm, { t: 'region.create', mapId, name: 'The Bridge', points: SQUARE, kind: 'battle', ...extra });
 		const region = events[1].after as Region;
 		return { region, id: region.targetMapId };
 	}
 
-	function token(by: Actor, on: string, extra: Record<string, unknown> = {}): Token {
+	function token(by: Actor, on: string, extra: Partial<CommandOf<'token.create'>> = {}): Token {
 		const [event] = perform(db, by, { t: 'token.create', mapId: on, name: 'Goblin', x: 0.5, y: 0.5, ...extra });
 		return event.after as Token;
 	}
@@ -638,7 +640,7 @@ describe('battle maps', () => {
 
 		expect(refusal(() => perform(db, player, { t: 'map.update', id, grid: { size: 60 } }))).toBe('forbidden');
 		for (const grid of [{ size: 2 }, { size: 'big' }, { x: Infinity }, { shown: 1 }, 'square']) {
-			expect(refusal(() => perform(db, gm, { t: 'map.update', id, grid }))).toBe('invalid');
+			expect(refusal(() => performReceived(db, gm, { t: 'map.update', id, grid }))).toBe('invalid');
 		}
 		expect(refusal(() => perform(db, gm, { t: 'map.update', id }))).toBe('invalid');
 
@@ -650,12 +652,12 @@ describe('battle maps', () => {
 	test('a map stays the kind it was made as', () => {
 		const { id } = battlefield();
 		// Neither way, for the GM or anyone, alone or along with another change.
-		expect(refusal(() => perform(db, gm, { t: 'map.update', id: mapId, kind: 'battle' }))).toBe('invalid');
-		expect(refusal(() => perform(db, gm, { t: 'map.update', id, kind: 'world' }))).toBe('invalid');
-		expect(refusal(() => perform(db, gm, { t: 'map.update', id, kind: 'world', grid: { size: 70 } }))).toBe('invalid');
-		expect(refusal(() => perform(db, player, { t: 'map.update', id, kind: 'world' }))).toBe('forbidden');
+		expect(refusal(() => performReceived(db, gm, { t: 'map.update', id: mapId, kind: 'battle' }))).toBe('invalid');
+		expect(refusal(() => performReceived(db, gm, { t: 'map.update', id, kind: 'world' }))).toBe('invalid');
+		expect(refusal(() => performReceived(db, gm, { t: 'map.update', id, kind: 'world', grid: { size: 70 } }))).toBe('invalid');
+		expect(refusal(() => performReceived(db, player, { t: 'map.update', id, kind: 'world' }))).toBe('forbidden');
 		// Even to say what it already is: the kind isn't something a map is told.
-		expect(refusal(() => perform(db, gm, { t: 'map.update', id, kind: 'battle' }))).toBe('invalid');
+		expect(refusal(() => performReceived(db, gm, { t: 'map.update', id, kind: 'battle' }))).toBe('invalid');
 		expect(sees(mapId).map.kind).toBe('world');
 		expect(sees(id).map).toMatchObject({ kind: 'battle', grid: { size: 50 } });
 	});
@@ -672,7 +674,7 @@ describe('battle maps', () => {
 
 		expect(refusal(() => perform(db, player, { t: 'map.update', id, cellFeet: 10 }))).toBe('forbidden');
 		for (const cellFeet of [0, -5, 0.1, 5000, '5', null, Infinity]) {
-			expect(refusal(() => perform(db, gm, { t: 'map.update', id, cellFeet }))).toBe('invalid');
+			expect(refusal(() => performReceived(db, gm, { t: 'map.update', id, cellFeet }))).toBe('invalid');
 		}
 
 		// Undoing the first change puts back the scale the map had before it.
@@ -682,7 +684,7 @@ describe('battle maps', () => {
 
 	test('it holds no markers, no notes and no regions', () => {
 		const { id } = battlefield();
-		const marker = { t: 'marker.create', mapId: id, title: 'Trapdoor', x: 0.5, y: 0.5 };
+		const marker = { t: 'marker.create', mapId: id, title: 'Trapdoor', x: 0.5, y: 0.5 } as const;
 		expect(refusal(() => perform(db, gm, { ...marker, kind: 'world' }))).toBe('invalid');
 		expect(refusal(() => perform(db, player, { ...marker, kind: 'player' }))).toBe('invalid');
 		// Nothing leads further in from a battle map.
@@ -793,7 +795,7 @@ describe('battle maps', () => {
 		const { id } = battlefield();
 		const base = { t: 'token.create', mapId: id, name: 'Goblin', x: 0.5, y: 0.5 };
 		for (const extra of [{ name: ' ' }, { x: 2 }, { size: 0 }, { size: 0.25 }, { size: 1.2 }, { size: '2' }, { size: 99 }, { color: 'red' }, { outline: 'red' }, { outline: '' }, { hidden: 'no' }, { rotation: 10 }, { rotation: '90' }, { locked: 1 }]) {
-			expect(refusal(() => perform(db, gm, { ...base, ...extra }))).toBe('invalid');
+			expect(refusal(() => performReceived(db, gm, { ...base, ...extra }))).toBe('invalid');
 		}
 		expect(sees(id, 'gm').tokens).toHaveLength(0);
 	});
@@ -972,22 +974,22 @@ describe('battle maps', () => {
 		expect(sees(id).tokens.map((t) => t.x)).toEqual([0.5, 0.6]);
 
 		// One refusal takes the rest back with it.
-		const half = { t: 'batch', cmds: [{ t: 'token.update', id: a.id, changes: { x: 0.9 } }, { t: 'token.delete', id: 'nothing' }] };
+		const half: Command = { t: 'batch', cmds: [{ t: 'token.update', id: a.id, changes: { x: 0.9 } }, { t: 'token.delete', id: 'nothing' }] };
 		expect(refusal(() => perform(db, gm, half))).toBe('not_found');
 		expect(sees(id).tokens[0].x).toBe(0.5);
-		const mixed = { t: 'batch', cmds: [{ t: 'token.update', id: a.id, changes: { name: 'Gob' } }, { t: 'token.update', id: a.id, changes: { hidden: true } }] };
+		const mixed: Command = { t: 'batch', cmds: [{ t: 'token.update', id: a.id, changes: { name: 'Gob' } }, { t: 'token.update', id: a.id, changes: { hidden: true } }] };
 		expect(refusal(() => perform(db, player, mixed))).toBe('forbidden');
 		expect(sees(id).tokens[0].name).toBe('Goblin');
 
 		for (const cmds of [[], 'all', [{ t: 'batch', cmds: [{ t: 'token.delete', id: a.id }] }], Array(201).fill({ t: 'token.duplicate', id: a.id })]) {
-			expect(refusal(() => perform(db, gm, { t: 'batch', cmds }))).toBe('invalid');
+			expect(refusal(() => performReceived(db, gm, { t: 'batch', cmds }))).toBe('invalid');
 		}
 		expect(sees(id).tokens).toHaveLength(2);
 	});
 });
 
 describe('drawings', () => {
-	function battlefield(extra: Record<string, unknown> = {}) {
+	function battlefield(extra: Partial<CommandOf<'region.create'>> = {}) {
 		const events = perform(db, gm, { t: 'region.create', mapId, name: 'The Bridge', points: SQUARE, kind: 'battle', ...extra });
 		return (events[1].after as Region).targetMapId;
 	}
@@ -998,7 +1000,7 @@ describe('drawings', () => {
 		[0.4, 0.2]
 	];
 
-	function line(by: Actor, on: string, extra: Record<string, unknown> = {}): Drawing {
+	function line(by: Actor, on: string, extra: Partial<CommandOf<'drawing.create'>> = {}): Drawing {
 		const [event] = perform(db, by, { t: 'drawing.create', mapId: on, kind: 'line', points: LINE, ...extra });
 		return event.after as Drawing;
 	}
@@ -1062,7 +1064,7 @@ describe('drawings', () => {
 		perform(db, player, { t: 'history.revert', seq: moved.seq });
 		expect(sees(id).drawings[0].points).toEqual(LINE);
 		for (const move of [[1], ['a', 0], [Infinity, 0], 'left']) {
-			expect(refusal(() => perform(db, player, { t: 'drawing.update', id: drawn.id, changes: { move } }))).toBe('invalid');
+			expect(refusal(() => performReceived(db, player, { t: 'drawing.update', id: drawn.id, changes: { move } }))).toBe('invalid');
 		}
 	});
 
@@ -1090,11 +1092,11 @@ describe('drawings', () => {
 		const base = { t: 'drawing.create', mapId: id, kind: 'line', points: LINE };
 		const tooLong = Array.from({ length: 801 }, (_, i) => [i / 801, 0.5]);
 		for (const extra of [{ kind: 'circle' }, { points: [[0.5, 0.5]] }, { points: [[0.5, 2], [0.5, 0.5]] }, { points: 'wavy' }, { points: tooLong }, { color: 'red' }, { size: 0 }, { size: 50 }, { size: 'thick' }]) {
-			expect(refusal(() => perform(db, gm, { ...base, ...extra }))).toBe('invalid');
+			expect(refusal(() => performReceived(db, gm, { ...base, ...extra }))).toBe('invalid');
 		}
 		const text = { t: 'drawing.create', mapId: id, kind: 'text', points: [[0.5, 0.5]], text: 'Hello' };
 		for (const extra of [{ text: ' ' }, { text: undefined }, { text: 'x'.repeat(201) }, { points: LINE }]) {
-			expect(refusal(() => perform(db, gm, { ...text, ...extra }))).toBe('invalid');
+			expect(refusal(() => performReceived(db, gm, { ...text, ...extra }))).toBe('invalid');
 		}
 		expect(refusal(() => perform(db, gm, { t: 'drawing.update', id: line(gm, id).id, changes: { text: 'A line has no words' } }))).toBe('invalid');
 		expect(sees(id).drawings).toHaveLength(1);
@@ -1112,13 +1114,13 @@ describe('drawings', () => {
 
 describe('the gallery', () => {
 	/** A battle map behind a region of the first map, and that region. */
-	function battlefield(extra: Record<string, unknown> = {}) {
+	function battlefield(extra: Partial<CommandOf<'region.create'>> = {}) {
 		const events = perform(db, gm, { t: 'region.create', mapId, name: 'The Bridge', points: SQUARE, kind: 'battle', ...extra });
 		const region = events[1].after as Region;
 		return { region, id: region.targetMapId };
 	}
 
-	function token(on: string, extra: Record<string, unknown> = {}, by: Actor = gm): Token {
+	function token(on: string, extra: Partial<CommandOf<'token.create'>> = {}, by: Actor = gm): Token {
 		const [event] = perform(db, by, { t: 'token.create', mapId: on, name: 'Goblin', x: 0.5, y: 0.5, ...extra });
 		return event.after as Token;
 	}
@@ -1281,7 +1283,7 @@ describe('the gallery', () => {
 		expect(refusal(() => token(id, { image: coast.file }, player))).toBe('conflict');
 		expect(refusal(() => token(id, { image: 'never-uploaded.png' }))).toBe('conflict');
 		expect(refusal(() => token(id, { image: '../../etc/passwd' }))).toBe('invalid');
-		expect(refusal(() => perform(db, gm, { t: 'map.update', id: mapId, image: null }))).toBe('invalid');
+		expect(refusal(() => performReceived(db, gm, { t: 'map.update', id: mapId, image: null }))).toBe('invalid');
 	});
 
 	test('a picture taken out of the gallery stays where it is shown', () => {
@@ -1405,7 +1407,7 @@ describe('boundaries', () => {
 			{ t: 'marker.create', mapId, kind: 'player', title: 'ok', type: 'dragon', x: 0.5, y: 0.5 },
 			{ t: 'marker.create', mapId, kind: 'npc', title: 'ok', x: 0.5, y: 0.5 }
 		];
-		for (const input of bad) expect(refusal(() => perform(db, player, input))).toBe('invalid');
+		for (const input of bad) expect(refusal(() => performReceived(db, player, input))).toBe('invalid');
 		expect(refusal(() => perform(db, gm, { t: 'region.create', mapId, name: 'Line', points: [[0, 0], [1, 1]] }))).toBe('invalid');
 		expect(eventsAfter(db, 0)).toHaveLength(0);
 	});

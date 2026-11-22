@@ -20,7 +20,8 @@ export const GET: RequestHandler = (event) => {
 		seq: latestSeq(getDb(), campaign.id),
 		shown: shownTo(getDb(), campaign.id, display ? 'player' : { role: campaign.role, userId: user.id }),
 		// Who is asking for a seat is the GM's to know, and to answer.
-		knocks: !display && campaign.role === 'gm' ? knocksOf(getDb(), campaign.id) : []
+		knocks: !display && campaign.role === 'gm' ? knocksOf(getDb(), campaign.id) : [],
+		date: campaign.date
 	};
 	return Response.json(identity, { headers: { 'cache-control': 'no-store' } });
 };

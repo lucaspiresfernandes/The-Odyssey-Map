@@ -7,11 +7,14 @@
 	// a token that is some player's has its turn ended by them, and one that
 	// is nobody's by any player who can see it.
 	//
-	// Tokens are put in the order from the map, with the buttons under a
-	// selected token. Until one is, this is not there at all.
+	// Who takes turns is said here too, and nowhere else: the GM selects
+	// tokens on the map, and the button at the top of this puts them in the
+	// order, or takes them out. Until one is in it, the GM has that button
+	// alone, and nobody else has anything.
 
+	import { KEY } from '#lib/client/keys.ts';
 	import { canEndTurn } from '#lib/shared/rules.ts';
-	import { reorderedTurns, sortedByRolls } from '#lib/shared/turns.ts';
+	import { joinedTurns, reorderedTurns, sortedByRolls } from '#lib/shared/turns.ts';
 	import { LIMITS, imageUrl, type Token, type Turns } from '#lib/shared/types.ts';
 	import ToolButton from './ToolButton.svelte';
 
@@ -26,8 +29,11 @@
 		/** A table display: the order is shown, and nothing about it can be touched. */
 		passive?: boolean;
 		collapsed: boolean;
-		/** The token selected on the map, when it is the only one: it is marked here too. */
-		selectedId: string | null;
+		/**
+		 * What is selected on the map. The tokens among it are marked here too,
+		 * and are the ones the GM puts in the order or takes out of it.
+		 */
+		selectedIds: string[];
 		/** A token here was clicked: the map selects it. */
 		onpick: (id: string) => void;
 		/**
@@ -47,7 +53,7 @@
 		userId,
 		passive = false,
 		collapsed = $bindable(),
-		selectedId,
+		selectedIds,
 		onpick,
 		onchange,
 		onnext
@@ -84,6 +90,37 @@
 		!passive && (gm || (acting !== null && canEndTurn('player', userId, acting)))
 	);
 
+	// ------------------------------------------------------ who takes turns
+
+	/** The order is this person's to run: the GM, anywhere but on a table display. */
+	const runs = $derived(gm && !passive);
+	/** The tokens selected on the map. */
+	const picked = $derived(tokens.filter((token) => selectedIds.includes(token.id)));
+	/** Every token selected takes turns already: the button takes them out. */
+	const allIn = $derived(picked.length > 0 && picked.every((t) => turns.order.includes(t.id)));
+	const those = $derived(picked.length === 1 ? 'the selected token' : `the ${picked.length} selected tokens`);
+	/** What the button that does it says, as things stand. */
+	const joining = $derived(
+		picked.length === 0
+			? { label: 'Add tokens to the turn order', hint: 'Select them on the map first' }
+			: allIn
+				? { label: `Take ${those} out`, hint: undefined }
+				: { label: `Add ${those}`, hint: 'At the end of the turn order' }
+	);
+
+	/**
+	 * Puts the tokens selected on the map at the end of the order, or when
+	 * they are all in it, takes them out. The GM's, and undone with Ctrl+Z.
+	 */
+	export function join() {
+		if (!runs || rolling || picked.length === 0) return;
+		const ids = picked.map((token) => token.id);
+		if (!allIn) return void onchange({ order: joinedTurns(turns.order, ids) });
+		const order = turns.order.filter((id) => !ids.includes(id));
+		// With the last one out, the fight is over.
+		onchange(order.length ? { order } : { order, current: null, round: 1 });
+	}
+
 	/** Moves on to the next turn, if that is this person's to do. */
 	export function next() {
 		if (canPass) onnext();
@@ -95,6 +132,20 @@
 		const typed: Record<string, number | null> = {};
 		for (const id of here) typed[id] = turns.rolls?.[id] ?? null;
 		rolling = typed;
+	}
+
+	/** The GM's key for the rolls: the boxes come out, unfolding the line if it was folded away. */
+	export function roll() {
+		if (!gm || passive || line.length === 0 || rolling) return;
+		collapsed = false;
+		startRolling();
+	}
+
+	/** Ends the fight: nobody takes turns any more. The GM's, and undone with Ctrl+Z. */
+	export function end() {
+		if (!gm || passive || line.length === 0) return;
+		rolling = null;
+		onchange({ order: [], current: null, round: 1 });
 	}
 
 	/**
@@ -234,11 +285,26 @@
 	}
 </script>
 
-{#if line.length}
+{#if line.length === 0}
+	{#if runs}
+		<!-- Nobody takes turns yet. The GM has the way to start. -->
+		<div class="rounded-xl border bg-panel/94 p-1.5 shadow-pop">
+			<ToolButton
+				tip="bottom-start"
+				icon="turns"
+				label={picked.length ? `Start a turn order with ${those}` : 'Start a turn order'}
+				hint={picked.length ? undefined : 'Select the tokens that take turns on the map first'}
+				shortcut={KEY.turns}
+				disabled={picked.length === 0}
+				onclick={join}
+			/>
+		</div>
+	{/if}
+{:else}
 	{#if collapsed && !passive}
 		<div class="rounded-xl border bg-panel/94 p-1.5 shadow-pop">
 			<ToolButton
-				tip="bottom"
+				tip="bottom-start"
 				icon="turns"
 				label="Show the turn order"
 				hint={started ? `Round ${turns.round}` : undefined}
@@ -248,14 +314,14 @@
 		</div>
 	{:else}
 		<div
-			class="flex max-h-[calc(100dvh-220px)] flex-col gap-1.5 rounded-xl border bg-panel/94 p-1.5 shadow-pop"
+			class="flex max-h-[calc(100dvh-220px)] min-h-0 flex-col gap-1.5 rounded-xl border bg-panel/94 p-1.5 shadow-pop"
 			role="group"
 			aria-label="Turn order"
 		>
 			<div class="flex items-center justify-between gap-1.5">
 				{#if !passive}
 					<ToolButton
-						tip="bottom"
+						tip="bottom-start"
 						icon="up"
 						label="Fold the turn order away"
 						onclick={() => (collapsed = true)}
@@ -271,6 +337,17 @@
 				>
 					{mine ? 'Your turn' : started ? `Round ${turns.round}` : 'Turns'}
 				</span>
+				{#if runs}
+					<ToolButton
+						tip="bottom-start"
+						icon={allIn ? 'minus' : 'plus'}
+						label={joining.label}
+						hint={joining.hint}
+						shortcut={KEY.turns}
+						disabled={picked.length === 0 || rolling !== null}
+						onclick={join}
+					/>
+				{/if}
 			</div>
 
 			<!-- Each token as a disc, like on the map: its picture, or its colour (--c)
@@ -293,7 +370,7 @@
 								sortable && 'touch-none',
 								held ? 'z-1 scale-125 token-lifted' : current && 'scale-110',
 								current ? 'border-white token-selected' : 'border-[#12151c]',
-								selectedId === token.id && !current && 'border-accent',
+								selectedIds.includes(token.id) && !current && 'border-accent',
 								token.hidden && 'border-dashed opacity-60',
 								token.marks.includes('down') && 'brightness-60 saturate-0'
 							]}
@@ -365,7 +442,7 @@
 							tip="bottom"
 							icon="next"
 							label={started ? 'Next turn' : 'Start the first turn'}
-							shortcut="n"
+							shortcut={KEY.nextTurn}
 							onclick={next}
 						/>
 						<ToolButton
@@ -373,6 +450,7 @@
 							icon="dice"
 							label="Sort by what they rolled"
 							hint="Type each token's roll: the highest goes first"
+							shortcut={KEY.rolls}
 							onclick={startRolling}
 						/>
 						<ToolButton
@@ -381,7 +459,8 @@
 							danger
 							label="End the fight"
 							hint="Empties the turn order. Ctrl+Z brings it back"
-							onclick={() => onchange({ order: [], current: null, round: 1 })}
+							shortcut={KEY.endFight}
+							onclick={end}
 						/>
 					{/if}
 				</div>
@@ -392,7 +471,7 @@
 						tip="bottom"
 						icon="next"
 						label={mine ? 'End your turn' : 'End this turn'}
-						shortcut="n"
+						shortcut={KEY.nextTurn}
 						onclick={next}
 					/>
 				</div>

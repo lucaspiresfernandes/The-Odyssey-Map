@@ -1,17 +1,81 @@
-// The arithmetic of the fog of war. Fog covers a whole battle map but for a
-// list of boxes that have been cleared. The boxes never overlap: clearing
-// one cuts it out of the others first. That keeps the fog one shape with
-// holes in it, which draws without seams.
+// The arithmetic of the fog of war. Fog covers a whole map but for what has
+// been cleared from it: by a brush swept across the map, round or square.
+// Each sweep is a mark, and the marks are kept in the order they were
+// made: a spot is under the fog or not by the last mark that holds it.
 
-import { LIMITS, PARTY_SIGHT, type Fog, type MapInfo, type Oval, type Point, type Rect } from './types';
+import { thinOut } from './drawing';
+import { FOG_BRUSH, LIMITS, type Fog, type FogMark, type MapInfo, type Point, type Rect } from './types';
 
-type Sheet = Pick<MapInfo, 'width' | 'height' | 'grid'>;
+type Sized = Pick<MapInfo, 'width' | 'height'>;
 
-/** True when a spot is under the fog: it is on, and nothing that was cleared holds the spot. */
-export function isFogged(fog: Fog | undefined, [x, y]: Point): boolean {
+const inBox = ([x0, y0, x1, y1]: Rect, [x, y]: Point) => x >= x0 && x <= x1 && y >= y0 && y <= y1;
+
+/** True when a round brush of one, swept from `a` to `b`, went over a spot: it is within one of the way. */
+function roundOver([ax, ay]: Point, [bx, by]: Point, [px, py]: Point): boolean {
+	const dx = bx - ax;
+	const dy = by - ay;
+	const length = dx * dx + dy * dy;
+	// How far along the way the spot is nearest to it, kept between its ends.
+	const along =
+		length === 0 ? 0 : Math.min(1, Math.max(0, ((px - ax) * dx + (py - ay) * dy) / length));
+	return (px - ax - along * dx) ** 2 + (py - ay - along * dy) ** 2 <= 1;
+}
+
+/**
+ * True when a square brush, one from its middle to its sides, swept from
+ * `a` to `b`, went over a spot: somewhere on the way it was within one of
+ * the spot both across and down.
+ */
+function squareOver(a: Point, b: Point, spot: Point): boolean {
+	// The part of the way, from 0 at `a` to 1 at `b`, that is near enough both ways.
+	let from = 0;
+	let to = 1;
+	for (const axis of [0, 1]) {
+		const step = b[axis] - a[axis];
+		const gap = spot[axis] - a[axis];
+		if (step === 0) {
+			if (Math.abs(gap) > 1) return false;
+			continue;
+		}
+		const one = (gap - 1) / step;
+		const other = (gap + 1) / step;
+		from = Math.max(from, Math.min(one, other));
+		to = Math.min(to, Math.max(one, other));
+		if (from > to) return false;
+	}
+	return true;
+}
+
+/** True when a mark holds a spot: the spot is in its box, or the brush went over it as it swept. */
+function holds(mark: FogMark, [x, y]: Point): boolean {
+	if ('box' in mark) return inBox(mark.box, [x, y]);
+	// Measured in brushes: the brush is round on the map's picture, which
+	// makes it an oval in map space, and a circle of one across in these.
+	const [rx, ry] = mark.r;
+	const inBrushes = ([sx, sy]: Point): Point => [sx / rx, sy / ry];
+	const over = mark.square ? squareOver : roundOver;
+	const spot = inBrushes([x, y]);
+	// A brush put down and lifted again went from where it was to the same place.
+	let a = inBrushes(mark.path[0]);
+	for (let i = 0; i < mark.path.length; i++) {
+		const b = inBrushes(mark.path[i]);
+		if (over(a, b, spot)) return true;
+		a = b;
+	}
+	return false;
+}
+
+/**
+ * True when a spot is under the fog: it is on, and the last mark made over
+ * the spot covered it, or none was and nothing cleared there to begin with.
+ */
+export function isFogged(fog: Fog | undefined, at: Point): boolean {
 	if (!fog?.on) return false;
-	if (fog.clear.some(([x0, y0, x1, y1]) => x >= x0 && x <= x1 && y >= y0 && y <= y1)) return false;
-	return !fog.spots?.some(([cx, cy, rx, ry]) => ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1);
+	const marks = fog.marks ?? [];
+	for (let i = marks.length - 1; i >= 0; i--) {
+		if (holds(marks[i], at)) return marks[i].cover;
+	}
+	return !fog.clear.some((box) => inBox(box, at));
 }
 
 /** The middle of the box around some corners: where a region is taken to be, for the fog. */
@@ -21,121 +85,153 @@ export function middleOf(points: Point[]): Point {
 	return [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
 }
 
-/**
- * The fog with what the party sees from `at` cleared of it: a round patch,
- * as wide on the map's picture as it is tall. Fog that is off has nothing
- * to clear, and neither has a spot the party has all but stood on before.
- * Null when the fog is in too many patches to take another.
- */
-export function sighted(fog: Fog, map: Pick<MapInfo, 'width' | 'height'>, [x, y]: Point): Fog | null {
-	if (!fog.on) return fog;
-	const reach = PARTY_SIGHT * Math.max(map.width, map.height);
-	const rx = rounded(reach / map.width);
-	const ry = rounded(reach / map.height);
-	const spots = fog.spots ?? [];
-	const stoodNear = spots.some(
-		([cx, cy, sx, sy]) => sx >= rx && sy >= ry && ((x - cx) / sx) ** 2 + ((y - cy) / sy) ** 2 <= 0.01
-	);
-	if (stoodNear) return fog;
-	if (spots.length >= LIMITS.fogSpots) return null;
-	const spot: Oval = [rounded(x), rounded(y), rx, ry];
-	return { ...fog, spots: [...spots, spot] };
-}
-
-/**
- * The spots along the straight way from `a` to `b` that the party sees
- * from as it travels: close enough together that what it sees from one
- * runs into what it sees from the next. Neither end is among them.
- */
-export function stopsBetween(map: Pick<MapInfo, 'width' | 'height'>, a: Point, b: Point): Point[] {
-	const reach = PARTY_SIGHT * Math.max(map.width, map.height);
-	const far = Math.hypot((b[0] - a[0]) * map.width, (b[1] - a[1]) * map.height);
-	const stops = Math.floor(far / (reach * 0.7));
-	return Array.from({ length: stops }, (_, i): Point => {
-		const along = (i + 1) / (stops + 1);
-		return [a[0] + (b[0] - a[0]) * along, a[1] + (b[1] - a[1]) * along];
-	});
-}
-
-/** `rects` with `hole` cut out of them: what is left of each one it touches, in up to four pieces. */
-export function without(rects: Rect[], [hx0, hy0, hx1, hy1]: Rect): Rect[] {
-	const left: Rect[] = [];
-	for (const rect of rects) {
-		const [x0, y0, x1, y1] = rect;
-		if (hx0 >= x1 || hx1 <= x0 || hy0 >= y1 || hy1 <= y0) {
-			left.push(rect);
-			continue;
-		}
-		// A strip above the hole and one below, each the whole width, and
-		// between them what is left on either side.
-		if (hy0 > y0) left.push([x0, y0, x1, hy0]);
-		if (hy1 < y1) left.push([x0, hy1, x1, y1]);
-		const top = Math.max(y0, hy0);
-		const bottom = Math.min(y1, hy1);
-		if (hx0 > x0) left.push([x0, top, hx0, bottom]);
-		if (hx1 < x1) left.push([hx1, top, x1, bottom]);
-	}
-	return left;
-}
-
-/** The fog with `rect` cleared of it. Fog that is off has nothing to clear. */
-export function cleared(fog: Fog, rect: Rect): Fog {
-	if (!fog.on) return fog;
-	return { ...fog, on: true, clear: [...without(fog.clear, rect), rect] };
-}
-
-/**
- * The fog with `rect` covered again. On a map with no fog yet, that is
- * where it starts: the rest of the map stays in the clear. A round patch
- * the party cleared on a world map goes with the box its middle is in:
- * the fog comes down on where it stood as well.
- */
-export function covered(fog: Fog, rect: Rect): Fog {
-	const [x0, y0, x1, y1] = rect;
-	const clear = without(fog.on ? fog.clear : [[0, 0, 1, 1]], rect);
-	const spots = (fog.on ? (fog.spots ?? []) : []).filter(
-		([x, y]) => x < x0 || x > x1 || y < y0 || y > y1
-	);
-	// Fog that had patches says what is left of them, even when that is none:
-	// left unsaid, the server would keep the ones it has.
-	return fog.spots ? { on: true, clear, spots } : { on: true, clear };
-}
-
 /** Six decimal places put an edge within a thirtieth of a pixel on the biggest map there is. */
 function rounded(n: number) {
 	return Math.round(n * 1e6) / 1e6;
 }
 
-/**
- * The box dragged from `a` to `b`, grown to take in every grid cell it
- * touches, so fog comes and goes a cell at a time. With `free` it is the
- * box exactly as dragged. Null when there is nothing of it on the map.
- */
-export function cellBox(map: Sheet, a: Point, b: Point, free = false): Rect | null {
-	const { size } = map.grid;
-	const span = (from: number, to: number, offset: number, across: number): [number, number] => {
-		let low = Math.min(from, to);
-		let high = Math.max(from, to);
-		if (!free) {
-			low = (Math.floor((low * across - offset) / size) * size + offset) / across;
-			high = (Math.ceil((high * across - offset) / size) * size + offset) / across;
-		}
-		return [rounded(Math.max(0, low)), rounded(Math.min(1, high))];
-	};
-	const [x0, x1] = span(a[0], b[0], map.grid.x, map.width);
-	const [y0, y1] = span(a[1], b[1], map.grid.y, map.height);
-	return x1 > x0 && y1 > y0 ? [x0, y0, x1, y1] : null;
+const onMap = (n: number) => Math.min(1, Math.max(0, n));
+
+/** A brush size the fog can be painted with: the nearest one to what was asked for. */
+export function brushSize(size: number): number {
+	return Math.min(FOG_BRUSH.max, Math.max(FOG_BRUSH.min, size));
 }
 
 /**
- * The fog as one path in the map's pixels: the whole map, with a hole for
- * each cleared box. The round patches of a world map overlap, so they are
- * not in it: a map that has those is drawn through a mask instead.
+ * How far a brush of some size reaches across a map and down it, in map
+ * space. Its size is its radius as a part of the map's longer side, so on
+ * the map's picture it is round, or for a square brush, square.
  */
-export function fogPath(fog: Fog, width: number, height: number): string {
-	let d = `M0 0H${width}V${height}H0Z`;
-	for (const [x0, y0, x1, y1] of fog.clear) {
-		d += `M${x0 * width} ${y0 * height}H${x1 * width}V${y1 * height}H${x0 * width}Z`;
+export function brushReach(map: Sized, size: number): [number, number] {
+	const reach = brushSize(size) * Math.max(map.width, map.height);
+	// A map many times longer than it is tall would otherwise have a brush
+	// many maps tall.
+	return [rounded(Math.min(4, reach / map.width)), rounded(Math.min(4, reach / map.height))];
+}
+
+/**
+ * The marks a brush leaves that was swept through these spots, to clear
+ * the fog there or with `cover` to put it back: a round brush, or with
+ * `square` a square one. The spots it passed through are thinned to the
+ * ones that give the sweep its shape. A long one is kept as several marks,
+ * each starting where the last one ended.
+ */
+export function brushMarks(
+	cover: boolean,
+	swept: Point[],
+	map: Sized,
+	size: number,
+	square = false
+): FogMark[] {
+	if (swept.length === 0) return [];
+	const r = brushReach(map, size);
+	// Thinned in brushes: what is dropped lay within a twentieth of the
+	// brush's reach of the line through what stays.
+	const path = thinOut(
+		swept.map(([x, y]): Point => [x / r[0], y / r[1]]),
+		0.05
+	).map(([x, y]): Point => [rounded(onMap(x * r[0])), rounded(onMap(y * r[1]))]);
+	const marks: FogMark[] = [];
+	for (let i = 0; i === 0 || i < path.length - 1; i += LIMITS.fogPath - 1) {
+		const mark = { cover, path: path.slice(i, i + LIMITS.fogPath), r };
+		marks.push(square ? { ...mark, square } : mark);
 	}
-	return d;
+	return marks;
+}
+
+/** The box around everything a mark holds. */
+function boundsOf(mark: FogMark): Rect {
+	if ('box' in mark) return mark.box;
+	const xs = mark.path.map((point) => point[0]);
+	const ys = mark.path.map((point) => point[1]);
+	const [rx, ry] = mark.r;
+	return [Math.min(...xs) - rx, Math.min(...ys) - ry, Math.max(...xs) + rx, Math.max(...ys) + ry];
+}
+
+/**
+ * The fog with these marks made on it, one after the other. Fog that is off
+ * has nothing to clear, and comes back as it was. Covering a part of a map
+ * with no fog starts some there: the rest of the map stays in the clear.
+ */
+export function marked(fog: Fog, marks: FogMark[]): Fog {
+	let next = fog;
+	for (const mark of marks) {
+		if (!next.on) {
+			if (mark.cover) next = { on: true, clear: [[0, 0, 1, 1]], marks: [mark] };
+			continue;
+		}
+		// A box says all there is to say about what is inside it: the marks
+		// made there before are forgotten, so the list doesn't grow for ever.
+		const before = next.marks ?? [];
+		const box = 'box' in mark ? mark.box : null;
+		const kept = box
+			? before.filter((each) => {
+					const [x0, y0, x1, y1] = boundsOf(each);
+					return x0 < box[0] || y0 < box[1] || x1 > box[2] || y1 > box[3];
+				})
+			: before;
+		next = { ...next, marks: [...kept, mark] };
+	}
+	return next;
+}
+
+/** The fog with a box of it cleared, or with `cover` put back. */
+export function boxed(fog: Fog, box: Rect, cover = false): Fog {
+	return marked(fog, [{ cover, box }]);
+}
+
+/** Fog as it is kept: with its marks only where it has some. */
+export function fogOf(fog: Fog): Fog {
+	return fog.marks?.length
+		? { on: fog.on, clear: fog.clear, marks: fog.marks }
+		: { on: fog.on, clear: fog.clear };
+}
+
+/**
+ * Where a round brush swept, as the path a line of its width is drawn
+ * along. It is in brushes: drawn two wide with round ends, and scaled by
+ * the reach of the brush, it covers what the mark holds.
+ */
+export function sweepPath(mark: Extract<FogMark, { path: Point[] }>): string {
+	const [rx, ry] = mark.r;
+	const d = mark.path.map(([x, y], i) => `${i ? 'L' : 'M'}${fine(x / rx)} ${fine(y / ry)}`).join('');
+	// A brush that was put down and lifted again leaves a dot.
+	return mark.path.length === 1 ? `${d}h0` : d;
+}
+
+/** Four decimal places of a brush are finer than a pixel of the biggest brush there is. */
+const fine = (n: number) => Math.round(n * 1e4) / 1e4;
+
+/**
+ * Where a square brush swept, as the outline of what it went over, to be
+ * filled. It is in brushes, like `sweepPath`. A line can't be drawn that
+ * wide with its ends kept level, so each stretch of the way is a shape of
+ * its own: the square at one end, the square at the other, and what lies
+ * between them. They all go round the same way, so that where two of them
+ * overlap, both still count.
+ */
+export function stampPath(mark: Extract<FogMark, { path: Point[] }>): string {
+	const [rx, ry] = mark.r;
+	const spots = mark.path.map(([x, y]): Point => [x / rx, y / ry]);
+	const shapes: string[] = [];
+	for (let i = 0; i === 0 || i < spots.length - 1; i++) {
+		const [ax, ay] = spots[i];
+		const [bx, by] = spots[i + 1] ?? spots[i];
+		// The way the brush went, across and down.
+		const sx = bx < ax ? -1 : 1;
+		const sy = by < ay ? -1 : 1;
+		// From the corner behind the brush where it started, round by the
+		// corner ahead of it where it stopped.
+		const corners: Point[] = [
+			[ax - sx, ay - sy],
+			[ax + sx, ay - sy],
+			[bx + sx, by - sy],
+			[bx + sx, by + sy],
+			[bx - sx, by + sy],
+			[ax - sx, ay + sy]
+		];
+		if (sx !== sy) corners.reverse();
+		shapes.push(`M${corners.map(([x, y]) => `${fine(x)} ${fine(y)}`).join('L')}Z`);
+	}
+	return shapes.join('');
 }

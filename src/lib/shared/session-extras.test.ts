@@ -4,10 +4,10 @@
 
 import { describe, expect, test } from 'bun:test';
 import { inviteAddress, type Invite } from '../client/invite';
-import { covered } from './fog';
+import { boxed, isFogged } from './fog';
 import { feetAlong, milesAlong, milesBetween, travelTime } from './grid';
 import { canEndTurn } from './rules';
-import { DEFAULT_GRID, type Fog, type Point } from './types';
+import { DEFAULT_GRID, type Point } from './types';
 
 describe('a ruler along a road', () => {
 	const sheet = { width: 2000, height: 1000 };
@@ -54,28 +54,11 @@ describe('how long the way takes', () => {
 	});
 });
 
-describe('fog covered by hand where the party has been', () => {
-	test('a round patch goes with the box its middle is in, and the others stay', () => {
-		const fog: Fog = {
-			on: true,
-			clear: [],
-			spots: [
-				[0.2, 0.2, 0.08, 0.08],
-				[0.8, 0.8, 0.08, 0.08]
-			]
-		};
-		expect(covered(fog, [0.1, 0.1, 0.3, 0.3])).toEqual({
-			on: true,
-			clear: [],
-			spots: [[0.8, 0.8, 0.08, 0.08]]
-		});
-		// With none left the list is there and empty, for the server to be told so.
-		expect(covered(fog, [0, 0, 1, 1])).toEqual({ on: true, clear: [], spots: [] });
-		// Fog that never had any is as it always was.
-		expect(covered({ on: true, clear: [[0, 0, 1, 1]] }, [0, 0, 0.5, 1])).toEqual({
-			on: true,
-			clear: [[0.5, 0, 1, 1]]
-		});
+describe('fog covered by hand', () => {
+	test('covering a part of what was cleared leaves the rest of it in the clear', () => {
+		const fog = boxed({ on: true, clear: [[0, 0, 1, 1]] }, [0, 0, 0.5, 1], true);
+		expect(isFogged(fog, [0.25, 0.5])).toBe(true);
+		expect(isFogged(fog, [0.75, 0.5])).toBe(false);
 	});
 });
 

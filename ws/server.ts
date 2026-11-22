@@ -10,12 +10,11 @@
 //     would have posted it, and the app's answer is sent back.
 //   - After every change the app tells this server what to deliver, already
 //     filtered for each role, and for each player who is let in on something
-//     the others are not. The same goes for the GM bringing everyone to
-//     what they are looking at: the app says who may follow. The last call
-//     is kept for as long as this server runs, for whoever connects later.
-//     So is the picture the GM is holding up, and who for, which the app
-//     also tells of whenever a browser connects. And who is asking for a
-//     seat they sat in before, which only the GM is ever told.
+//     the others are not. The picture the GM is holding up, and who for,
+//     is kept for as long as this server runs, for whoever connects later:
+//     the app also tells of it whenever a browser connects. So is who is
+//     asking for a seat they sat in before, which only the GM is ever
+//     told. And the date it is in the world, which everyone is.
 //   - What a browser has in hand goes straight from one browser to the
 //     others: the token it is dragging, the distance it is measuring, the
 //     spot it is pointing at while its button is held down. So does a ping,
@@ -31,7 +30,6 @@ import {
 	type Broadcast,
 	type ClientMessage,
 	type CommandResponse,
-	type Gather,
 	type Hand,
 	type HandSpot,
 	type Knock,
@@ -98,6 +96,8 @@ interface Connection {
 	shown: Shown | null;
 	/** Who the app said was asking for a seat then. Empty for anyone but the GM. */
 	knocks: Knock[];
+	/** The date the app said it was in the world then. */
+	date: string;
 	identifiedAt: number;
 	/** What this browser last said it had in hand, for people who connect later. */
 	hand: Hand | null;
@@ -116,21 +116,14 @@ const rooms = new Map<string, Set<Socket>>();
 /** The newest event delivered per campaign since this server started. */
 const delivered = new Map<string, number>();
 
-/**
- * The last time the GM brought everyone somewhere, per campaign and for
- * each role as the app allowed it, and for each player who was let follow
- * a call the others were not. Whoever connects later is sent it, so that
- * arriving late doesn't mean looking at the wrong map.
- */
-const lastGather = new Map<string, Record<Role, Gather | null> & { players: Map<string, Gather> }>();
-/** A call that old is no longer where the table is. */
-const GATHER_KEPT = 6 * 60 * 60 * 1000;
-
 /** The picture held up per campaign, the players it is for, and when the app last said so through here. */
 const heldUp = new Map<string, { shown: Shown | null; to: string[]; at: number }>();
 
 /** Who is asking for a seat per campaign, and when the app last said so through here. */
 const knocking = new Map<string, { knocks: Knock[]; at: number }>();
+
+/** The date in the world per campaign, and when the app last said so through here. */
+const dates = new Map<string, { date: string; at: number }>();
 
 /**
  * Who a socket is among the players, by user id, or null for the GM and for
@@ -195,13 +188,39 @@ function originAllowed(request: Request, url: URL): boolean {
 // ------------------------------------------------------------------ the app
 
 /** A request to the app on behalf of a browser, carrying that browser's cookies. */
-function askApp(path: string, cookie: string, init: RequestInit = {}): Promise<Response> {
-	return fetch(APP_URL + path, {
+async function askApp(path: string, cookie: string, init: RequestInit = {}): Promise<Response> {
+	const response = await fetch(APP_URL + path, {
 		...init,
 		headers: { ...init.headers, cookie },
 		redirect: 'manual',
 		signal: AbortSignal.timeout(10000)
 	});
+	if (!appListening) {
+		appListening = true;
+		console.log(`The app is answering at ${APP_URL}.`);
+	}
+	return response;
+}
+
+/** Whether something was listening at APP_URL the last time it was asked. */
+let appListening = true;
+
+/**
+ * Notes a request the app gave no answer to. Nothing listening there is what
+ * starting looks like when this server is ready before the app is, and
+ * browsers try again on their own: it is said once, in a line, until the app
+ * answers. Anything else is printed whole.
+ */
+function appSilent(err: unknown) {
+	const code = (err as { code?: unknown } | null)?.code;
+	if (code !== 'ECONNREFUSED' && code !== 'ConnectionRefused') {
+		console.error('The app did not answer:', err);
+		return;
+	}
+	if (appListening) {
+		console.log(`Nothing is listening at ${APP_URL} yet. Browsers will try again until the app is up.`);
+	}
+	appListening = false;
 }
 
 /**
@@ -224,7 +243,7 @@ async function identify(
 		if (!response.ok) return new Response('Campaign not found', { status: 404 });
 		return (await response.json()) as LiveIdentity;
 	} catch (err) {
-		console.error('The app did not answer:', err);
+		appSilent(err);
 		return new Response('The app is not reachable', { status: 503 });
 	}
 }
@@ -244,7 +263,7 @@ async function forward(ws: Socket, message: Extract<ClientMessage, { t: 'cmd' }>
 		status = response.status;
 		body = await response.json().catch(() => null);
 	} catch (err) {
-		console.error('The app did not answer:', err);
+		appSilent(err);
 		return refuse('Something went wrong.');
 	}
 
@@ -376,32 +395,8 @@ async function publish(request: Request): Promise<Response> {
 	if (request.method !== 'POST' || request.headers.get('authorization') !== `Bearer ${SECRET}`) {
 		return new Response('Forbidden', { status: 403 });
 	}
-	const { campaignId, events, gather, show, knocks } = (await request.json()) as Broadcast;
+	const { campaignId, events, show, knocks, date } = (await request.json()) as Broadcast;
 	const room = rooms.get(campaignId) ?? [];
-	// The GM bringing everyone along: the app has said which roles may follow.
-	// Each role keeps the last call it was let follow: one the players were
-	// left out of doesn't take theirs away.
-	if (gather) {
-		const kept = lastGather.get(campaignId) ?? { gm: null, player: null, players: new Map() };
-		for (const role of ROLES) kept[role] = gather[role] ?? kept[role];
-		lastGather.set(campaignId, kept);
-		for (const role of ROLES) {
-			const call = gather[role];
-			if (!call) continue;
-			const message: ServerMessage = { t: 'gather', gather: call };
-			server.publish(topic(campaignId, role), JSON.stringify(message));
-		}
-		// The players who may follow a call the table may not: each by name.
-		const call = gather.gm;
-		if (call && !gather.player) {
-			const let_in = new Set(gather.only ?? []);
-			for (const id of let_in) kept.players.set(id, call);
-			for (const ws of room) {
-				const id = playerOf(ws);
-				if (id !== null && let_in.has(id)) send(ws, { t: 'gather', gather: call });
-			}
-		}
-	}
 	// Who is asking for a seat they sat in before: the GM's to know, on
 	// every screen of theirs but a table display, which listens as a player.
 	if (knocks) {
@@ -415,6 +410,13 @@ async function publish(request: Request): Promise<Response> {
 		const to = show.to ?? [];
 		heldUp.set(campaignId, { shown: show.shown, to, at: Date.now() });
 		for (const ws of room) send(ws, { t: 'show', shown: shownFor(ws, show.shown, to) });
+	}
+	// The date in the world has been set, or with an empty one, taken away:
+	// everyone's to know.
+	if (typeof date === 'string') {
+		dates.set(campaignId, { date, at: Date.now() });
+		const message = JSON.stringify({ t: 'date', date } satisfies ServerMessage);
+		for (const ws of room) ws.send(message);
 	}
 	for (const event of events) {
 		delivered.set(campaignId, Math.max(delivered.get(campaignId) ?? 0, event.seq));
@@ -472,6 +474,7 @@ const server = Bun.serve({
 			queue: Promise.resolve(),
 			shown: identity.shown ?? null,
 			knocks: identity.role === 'gm' ? (identity.knocks ?? []) : [],
+			date: identity.date ?? '',
 			identifiedAt: asked,
 			hand: null,
 			handAt: 0,
@@ -495,6 +498,7 @@ const server = Bun.serve({
 
 			const held = heldUp.get(campaignId);
 			const asking = knocking.get(campaignId);
+			const dated = dates.get(campaignId);
 			send(ws, {
 				t: 'hello',
 				user,
@@ -517,18 +521,10 @@ const server = Bun.serve({
 						? []
 						: asking && asking.at >= ws.data.identifiedAt
 							? asking.knocks
-							: ws.data.knocks
+							: ws.data.knocks,
+				// And for the date in the world.
+				date: dated && dated.at >= ws.data.identifiedAt ? dated.date : ws.data.date
 			});
-			// Where the GM last brought everyone, for someone arriving late:
-			// the table, or this player among the few who were let follow,
-			// whichever call came last.
-			const kept = lastGather.get(campaignId);
-			const mine = kept?.players.get(playerOf(ws) ?? '');
-			let call = kept?.[role] ?? null;
-			if (mine && (!call || mine.at > call.at)) call = mine;
-			if (call && Date.now() - call.at < GATHER_KEPT) {
-				send(ws, { t: 'gather', gather: call, late: true });
-			}
 			if (!ws.data.display) announcePresence(campaignId);
 		},
 

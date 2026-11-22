@@ -4,31 +4,32 @@
 	// for those it would do something for.
 	//
 	// A token is the whole table's: its label, its lock, its marks, the number
-	// it carries, its look, copying it, and taking it off the map. Hiding it
-	// is the GM's, and so are saying who it is a secret with, and whether it
-	// takes turns, whether its number is kept from the table, and saving
-	// what is selected as a group to put down again. Turning and resizing it
-	// are not done from here: the map has handles for those on the token
-	// itself. A drawing is changed and rubbed out by whoever made it, and by
-	// the GM. A shape that marks out an area selects the tokens inside it.
+	// it carries, its look, copying it, and taking it off the map. Who sees it
+	// is the GM's: one button, which opens the dialog that says so. So are
+	// whether its number is kept from the table, and saving what is selected
+	// as a group to put down again. Turning and resizing it are not done from
+	// here: the map has handles for those on the token itself. Nor is who
+	// takes turns: that is the turn order's own, in its corner of the map. A
+	// drawing is changed and rubbed out by whoever made it, and by the GM. A
+	// shape that marks out an area selects the tokens inside it.
+	//
+	// Every button has a key, which the map hands on to `key` below.
 
+	import { KEY } from '#lib/client/keys.ts';
 	import { canChangeDrawing, canHideToken } from '#lib/shared/rules.ts';
-	import { countFrom, joinedTurns } from '#lib/shared/turns.ts';
+	import { countFrom } from '#lib/shared/turns.ts';
 	import {
 		LIMITS,
 		MARK_LOOKS,
 		isTemplate,
 		type Command,
 		type Drawing,
-		type Player,
 		type Role,
 		type Token,
 		type TokenInput,
-		type TokenMark,
-		type Turns
+		type TokenMark
 	} from '#lib/shared/types.ts';
 	import MarkIcon from './MarkIcon.svelte';
-	import PlayerPicker from './PlayerPicker.svelte';
 	import ToolButton from './ToolButton.svelte';
 
 	interface Props {
@@ -36,12 +37,8 @@
 		drawings: Drawing[];
 		/** The tokens standing inside the shapes selected: what a spell laid there would catch. */
 		inside: Token[];
-		/** Who takes turns on this map, for the button that puts a token among them. */
-		turns: Turns;
 		role: Role;
 		userId: string;
-		/** The players of the campaign, for the GM to choose who a hidden token is a secret with. */
-		players: Player[];
 		/** Which side the buttons' tooltips come out on: away from what is selected. */
 		tip: 'top' | 'bottom';
 		/** Carries the commands out. `note` is said once they are, with a way to undo them. */
@@ -58,16 +55,16 @@
 		onpick: (tokens: Token[]) => void;
 		/** The GM saves these tokens as a group, under this name. True once it is kept. */
 		onsave: (name: string, tokens: Token[]) => Promise<boolean>;
+		/** The GM is to say who sees these tokens. */
+		onvisibility: (tokens: Token[]) => void;
 	}
 
 	let {
 		tokens,
 		drawings,
 		inside,
-		turns,
 		role,
 		userId,
-		players,
 		tip,
 		send,
 		oncopy,
@@ -75,7 +72,8 @@
 		onwrite,
 		onclear,
 		onpick,
-		onsave
+		onsave,
+		onvisibility
 	}: Props = $props();
 
 	const gm = $derived(canHideToken(role));
@@ -88,9 +86,7 @@
 	);
 	const allLocked = $derived(tokens.length > 0 && tokens.every((t) => t.locked));
 	const allHidden = $derived(tokens.length > 0 && tokens.every((t) => t.hidden));
-	const allTakeTurns = $derived(
-		tokens.length > 0 && tokens.every((t) => turns.order.includes(t.id))
-	);
+	const someHidden = $derived(tokens.some((t) => t.hidden));
 	const several = $derived(tokens.length > 1);
 	/** Every token selected has its number kept from the table. */
 	const allKept = $derived(tokens.length > 0 && tokens.every((t) => t.countHidden));
@@ -111,27 +107,20 @@
 	let count = $state('');
 	/** What was typed for it is no number. */
 	let miscounted = $state(false);
-	/** The GM is choosing which players see the tokens selected. */
-	let sharing = $state(false);
-	/** The GM is saying whose the tokens selected are. */
-	let owning = $state(false);
-	/** The GM is naming the group the tokens selected are saved as. */
-	let grouping = $state(false);
-	let groupName = $state('');
 	/** The group is on its way to the server. */
 	let keeping = $state(false);
-	/** The player every token selected belongs to, by id: null when they are not all one player's. */
-	const owner = $derived(
-		tokens.length && tokens.every((t) => t.ownerId && t.ownerId === tokens[0].ownerId)
-			? tokens[0].ownerId
-			: null
-	);
-	/** The players every token selected is a secret with. */
+	/** How many players every token selected is a secret with. */
 	const sharedWith = $derived(
-		tokens.length
-			? tokens[0].seenBy.filter((id) => tokens.every((t) => t.hidden && t.seenBy.includes(id)))
-			: []
+		allHidden ? tokens[0].seenBy.filter((id) => tokens.every((t) => t.seenBy.includes(id))).length : 0
 	);
+	/** Who sees what is selected, for the tooltip of the button that changes it. */
+	const seen = $derived.by(() => {
+		const them = several ? 'them' : 'it';
+		if (!someHidden) return `Everyone sees ${them}`;
+		if (!allHidden) return 'Some of them are hidden';
+		if (!sharedWith) return `Only you see ${them}`;
+		return `Only you and ${sharedWith} ${sharedWith === 1 ? 'player' : 'players'} see ${them}`;
+	});
 
 	/**
 	 * Puts the caret in the label's box, with what is there selected to type
@@ -143,6 +132,14 @@
 		box.select();
 	}
 
+	/**
+	 * Puts the focus on the first button of a box that has just come out, so
+	 * that whoever opened it with a key can go on with the keyboard.
+	 */
+	function firstFocus(box: HTMLElement) {
+		box.querySelector('button')?.focus();
+	}
+
 	// A label being typed is for the token it was started on.
 	$effect(() => {
 		void one?.id;
@@ -151,26 +148,8 @@
 
 	// The marks are put away with the last token, and so is the rest.
 	$effect(() => {
-		if (tokens.length === 0) marking = counting = sharing = owning = grouping = false;
+		if (tokens.length === 0) marking = counting = false;
 	});
-
-	/**
-	 * Says which players see the tokens selected, and nobody else at the
-	 * table: each is hidden, and a secret with those.
-	 */
-	function share(seenBy: string[]) {
-		send(tokens.map((t) => update(t, { hidden: true, seenBy })));
-	}
-
-	/**
-	 * Hands the tokens selected to a player, or with the one who has them
-	 * picked again, to nobody. A token has one owner: picking another player
-	 * takes it from the first.
-	 */
-	function hand(picked: string[]) {
-		const to = picked.find((id) => id !== owner) ?? null;
-		send(tokens.filter((t) => (t.ownerId ?? null) !== to).map((t) => update(t, { ownerId: to })));
-	}
 
 	/**
 	 * The number typed goes on every token selected: as it is, or with a sign
@@ -194,17 +173,6 @@
 	function keep() {
 		const countHidden = !allKept;
 		send(tokens.filter((t) => t.countHidden !== countHidden).map((t) => update(t, { countHidden })));
-	}
-
-	/** Saves the tokens selected as a group, under the name typed. */
-	async function saveGroup(event: SubmitEvent) {
-		event.preventDefault();
-		const name = groupName.trim();
-		if (!name || keeping) return;
-		keeping = true;
-		const kept = await onsave(name, tokens);
-		keeping = false;
-		if (kept) grouping = false;
 	}
 
 	const update = (token: Token, changes: Partial<TokenInput>): Command => ({
@@ -249,20 +217,81 @@
 		});
 	}
 
-	/** Puts the tokens selected at the end of the turn order, or when they are all in it, takes them out. */
-	function takeTurns() {
-		const ids = tokens.map((t) => t.id);
-		const order = allTakeTurns
-			? turns.order.filter((id) => !ids.includes(id))
-			: joinedTurns(turns.order, ids);
-		send([{ t: 'map.update', id: tokens[0].mapId, turns: { order } }]);
-	}
-
 	function saveLabel(event: SubmitEvent) {
 		event.preventDefault();
 		const name = label.trim();
 		if (one && name && name !== one.name) send([update(one, { name })]);
 		labelling = false;
+	}
+
+	function startLabel(token: Token) {
+		label = token.name;
+		labelling = true;
+	}
+
+	function startCount() {
+		count = one?.count != null ? String(one.count) : '';
+		miscounted = false;
+		counting = true;
+	}
+
+	const duplicate = () => oncopy(tokens.map((t) => ({ t: 'token.duplicate', id: t.id })));
+
+	/**
+	 * Puts away whichever box of the bar is out: the label, the marks, the
+	 * number. True if one was.
+	 */
+	export function shut(): boolean {
+		const out = labelling || marking || counting;
+		labelling = marking = counting = false;
+		return out;
+	}
+
+	/**
+	 * A key was pressed with this selection on the map: it does what the
+	 * button it belongs to does. True if it was one of the bar's. `held` says
+	 * the key is being held down: it is done once, not over and over.
+	 */
+	export function key(pressed: string, held = false): boolean {
+		const mine = keyed(pressed);
+		if (!mine) return false;
+		if (held) return true;
+		// With one box out, a key opens another in its place.
+		shut();
+		mine();
+		return true;
+	}
+
+	/** What a key does to what is selected, or nothing if it is no key of the bar's. */
+	function keyed(pressed: string): (() => void) | null {
+		if (pressed === KEY.inside) return caught.length ? () => onpick(caught) : null;
+		if (pressed === KEY.rename || pressed === KEY.renameToo) {
+			if (one) return () => startLabel(one);
+			return text ? () => onwrite(text) : null;
+		}
+		if (tokens.length === 0) return null;
+		switch (pressed) {
+			case KEY.lock:
+				return lock;
+			case KEY.marks:
+				// The key that brings the marks out puts them away again.
+				return marking ? () => {} : () => (marking = true);
+			case KEY.count:
+				return startCount;
+			case KEY.duplicate:
+				return duplicate;
+			case KEY.look:
+				return one ? () => onedit(one) : null;
+		}
+		if (!gm) return null;
+		switch (pressed) {
+			// The quick way, with no button of its own: hidden from everyone, or back.
+			case KEY.hide:
+				return hide;
+			case KEY.share:
+				return () => onvisibility(tokens);
+		}
+		return null;
 	}
 
 	/** Takes off the map everything selected that is this person's to take off. */
@@ -308,26 +337,6 @@
 				/>
 				<button class="btn btn-sm btn-primary">Save</button>
 			</form>
-		{:else if grouping && tokens.length}
-			<form class="flex items-center gap-1" onsubmit={saveGroup}>
-				<input
-					class="input min-h-7 w-44 py-0 text-[13px] touch:min-h-9 touch:text-base"
-					bind:value={groupName}
-					maxlength={LIMITS.name}
-					placeholder="Name of the group"
-					aria-label="Name of the group"
-					title="It goes in the dock, to put down on any battle map: hidden, and as it stands now"
-					required
-					use:takeFocus
-					onkeydown={(e) => {
-						if (e.key !== 'Escape') return;
-						// Only the name is put away, not the selection with it.
-						e.stopPropagation();
-						grouping = false;
-					}}
-				/>
-				<button class="btn btn-sm btn-primary" disabled={keeping}>Save</button>
-			</form>
 		{:else if counting && tokens.length}
 			<form class="flex items-center gap-1" onsubmit={saveCount}>
 				<input
@@ -366,40 +375,11 @@
 					onclick={keep}
 				/>
 			{/if}
-		{:else if sharing && tokens.length}
-			<!-- Who the tokens selected are shown to, and nobody else at the table. -->
-			<div class="grid max-w-72 gap-1.5 p-1">
-				<span class="text-xs text-muted">
-					Only these players see {several ? 'them' : 'it'}:
-				</span>
-				<PlayerPicker
-					{players}
-					value={sharedWith}
-					label="Players who see what is selected"
-					onchange={share}
-				/>
-				<button class="btn btn-sm justify-self-end" onclick={() => (sharing = false)}>Done</button>
-			</div>
-		{:else if owning && tokens.length}
-			<!-- Whose the tokens selected are: one player, or nobody. -->
-			<div class="grid max-w-72 gap-1.5 p-1">
-				<span class="text-xs text-muted">
-					Whose {several ? 'tokens these are' : 'token this is'}. Their screen says when its turn
-					comes, and the turn is theirs to end:
-				</span>
-				<PlayerPicker
-					{players}
-					value={owner ? [owner] : []}
-					label="The player what is selected belongs to"
-					onchange={hand}
-				/>
-				<button class="btn btn-sm justify-self-end" onclick={() => (owning = false)}>Done</button>
-			</div>
 		{:else if marking && tokens.length}
 			<!-- The marks, seven to a row: lit while every token selected wears it.
 			     The first crosses a token out. Then the plain ones, each a disc of
 			     its own colour (--c), and under them the ones with an icon. -->
-			<div class="grid grid-cols-7 gap-1.5 p-1" role="group" aria-label="Marks">
+			<div class="grid grid-cols-7 gap-1.5 p-1" role="group" aria-label="Marks" use:firstFocus>
 				{#each MARK_LOOKS as option (option.id)}
 					{@const on = marked(option.id)}
 					<button
@@ -447,10 +427,8 @@
 						{tip}
 						icon="label"
 						label="Label"
-						onclick={() => {
-							label = one.name;
-							labelling = true;
-						}}
+						shortcut={KEY.rename}
+						onclick={() => startLabel(one)}
 					/>
 				{/if}
 				<ToolButton
@@ -458,6 +436,7 @@
 					{tip}
 					icon={allLocked ? 'unlock' : 'lock'}
 					label={allLocked ? 'Unlock' : 'Lock in place'}
+					shortcut={KEY.lock}
 					active={allLocked}
 					onclick={lock}
 				/>
@@ -466,6 +445,7 @@
 					{tip}
 					icon="mark"
 					label="Marks"
+					shortcut={KEY.marks}
 					hint="Colours and icons on its rim, or crossed out"
 					active={tokens.some((t) => t.marks.length > 0)}
 					onclick={() => (marking = true)}
@@ -475,22 +455,20 @@
 					{tip}
 					icon="count"
 					label="Number"
+					shortcut={KEY.count}
 					hint={gm
 						? 'Hit points, charges, rounds left: +3 or -5 changes it. You can keep it to yourself'
 						: 'Hit points, charges, rounds left: type +3 or -5 to change it'}
 					active={tokens.some((t) => t.count !== null)}
-					onclick={() => {
-						count = one?.count != null ? String(one.count) : '';
-						miscounted = false;
-						counting = true;
-					}}
+					onclick={startCount}
 				/>
 				<ToolButton
 					small
 					{tip}
 					icon="duplicate"
 					label={several ? 'Duplicate them' : 'Duplicate'}
-					onclick={() => oncopy(tokens.map((t) => ({ t: 'token.duplicate', id: t.id })))}
+					shortcut={KEY.duplicate}
+					onclick={duplicate}
 				/>
 				{#if one}
 					<ToolButton
@@ -498,12 +476,20 @@
 						{tip}
 						icon="image"
 						label="Picture, colour and outline"
+						shortcut={KEY.look}
 						onclick={() => onedit(one)}
 					/>
 				{/if}
 			{/if}
 			{#if text}
-				<ToolButton small {tip} icon="rename" label="Change the text" onclick={() => onwrite(text)} />
+				<ToolButton
+					small
+					{tip}
+					icon="rename"
+					label="Change the text"
+					shortcut={KEY.rename}
+					onclick={() => onwrite(text)}
+				/>
 			{/if}
 			{#if caught.length}
 				<ToolButton
@@ -512,6 +498,7 @@
 					icon="inside"
 					label={caught.length === 1 ? 'Select the token inside' : `Select the ${caught.length} tokens inside`}
 					hint="Then give them a mark, or type -8 for their number"
+					shortcut={KEY.inside}
 					onclick={() => onpick(caught)}
 				/>
 			{/if}
@@ -520,49 +507,12 @@
 				<ToolButton
 					small
 					{tip}
-					icon="turns"
-					label={allTakeTurns ? 'Take out of the turn order' : 'Add to the turn order'}
-					active={allTakeTurns}
-					onclick={takeTurns}
-				/>
-				<ToolButton
-					small
-					{tip}
-					icon="person"
-					label={owner ? `${tokens[0].ownerName ?? 'A player'}’s` : 'Hand to a player'}
-					hint={owner
-						? 'Click to hand it to someone else, or to nobody'
-						: 'Their screen says when its turn comes'}
-					active={owner !== null}
-					onclick={() => (owning = true)}
-				/>
-				<ToolButton
-					small
-					{tip}
-					icon={allHidden ? 'reveal' : 'hide'}
-					label={allHidden ? 'Reveal to all players' : 'Hide from players'}
-					active={allHidden}
-					onclick={hide}
-				/>
-				<ToolButton
-					small
-					{tip}
-					icon="people"
-					label="Show to some players only"
-					hint="A secret between them and you"
-					active={sharedWith.length > 0}
-					onclick={() => (sharing = true)}
-				/>
-				<ToolButton
-					small
-					{tip}
-					icon="group"
-					label={several ? 'Save as a group' : 'Save to put down again'}
-					hint="It goes in the dock, for any battle map"
-					onclick={() => {
-						groupName = one?.name ?? '';
-						grouping = true;
-					}}
+					icon={someHidden ? 'hide' : 'reveal'}
+					label="Visibility"
+					hint={seen}
+					shortcut={KEY.share}
+					active={someHidden}
+					onclick={() => onvisibility(tokens)}
 				/>
 			{/if}
 			{#if removable}
@@ -572,6 +522,7 @@
 					danger
 					icon="delete"
 					label={removable > 1 ? `Delete all ${removable}` : tokens.length ? 'Delete' : 'Rub out'}
+					shortcut={KEY.remove}
 					onclick={remove}
 				/>
 			{/if}

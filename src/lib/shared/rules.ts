@@ -193,14 +193,6 @@ export function canSeeToken(
 }
 
 /**
- * The party is the GM's to move, and to take off the maps: it goes where
- * the story has taken everyone.
- */
-export function canMoveParty(role: Role): boolean {
-	return role === 'gm';
-}
-
-/**
  * Which past changes someone may undo. Players get the changes to the
  * table's own notes, and what they themselves did to a token or a drawing. Everything
  * else is the GM's: the past of a world marker can hold text from before it

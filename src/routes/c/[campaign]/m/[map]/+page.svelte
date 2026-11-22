@@ -1,8 +1,17 @@
 <script lang="ts">
-	import { goto, preloadData, refreshAll } from '$app/navigation';
+	import { goto, refreshAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import { inviteAddress, rememberedHost } from '#lib/client/invite.ts';
-	import { tick, untrack } from 'svelte';
+	import {
+		KEY,
+		PEN_KEYS,
+		ariaKey,
+		chord,
+		isTyping,
+		keyLabel,
+		usesEnter
+	} from '#lib/client/keys.ts';
+	import { untrack } from 'svelte';
 	import { DISPLAY_GLINT, Discoveries } from '#lib/client/discoveries.svelte.ts';
 	import { getLive } from '#lib/client/live.svelte.ts';
 	import { MapState } from '#lib/client/mapstate.svelte.ts';
@@ -10,24 +19,27 @@
 	import Finder from '#lib/components/Finder.svelte';
 	import Gallery from '#lib/components/Gallery.svelte';
 	import InviteDialog from '#lib/components/InviteDialog.svelte';
+	import KeySheet from '#lib/components/KeySheet.svelte';
 	import MapCanvas from '#lib/components/MapCanvas.svelte';
+	import MapSettings from '#lib/components/MapSettings.svelte';
 	import MapSetup from '#lib/components/MapSetup.svelte';
+	import Menu from '#lib/components/Menu.svelte';
 	import MarkerForm from '#lib/components/MarkerForm.svelte';
 	import MarkerGlyph from '#lib/components/MarkerGlyph.svelte';
 	import Modal from '#lib/components/Modal.svelte';
 	import NamePrompt from '#lib/components/NamePrompt.svelte';
-	import PlayerPicker from '#lib/components/PlayerPicker.svelte';
 	import QrCode from '#lib/components/QrCode.svelte';
-	import ScalePrompt from '#lib/components/ScalePrompt.svelte';
 	import TokenDock from '#lib/components/TokenDock.svelte';
 	import TokenForm from '#lib/components/TokenForm.svelte';
 	import ToolButton, { type ToolIcon } from '#lib/components/ToolButton.svelte';
 	import TurnOrder from '#lib/components/TurnOrder.svelte';
+	import VisibilityDialog from '#lib/components/VisibilityDialog.svelte';
 	import { freeCell, gridFromBox, milesCount, snapToGrid } from '#lib/shared/grid.ts';
 	import { canEditWorld } from '#lib/shared/rules.ts';
 	import { tileLevels } from '#lib/shared/tiles.ts';
 	import {
 		INK_COLORS,
+		FOG_BRUSH,
 		LIMITS,
 		MARKER_TYPES,
 		TOKEN_COLORS,
@@ -37,7 +49,6 @@
 		type GalleryItem,
 		type GroupsResponse,
 		type TokenGroup,
-		type Gather,
 		type Knock,
 		type MapKind,
 		type Marker,
@@ -54,6 +65,7 @@
 		type TokenInput,
 		type Turns
 	} from '#lib/shared/types.ts';
+	import { brushSize } from '#lib/shared/fog.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -102,7 +114,7 @@
 	/**
 	 * This window is a table display: the players' view of the map and
 	 * nothing else, for a screen the whole table looks at. It shows, and
-	 * follows when the GM brings everyone somewhere, and changes nothing.
+	 * changes nothing.
 	 */
 	const display = $derived(data.display);
 	/** What everyone else looking at this map has in hand: a token, a ruler. */
@@ -116,6 +128,11 @@
 	const miles = $derived(world.map.miles ?? world.miles);
 	/** How many miles a day's travel covers here: this map's own pace, or the one it goes by. */
 	const dayMiles = $derived(world.map.dayMiles ?? world.dayMiles);
+	/**
+	 * The date it is in the world, in the GM's own words: what the server
+	 * last said, or until it has, what this page was loaded with.
+	 */
+	const date = $derived(live.date ?? data.campaign.date);
 
 	// ------------------------------------------------------------ discoveries
 
@@ -208,7 +225,7 @@
 	/** The address of a map of this campaign. A display stays a display from map to map. */
 	const mapUrl = (mapId: string) => `/c/${campaignId}/m/${mapId}${display ? '?display' : ''}`;
 
-	type Placing = { create: MarkerKind } | { move: Marker } | { party: true };
+	type Placing = { create: MarkerKind } | { move: Marker };
 	type Form =
 		| { mode: 'create'; kind: MarkerKind; x: number; y: number }
 		| { mode: 'edit'; marker: Marker };
@@ -252,11 +269,21 @@
 	let measuring = $state(false);
 	/** The pointing tool is in hand on a world map: held down, the pointer shows to the table. */
 	let pointing = $state(false);
+	/** The box that selects several markers together is in hand on a world map. */
+	let boxing = $state(false);
 	/**
-	 * The GM is at the fog of a world map by hand: dragging boxes that clear
-	 * it, or that cover the map again.
+	 * The GM is at the fog of a world map by hand: clearing some of it, or
+	 * covering the map again.
 	 */
 	let fogTool = $state<'reveal' | 'cover' | null>(null);
+	/**
+	 * What the fog is cleared and covered with, on either kind of map: a
+	 * brush swept over it, round or square. The GM's choice stays from map
+	 * to map, and so does the size of the brush: its radius, or half the
+	 * side of a square one, as a part of the map's longer side.
+	 */
+	let fogShape = $state<'round' | 'square'>('round');
+	let fogSize = $state(FOG_BRUSH.start);
 	let battleTool = $state<BattleTool>('pan');
 	/** The colour the pen draws in, text is written in and templates are laid down in. */
 	let ink = $state<string>(INK_COLORS[0]);
@@ -265,6 +292,36 @@
 	let form = $state<Form | null>(null);
 	/** The token whose picture, colour and outline are being changed. */
 	let tokenForm = $state<Token | null>(null);
+	/** What the GM is saying who sees: tokens, world markers or a region, by id. */
+	let visibilityOf = $state<{ kind: 'token' | 'marker' | 'region'; ids: string[] } | null>(null);
+	/** Those as they are now, the ones still on the map, each with the name it goes by. */
+	const visibilityThings = $derived.by(() => {
+		const of = visibilityOf;
+		if (!of) return [];
+		const all =
+			of.kind === 'token'
+				? world.tokens
+				: of.kind === 'marker'
+					? world.markers.map((marker) => ({ ...marker, name: marker.title }))
+					: world.regions;
+		return all.filter((thing) => of.ids.includes(thing.id));
+	});
+
+	/** Shows them to the whole table, or hides them from all but these players. */
+	function setVisibility(hidden: boolean, seenBy: string[]) {
+		const kind = visibilityOf?.kind;
+		const changes = hidden ? { hidden, seenBy } : { hidden };
+		send(
+			visibilityThings
+				// Revealing what is not hidden changes nothing.
+				.filter((thing) => hidden || thing.hidden)
+				.map(({ id }): Command => {
+					if (kind === 'token') return { t: 'token.update', id, changes };
+					if (kind === 'marker') return { t: 'marker.update', id, changes };
+					return { t: 'region.update', id, ...changes };
+				})
+		);
+	}
 	/** Goes up whenever the gallery may have changed, so the dock reads it again. */
 	let galleryStamp = $state(0);
 	/** Bumped when a group of tokens is saved, so the dock reads them again. */
@@ -280,37 +337,41 @@
 	let alignBox = $state.raw<Rect | null>(null);
 	/** How many of those squares the box covers, from its left edge to its right. */
 	let alignCount = $state(1);
-	/** The GM is choosing which players see the selected region. */
-	let sharingRegion = $state(false);
-	/** The GM is saying how many miles across this world map is. */
-	let scaling = $state(false);
+	/**
+	 * The GM has the map's settings open: its name, its image and its scale.
+	 * It says which of them the dialog opens on: the scale, when it is the
+	 * ruler that asked for one.
+	 */
+	let settings = $state<'name' | 'scale' | null>(null);
 	/** The finder is open. */
 	let finding = $state(false);
 	/** The GM has the invite out: a code to scan, and the link to copy. */
 	let inviting = $state(false);
+	/** The sheet of keyboard shortcuts is open. */
+	let helping = $state(false);
+	/** This person has asked for the way out of the campaign, and is being asked if they mean it. */
+	let exiting = $state(false);
 	/** A marker the finder is taking this person to, on a map they are on their way to. */
 	let wanted: string | null = null;
-	/** The picture held up for the table that this person has closed, by its file. */
-	let closedPicture = $state<string | null>(null);
 	/**
-	 * The GM is in the gallery: to choose an image to lay under this map, or
-	 * to look after the whole of it, with nothing to pick.
+	 * The GM is in the gallery, to look after the whole of it. An image for
+	 * this map is picked from the map's settings instead.
 	 */
-	let gallery = $state<'pick' | 'browse' | null>(null);
+	let gallery = $state(false);
 	let prompt = $state<Prompt | null>(null);
 	/** The region the GM has asked to delete, while they are being asked if they mean it. */
 	let deleting = $state<Region | null>(null);
 	let selectedMarkerId = $state<string | null>(null);
 	let selectedRegionId = $state<string | null>(null);
-	/** The tokens and drawings selected on a battle map. */
+	/** The tokens and drawings selected on a battle map. On a world map, the markers selected together. */
 	let selectedIds = $state<string[]>([]);
-	/** The GM has clicked the party's banner, which brings out the button that removes it. */
-	let selectedParty = $state(false);
 	/**
 	 * The types of marker this person has filtered out of the world maps. It
 	 * is their own view and nobody else's, and it is kept from map to map.
 	 */
 	let hiddenTypes = $state<MarkerType[]>([]);
+	/** The regions are switched off in the same filter, and as much this person's own view. */
+	let regionsHidden = $state(false);
 	/** The pills that choose them are out, over the bar under the map. */
 	let filterOpen = $state(false);
 	// Raw, because a notice's step is looked up in the undo stack by identity,
@@ -343,10 +404,16 @@
 						? 'measure'
 						: pointing
 							? 'point'
-							: (fogTool ?? 'pan')
+							: boxing
+								? 'select'
+								: (fogTool ?? 'pan')
 	);
-	/** The GM has one of the two fog tools in hand. */
+	/** The GM has one of the two fog tools in hand on a battle map. */
 	const fogging = $derived(battleTool === 'reveal' || battleTool === 'cover');
+	/** Which of the two the GM has in hand, on either kind of map. */
+	const fogHand = $derived(
+		battle ? (battleTool === 'reveal' || battleTool === 'cover' ? battleTool : null) : fogTool
+	);
 	/** The grid that the box dragged over the map's squares makes, to try on before keeping it. */
 	const alignGrid = $derived(
 		battleTool === 'align' && alignBox
@@ -362,6 +429,22 @@
 		hiddenTypes.length
 			? world.markers.filter((marker) => !hiddenTypes.includes(marker.type))
 			: world.markers
+	);
+	/**
+	 * The regions of this map, or none while they are switched off: the map
+	 * then neither draws them nor takes clicks for them. The way into each is
+	 * still in the list by the map's name.
+	 */
+	const shownRegions = $derived(regionsHidden ? [] : world.regions);
+	/** What the filter is keeping off the map, in a few words, or nothing when it is all there. */
+	const filterHint = $derived(
+		[
+			hiddenTypes.length ? `${hiddenTypes.length} of ${MARKER_TYPES.length} types hidden` : '',
+			regionsHidden ? 'regions hidden' : ''
+		]
+			.filter(Boolean)
+			.join(', ')
+			.replace(/^r/, 'R') || undefined
 	);
 	/** How many markers of each type this map holds, shown or not. */
 	const typeCounts = $derived.by(() => {
@@ -392,10 +475,8 @@
 			recalled = true;
 		});
 	});
-	/** The region the GM has clicked. The region buttons under the map act on it. */
+	/** The region the GM has clicked. The buttons that float over it act on it. */
 	const selectedRegion = $derived(world.regions.find((r) => r.id === selectedRegionId) ?? null);
-	/** Why the region buttons are off, for their tooltips. */
-	const regionHint = $derived(selectedRegion ? undefined : 'Click a region first');
 	/**
 	 * A table display asked to show the invite, with `invite` in its address:
 	 * the link as a phone can open it, for the code in its corner.
@@ -415,32 +496,37 @@
 
 	// Stepping into another map starts from a clean slate. That is also the
 	// only way from one kind of map to the other, each with its own tools: a
-	// map stays the kind it was made as.
+	// map stays the kind it was made as. It goes by which map this is, and
+	// not by the data: the same map asked for again, as a change of scale
+	// has it, keeps its tools in hand and what there is to undo.
+	const mapId = $derived(data.snapshot.map.id);
 	$effect(() => {
-		void data.snapshot.map.id;
+		void mapId;
 		untrack(() => {
 			placing = null;
 			drawing = false;
 			measuring = false;
 			pointing = false;
+			boxing = false;
 			fogTool = null;
 			battleTool = 'pan';
 			form = null;
 			tokenForm = null;
+			visibilityOf = null;
 			filterOpen = false;
 			setup = false;
 			alignBox = null;
-			sharingRegion = false;
-			scaling = false;
+			settings = null;
 			finding = false;
 			inviting = false;
-			gallery = null;
+			helping = false;
+			exiting = false;
+			gallery = false;
 			prompt = null;
 			deleting = null;
 			selectedMarkerId = null;
 			selectedRegionId = null;
 			selectedIds = [];
-			selectedParty = false;
 			// Undo is for the map in front of you, not one you have left.
 			undos.clear();
 			// The finder may have brought this person here for one marker.
@@ -448,11 +534,6 @@
 			wanted = null;
 			if (marker) pinMarker(marker);
 		});
-	});
-
-	// A picture that was closed stays closed until another is held up.
-	$effect(() => {
-		if (!live.shown) closedPicture = null;
 	});
 
 	/** The border and background of a notice of each type. */
@@ -513,11 +594,8 @@
 	// ------------------------------------------------------------- markers
 
 	function startPlacing(next: Placing) {
-		drawing = false;
-		measuring = false;
-		pointing = false;
-		selectedMarkerId = null;
-		selectedRegionId = null;
+		putAway();
+		letGo();
 		placing = next;
 	}
 
@@ -525,16 +603,8 @@
 		const target = placing;
 		placing = null;
 		if (!target) return;
-		if ('party' in target) run({ t: 'party.move', mapId: world.map.id, x, y });
-		else if ('move' in target) run({ t: 'marker.update', id: target.move.id, changes: { x, y } });
+		if ('move' in target) run({ t: 'marker.update', id: target.move.id, changes: { x, y } });
 		else form = { mode: 'create', kind: target.create, x, y };
-	}
-
-	/** Takes the party's banner off the maps. Undo plants it back where it stood. */
-	async function removeParty() {
-		selectedParty = false;
-		const { ok, step } = await attempt({ t: 'party.remove' });
-		if (ok) say('Took the party off the map.', 'success', step);
 	}
 
 	async function saveMarker(
@@ -572,6 +642,13 @@
 		if (pinned && types.includes(pinned.type)) selectedMarkerId = null;
 	}
 
+	/** Switches the regions off the map, or back onto it. */
+	function hideRegions(hidden: boolean) {
+		regionsHidden = hidden;
+		// A region that is gone can't stay the one the region buttons act on.
+		if (hidden) selectedRegionId = null;
+	}
+
 	function toggleType(type: MarkerType) {
 		hideTypes(
 			hiddenTypes.includes(type) ? hiddenTypes.filter((t) => t !== type) : [...hiddenTypes, type]
@@ -605,64 +682,66 @@
 
 	// ------------------------------------------------- the scale and the ruler
 
-	/** Takes the ruler out on a world map. One with no scale has nothing to tell: the GM is asked for it. */
+	/**
+	 * Takes the ruler out on a world map, or with it out already, puts it
+	 * away. One with no scale has nothing to tell: the GM is asked for it,
+	 * in the map's settings.
+	 */
 	function startMeasuring() {
 		if (miles === null) {
-			if (isGm) scaling = true;
+			if (isGm) settings = 'scale';
 			return;
 		}
-		placing = null;
-		drawing = false;
-		pointing = false;
-		selectedMarkerId = null;
-		selectedRegionId = null;
+		const out = measuring;
+		putAway();
+		if (out) return;
+		letGo();
 		measuring = true;
 	}
 
 	/**
 	 * Takes up the pointing tool on a world map: from then on the table is
 	 * shown where the pointer is whenever its button is held down, until the
-	 * tool is put away again.
+	 * tool is put away again, which a second click on it does.
 	 */
 	function startPointing() {
-		placing = null;
-		drawing = false;
-		measuring = false;
-		selectedMarkerId = null;
-		selectedRegionId = null;
-		selectedParty = false;
+		const out = pointing;
+		putAway();
+		if (out) return;
+		letGo();
 		pointing = true;
 	}
 
-	// ------------------------------------------------ a picture for the table
-
 	/**
-	 * Holds a picture of the gallery up, or with null puts it away: for the
-	 * players in `to`, or with none, for the whole table.
+	 * Takes up the box that selects several markers of a world map, or with
+	 * it in hand already, puts it away. What it catches is moved by dragging
+	 * one of them, and has its buttons under it. What was selected together
+	 * before stays so: with Shift held, the box adds to it.
 	 */
-	async function showPicture(item: GalleryItem | null, to: string[] = []) {
-		try {
-			await live.show(item?.id ?? null, to);
-			if (!item) return;
-			const names = players.filter((player) => to.includes(player.id)).map((player) => player.name);
-			say(
-				names.length
-					? `${names.join(', ')} ${names.length > 1 ? 'are' : 'is'} looking at “${item.name}”.`
-					: `The table is looking at “${item.name}”.`,
-				'success'
-			);
-		} catch (err) {
-			say((err as Error).message, 'failure');
-		}
+	function startBoxing() {
+		const out = boxing;
+		putAway();
+		if (out) return;
+		selectedMarkerId = null;
+		selectedRegionId = null;
+		boxing = true;
 	}
 
-	/** Holds the picture on a marker's card up for the whole table, full screen. */
-	async function showMarkerPicture(marker: Marker) {
-		if (!marker.image) return;
+	// ------------------------------------------------------ the date in the world
+
+	/**
+	 * The GM has written a date in the field over the map, or cleared it.
+	 * The field shows it as it was kept, or if it wasn't, what it was before.
+	 */
+	async function saveDate(field: HTMLInputElement) {
+		const before = date;
+		const written = field.value.replace(/\s+/g, ' ').trim();
+		field.value = written;
+		if (written === before) return;
 		try {
-			await live.show(null, [], marker.image);
-			say(`The table is looking at the picture of “${marker.title}”.`, 'success');
+			field.value = await live.setDate(written);
 		} catch (err) {
+			field.value = before;
 			say((err as Error).message, 'failure');
 		}
 	}
@@ -870,95 +949,50 @@
 	/**
 	 * Takes up the fog of a world map: whichever of its two tools has
 	 * something to do, clearing where there is fog, covering where there is
-	 * none yet. The bar under the map shows them while one is in hand.
+	 * none yet. They come out beside the button while one is in hand, the
+	 * same ones a battle map has, and a second click puts them away.
 	 */
 	function pickWorldFog() {
-		placing = null;
-		drawing = false;
-		measuring = false;
-		pointing = false;
-		selectedMarkerId = null;
-		selectedRegionId = null;
-		selectedParty = false;
+		const out = fogTool !== null;
+		putAway();
+		if (out) return;
+		letGo();
 		fogTool = world.map.fog.on ? 'reveal' : 'cover';
 	}
 
-	/**
-	 * Covers a world map with fog that lifts wherever the party goes, or
-	 * takes that fog off again. Each map has its own.
-	 */
-	async function fogWorld() {
-		const on = !world.map.fog.on;
-		const { ok, step } = await attempt({
-			t: 'map.update',
-			id: world.map.id,
-			fog: { on, clear: [], spots: [] }
-		});
-		if (!ok) return;
-		// What is left to do by hand: clear some of the new fog, or with none, cover some.
-		if (fogTool) fogTool = on ? 'reveal' : 'cover';
-		say(
-			on
-				? 'This map is under fog. It lifts wherever the party goes, and where you clear it.'
-				: 'Lifted the fog from this map.',
-			'success',
-			step
-		);
+	/** Takes one of the fog's two tools in hand, on either kind of map. */
+	function takeFog(next: 'reveal' | 'cover') {
+		if (battle) take(next);
+		else fogTool = next;
 	}
 
-	/** Covers the whole map with fog, or where there is some, lifts all of it. */
+	/**
+	 * Covers the whole map with fog, or where there is some, lifts all of it.
+	 * Each map has its own.
+	 */
 	async function fogAll() {
 		const on = !world.map.fog.on;
-		if (await run({ t: 'map.update', id: world.map.id, fog: { on, clear: [] } })) {
+		// With no marks, said so: left unsaid, the ones made by hand would stay.
+		if (await run({ t: 'map.update', id: world.map.id, fog: { on, clear: [], marks: [] } })) {
 			// What is left to do: clear some of the new fog, or with none, cover some.
-			battleTool = on ? 'reveal' : 'cover';
-		}
-	}
-
-	// -------------------------------------------------------------- gather
-
-	/** Brings everyone else, and every table display, to what the GM has on screen. */
-	async function gather() {
-		if (!canvas) return;
-		try {
-			const players = await live.gather(world.map.id, canvas.sight());
-			if (players) say('Everyone is brought here.', 'success');
-			else {
-				say(
-					"The table can't come in here while a region on the way is hidden or closed. Your other screens follow, and any player who is let in.",
-					'warning'
-				);
-			}
-		} catch (err) {
-			say((err as Error).message, 'failure');
+			if (fogHand) takeFog(on ? 'reveal' : 'cover');
 		}
 	}
 
 	/**
-	 * The GM has brought everyone somewhere: this window goes there, and looks
-	 * at the same part. `late` says the call was made before this window
-	 * connected. The map may have been closed to players since, so the way
-	 * there is tried first, and a call that leads nowhere is left alone.
+	 * The slider of the brush goes in even steps that each make it as many
+	 * times bigger: a small brush is sized as finely as a big one.
 	 */
-	async function follow(call: Gather, late: boolean) {
-		if (call.mapId !== world.map.id) {
-			try {
-				if (late) {
-					const there = await preloadData(mapUrl(call.mapId));
-					if (there.type !== 'loaded' || there.status !== 200) return;
-				}
-				await goto(mapUrl(call.mapId));
-			} catch {
-				return;
-			}
-			await tick();
-		}
-		if (world.map.id !== call.mapId) return;
-		canvas?.lookAt(call.view);
-		say(`${call.by} brought everyone here.`, 'info');
-	}
+	const BRUSH_STEPS = 40;
+	const BRUSH_SPAN = Math.log(FOG_BRUSH.max / FOG_BRUSH.min);
+	const brushStep = $derived(
+		Math.round((Math.log(brushSize(fogSize) / FOG_BRUSH.min) / BRUSH_SPAN) * BRUSH_STEPS)
+	);
 
-	$effect(() => live.onGather(follow));
+	/** Sizes the brush to a step of its slider. */
+	function sizeBrush(step: number) {
+		fogSize = brushSize(FOG_BRUSH.min * Math.exp((step / BRUSH_STEPS) * BRUSH_SPAN));
+	}
 
 	// A display is left alone for hours: the screen is asked to stay awake.
 	// Browsers allow that on https and on this machine itself, and it is no
@@ -986,18 +1020,79 @@
 		};
 	});
 
+	/**
+	 * Folds every palette of a battle map away, or with the dock and the
+	 * tools both folded, brings them all back.
+	 */
+	function foldAll() {
+		const fold = !(dockFolded && toolsFolded);
+		dockFolded = toolsFolded = turnsFolded = fold;
+	}
+
+	/** The players' view of this map in a window of its own: the one window, however often it is asked for. */
+	function openDisplay() {
+		window.open(`${mapUrl(world.map.id)}?display`, 'odyssey-display');
+	}
+
 	/** Each with the key that takes it in hand: the top row of the keyboard, left to right. */
 	const BATTLE_TOOLS: { tool: BattleTool; icon: ToolIcon; label: string; key: string }[] = [
-		{ tool: 'pan', icon: 'pointer', label: 'Select and move', key: 'q' },
-		{ tool: 'select', icon: 'marquee', label: 'Select multiple', key: 'w' },
-		{ tool: 'measure', icon: 'ruler', label: 'Measure a distance', key: 'e' },
-		{ tool: 'sketch', icon: 'draw', label: 'Draw', key: 'r' },
-		{ tool: 'point', icon: 'ping', label: 'Point at the map', key: 't' }
+		{ tool: 'pan', icon: 'pointer', label: 'Select and move', key: KEY.hand },
+		{ tool: 'select', icon: 'marquee', label: 'Select multiple', key: KEY.box },
+		{ tool: 'measure', icon: 'ruler', label: 'Measure a distance', key: KEY.ruler },
+		{ tool: 'sketch', icon: 'draw', label: 'Draw', key: KEY.pen },
+		{ tool: 'point', icon: 'ping', label: 'Point at the map', key: KEY.point }
+	];
+
+	/**
+	 * The tools in the corner of a world map, with the keys a battle map
+	 * gives the same ones. A ruler needs a scale to go by: where no map on
+	 * the way here has one, the GM is asked for it, and players have no ruler.
+	 */
+	const WORLD_TOOLS: {
+		icon: ToolIcon;
+		label: string;
+		key: string;
+		hint: () => string | undefined;
+		shown: () => boolean;
+		held: () => boolean;
+		take: () => void;
+	}[] = [
+		{
+			icon: 'marquee',
+			label: 'Select multiple',
+			key: KEY.box,
+			hint: () => 'Markers, to move, hide or delete together',
+			shown: () => true,
+			held: () => boxing,
+			take: startBoxing
+		},
+		{
+			icon: 'ruler',
+			label: 'Measure a distance',
+			key: KEY.ruler,
+			hint: () =>
+				miles === null
+					? 'Asks how far across this map is first'
+					: `This map is about ${milesCount(miles)} across`,
+			shown: () => isGm || miles !== null,
+			held: () => measuring,
+			take: startMeasuring
+		},
+		{
+			icon: 'ping',
+			label: 'Point at the map',
+			key: KEY.point,
+			hint: () => 'Hold the button down: the table sees where you point',
+			shown: () => true,
+			held: () => pointing,
+			take: startPointing
+		}
 	];
 
 	/**
 	 * What the pen draws: a line, one of the shapes, for the area of a spell,
-	 * a breath, a wall, or a line of text.
+	 * a breath, a wall, or a line of text. With the pen in hand each has a
+	 * number key, in this order: see PEN_KEYS.
 	 */
 	const PENS: { pen: Pen; icon: ToolIcon; label: string; hint: string }[] = [
 		{ pen: 'line', icon: 'draw', label: 'Draw a line', hint: 'Freehand' },
@@ -1007,7 +1102,54 @@
 		{ pen: 'text', icon: 'text', label: 'Draw text', hint: 'Click the map and type' }
 	];
 
+	/** Dips the pen in the next ink along, or with `by` at -1, the one before. */
+	function nextInk(by: 1 | -1) {
+		const inks: readonly string[] = INK_COLORS;
+		ink = inks[(inks.indexOf(ink) + by + inks.length) % inks.length];
+	}
+
+	/** With one of the fog's two tools in hand, takes up the other. */
+	function swapFog() {
+		// Where there is no fog yet there is none to clear.
+		if (fogHand === 'cover' && !world.map.fog.on) return;
+		if (fogHand) takeFog(fogHand === 'reveal' ? 'cover' : 'reveal');
+	}
+
 	// ------------------------------------------------------ maps & regions
+
+	/** Starts the outline of a new region. */
+	function startRegion() {
+		putAway();
+		letGo();
+		// A region about to be drawn shouldn't vanish once it is
+		// done, nor be laid blind over the ones already there.
+		regionsHidden = false;
+		drawing = true;
+	}
+
+	/** Steps into the region that is selected. */
+	function enterSelected() {
+		const region = selectedRegion;
+		selectedRegionId = null;
+		if (region) enter(region);
+	}
+
+	/** Closes a region to the players, or opens one that is closed. */
+	const closeRegion = (region: Region) =>
+		run({ t: 'region.update', id: region.id, closed: !region.closed });
+
+	/** Hides a region from the players, or reveals one that is hidden. */
+	const hideRegion = (region: Region) =>
+		run({ t: 'region.update', id: region.id, hidden: !region.hidden });
+
+	/** Opens the dialog that says who sees a region. */
+	function shareRegion(region: Region) {
+		visibilityOf = { kind: 'region', ids: [region.id] };
+	}
+
+	function renameRegion(region: Region) {
+		prompt = { kind: 'rename', mapId: region.targetMapId, initial: region.name };
+	}
 
 	async function enter(region: Region) {
 		// A closed region is there to be seen, and wondered about.
@@ -1087,84 +1229,213 @@
 		}
 	}
 
-	/** Lays an image out of the gallery under this map. Undo takes it back off. */
-	function layImage(item: GalleryItem) {
-		gallery = null;
-		run({ t: 'map.update', id: world.map.id, image: item.file });
-	}
-
 	// ---------------------------------------------------------------- misc
 
+	// The keys of the page: the tools, what the bars and the header hold, and
+	// the region that is selected. Every one of them is in the table in
+	// src/lib/client/keys.ts, which the tooltips and the sheet of shortcuts
+	// read too. What is selected on the map has its keys in MapCanvas, and so
+	// has the view: it listens after this, for what is not taken here.
 	function onkeydown(e: KeyboardEvent) {
-		// A display has nothing to undo and no tools to take up. It has one
-		// key: Backspace steps back out of the map it is on, to the one the
-		// region that led here is drawn on.
+		if (e.defaultPrevented) return;
+		const key = chord(e);
+		// A display has nothing to undo and no tools to take up. Its one key
+		// steps back out of the map it is on, to the one the region that led
+		// here is drawn on: Backspace, or the way out every map has.
 		if (display) {
 			const outside = world.trail.at(-2);
-			if (e.key === 'Backspace' && outside) {
+			if ((key === 'Backspace' || key === KEY.out) && outside) {
 				e.preventDefault();
 				if (!e.repeat) goto(mapUrl(outside.id));
 			}
 			return;
 		}
-		if (form || tokenForm || setup || scaling || finding || inviting || gallery || prompt || deleting) {
-			return;
-		}
+		if (form || tokenForm || setup || settings || finding || inviting || gallery) return;
+		if (visibilityThings.length) return;
+		if (prompt || deleting || helping || exiting) return;
 		// In a text field, a letter is a letter and Ctrl+Z belongs to the text.
-		const typing =
-			e.target instanceof Element && !!e.target.closest('input, textarea, select, [contenteditable]');
+		const typing = isTyping(e.target);
 
-		if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'z') {
+		if (key === KEY.undo || key === KEY.redo || key === KEY.redoToo) {
 			if (typing) return;
 			e.preventDefault();
 			// One step per press: holding the keys down doesn't run through the lot.
 			if (e.repeat) return;
-			if (e.shiftKey) redo();
-			else undo();
+			if (key === KEY.undo) undo();
+			else redo();
 			return;
 		}
 
 		// Ctrl+K opens the finder, from anywhere on the page.
-		if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'k') {
+		if (key === KEY.find) {
 			e.preventDefault();
 			finding = true;
 			return;
 		}
 
-		// Each tool of a battle map has a key of its own.
-		if (battle && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) {
-			const hit = BATTLE_TOOLS.find((each) => each.key === e.key.toLowerCase());
-			if (hit) {
-				e.preventDefault();
-				if (!e.repeat) take(hit.tool);
-				return;
+		if (key === KEY.putAway) {
+			if (placing || drawing || measuring || pointing || boxing || fogTool || battleTool !== 'pan') {
+				putAway();
+			} else if (canvas?.shut()) {
+				// A box beside what is selected was out, its marks or its label:
+				// only that is put away.
+			} else if (filterOpen) {
+				filterOpen = false;
+			} else {
+				letGo();
 			}
-			// G goes to this person's own token, if one of the tokens here is theirs.
-			if (e.key.toLowerCase() === 'g' && myTokens.length) {
-				e.preventDefault();
-				if (!e.repeat) goToMine();
-				return;
-			}
-			// And N moves the fight on to the next turn, for whoever may end this one.
-			if (e.key.toLowerCase() === 'n' && world.map.turns.order.length) {
-				e.preventDefault();
-				if (!e.repeat) turnOrder?.next();
-				return;
-			}
+			return;
 		}
 
-		if (e.key !== 'Escape') return;
-		if (placing || drawing || measuring || pointing || fogTool || battleTool !== 'pan') {
-			putAway();
-		} else if (filterOpen || sharingRegion) {
-			filterOpen = false;
-			sharingRegion = false;
-		} else {
-			selectedMarkerId = null;
-			selectedRegionId = null;
-			selectedIds = [];
-			selectedParty = false;
+		if (typing) return;
+		const act = keyed(key, e.target);
+		if (!act) return;
+		e.preventDefault();
+		// One press does it once. Only the brush is sized for as long as its key is held.
+		if (!e.repeat || key === KEY.brushSmaller || key === KEY.brushBigger) act();
+	}
+
+	/** What a key does on this map as things stand, or nothing if it has no job here. */
+	function keyed(key: string, target: EventTarget | null): (() => void) | null {
+		switch (key) {
+			case KEY.findToo:
+				return () => (finding = true);
+			case KEY.help:
+				return () => (helping = true);
+			case KEY.out: {
+				const outside = world.trail.at(-2);
+				return outside ? () => goto(mapUrl(outside.id)) : null;
+			}
+			case KEY.exit:
+				return () => (exiting = true);
 		}
+		return (isGm ? gmKeyed(key) : null) ?? (battle ? battleKeyed(key, target) : worldKeyed(key, target));
+	}
+
+	/** The GM's keys on either kind of map: the fog, the table, and what the header opens. */
+	function gmKeyed(key: string): (() => void) | null {
+		switch (key) {
+			case KEY.settings:
+				return () => (settings = 'name');
+			case KEY.gallery:
+				return () => (gallery = true);
+			case KEY.invite:
+				return data.invite ? () => (inviting = true) : null;
+			case KEY.display:
+				return openDisplay;
+			case KEY.fog:
+				// A key takes its tool up. It is Esc that puts one away.
+				return fogHand ? () => {} : battle ? pickFog : pickWorldFog;
+		}
+		// The rest are the fog's own, for while it is in hand.
+		if (!fogHand) return null;
+		switch (key) {
+			case KEY.fogSwap:
+				return swapFog;
+			case KEY.brushShape:
+				return () => (fogShape = fogShape === 'round' ? 'square' : 'round');
+			case KEY.brushSmaller:
+				return () => sizeBrush(brushStep - 1);
+			case KEY.brushBigger:
+				return () => sizeBrush(brushStep + 1);
+			case KEY.fogAll:
+				return fogAll;
+		}
+		return null;
+	}
+
+	/** The keys of a battle map: its tools, the turn order, the dock, and what goes with the pen. */
+	function battleKeyed(key: string, target: EventTarget | null): (() => void) | null {
+		const hit = BATTLE_TOOLS.find((each) => each.key === key);
+		if (hit) return () => take(hit.tool);
+		const fighting = world.map.turns.order.length > 0;
+		switch (key) {
+			// G goes to this person's own token, if one of the tokens here is theirs.
+			case KEY.mine:
+				return myTokens.length ? goToMine : null;
+			// N moves the fight on to the next turn, for whoever may end this one.
+			case KEY.nextTurn:
+				return fighting ? () => turnOrder?.next() : null;
+			// I puts the tokens selected in the turn order, or takes them out.
+			case KEY.turns:
+				return isGm ? () => turnOrder?.join() : null;
+			case KEY.rolls:
+				return isGm && fighting ? () => turnOrder?.roll() : null;
+			case KEY.endFight:
+				return isGm && fighting ? () => turnOrder?.end() : null;
+			case KEY.plainToken:
+				// The dock is put away while the grid is being lined up.
+				return battleTool === 'align' ? null : () => addToken(null, null);
+			case KEY.grid:
+				return isGm ? () => (setup = true) : null;
+			case KEY.palettes:
+				return foldAll;
+			case 'Enter':
+				// The grid that is being tried on is kept.
+				return battleTool === 'align' && alignGrid && !usesEnter(target) ? keepAlignment : null;
+		}
+		if (battleTool !== 'sketch') return null;
+		// With the pen in hand: what it draws, and in which ink.
+		const drawn = PENS[PEN_KEYS.indexOf(key)];
+		if (drawn) return () => (pen = drawn.pen);
+		if (key === KEY.ink) return () => nextInk(1);
+		if (key === KEY.inkBack) return () => nextInk(-1);
+		return null;
+	}
+
+	/** The keys of a world map: its tools, what the bar under it holds, and the region selected. */
+	function worldKeyed(key: string, target: EventTarget | null): (() => void) | null {
+		// The tools in the corner have the keys a battle map gives the same
+		// ones, and the hand has its own: the tool in hand is put away.
+		if (key === KEY.hand) return putAway;
+		const hit = WORLD_TOOLS.find((each) => each.key === key);
+		if (hit) {
+			if (!hit.shown()) return null;
+			// A key takes its tool up. It is Esc that puts one away.
+			return hit.held() ? () => {} : hit.take;
+		}
+		switch (key) {
+			case KEY.note:
+				return () => startPlacing({ create: 'player' });
+			case KEY.filter:
+				return placing || drawing ? null : () => (filterOpen = !filterOpen);
+		}
+		if (!isGm) return null;
+		switch (key) {
+			case KEY.marker:
+				return () => startPlacing({ create: 'world' });
+			case KEY.region:
+				return startRegion;
+		}
+		// The region that is selected: the keys of its buttons in the bar.
+		const region = tool === 'pan' && selectedIds.length === 0 ? selectedRegion : null;
+		if (!region) return null;
+		switch (key) {
+			case KEY.enter:
+				// On a button, Enter presses the button.
+				return usesEnter(target) ? null : enterSelected;
+			case KEY.lock:
+				return () => closeRegion(region);
+			case KEY.hide:
+				return () => hideRegion(region);
+			case KEY.share:
+				return () => shareRegion(region);
+			case KEY.rename:
+			case KEY.renameToo:
+				return () => renameRegion(region);
+			case KEY.remove:
+			case 'Backspace':
+				// It asks first: there is no undo for this one.
+				return () => (deleting = region);
+		}
+		return null;
+	}
+
+	/** Nothing on the map is selected any more. */
+	function letGo() {
+		selectedMarkerId = null;
+		selectedRegionId = null;
+		selectedIds = [];
 	}
 
 	/** Back to the hand: whichever tool was waiting for the map is put away. */
@@ -1173,16 +1444,11 @@
 		drawing = false;
 		measuring = false;
 		pointing = false;
+		boxing = false;
 		fogTool = null;
 		battleTool = 'pan';
 		alignBox = null;
 	}
-
-	// The choosing of who sees a region is for the region it was started on.
-	$effect(() => {
-		void selectedRegionId;
-		sharingRegion = false;
-	});
 
 	// Looks shared by more than one element below.
 	const crumbLink = 'text-muted no-underline hover:text-accent touch:py-2';
@@ -1208,104 +1474,220 @@
 	</title>
 </svelte:head>
 
+<!-- The fog's own tools, the same on either kind of map: clear some of it
+     or cover some again, with a round brush or a square one, or do the whole
+     map at once. They stand in a palette docked in the corner of the map,
+     so their tooltips come out to the left of it. -->
+<!-- What the GM does with the region that is selected. The map floats these
+     over it, and says which side their tooltips have room on. -->
+{#snippet regionBar(region: Region, tip: 'top' | 'bottom')}
+	<div
+		class="flex items-center gap-1 rounded-xl border border-[#55607a] bg-panel/94 p-1 shadow-pop"
+		role="toolbar"
+		aria-label="Region {region.name}"
+	>
+		<ToolButton
+				small
+				{tip}
+				icon="enter"
+				label="Enter the region"
+				shortcut={KEY.enter}
+				onclick={enterSelected}
+			/>
+			<ToolButton
+				small
+				{tip}
+				icon={region.closed ? 'unlock' : 'lock'}
+				label={region.closed ? 'Open the region to players' : 'Close the region to players'}
+				hint={region.closed
+					? 'They can step inside again'
+					: "They still see it, and can't step inside"}
+				shortcut={KEY.lock}
+				active={region.closed}
+				onclick={() => closeRegion(region)}
+			/>
+			<ToolButton
+				small
+				{tip}
+				icon={region.hidden ? 'hide' : 'reveal'}
+				label="Visibility"
+				hint={!region.hidden
+					? 'Everyone sees the region'
+					: region.seenBy.length
+						? `Only you and ${region.seenBy.length} ${region.seenBy.length === 1 ? 'player' : 'players'} see the region`
+						: 'Only you see the region'}
+				shortcut={KEY.share}
+				active={region.hidden}
+				onclick={() => shareRegion(region)}
+			/>
+			<ToolButton
+				small
+				{tip}
+				icon="rename"
+				label="Rename the region"
+				shortcut={KEY.rename}
+				onclick={() => renameRegion(region)}
+			/>
+			<ToolButton
+				small
+				{tip}
+				icon="delete"
+				label="Delete the region"
+				shortcut={KEY.remove}
+				danger
+				onclick={() => (deleting = region)}
+			/>
+	</div>
+{/snippet}
+
+{#snippet fogButtons()}
+	<ToolButton
+		tip="left"
+		icon="reveal"
+		label="Clear the fog from an area"
+		hint={world.map.fog.on ? undefined : 'There is no fog on this map yet'}
+		shortcut={fogHand === 'cover' && world.map.fog.on ? KEY.fogSwap : undefined}
+		disabled={!world.map.fog.on}
+		active={fogHand === 'reveal'}
+		onclick={() => takeFog('reveal')}
+	/>
+	<ToolButton
+		tip="left"
+		icon="hide"
+		label="Cover an area with fog"
+		shortcut={fogHand === 'reveal' ? KEY.fogSwap : undefined}
+		active={fogHand === 'cover'}
+		onclick={() => takeFog('cover')}
+		/>
+		<span class="h-px bg-line"></span>
+		<ToolButton
+			tip="left"
+			icon="circle"
+			label="Paint with a round brush"
+			hint="Shift and the wheel size it, or [ and ]"
+			shortcut={fogShape === 'square' ? KEY.brushShape : undefined}
+			active={fogShape === 'round'}
+			onclick={() => (fogShape = 'round')}
+		/>
+		<ToolButton
+			tip="left"
+			icon="box"
+			label="Paint with a square brush"
+			hint="Sized the same way"
+			shortcut={fogShape === 'round' ? KEY.brushShape : undefined}
+			active={fogShape === 'square'}
+			onclick={() => (fogShape = 'square')}
+		/>
+		<!-- How big the brush is. It stands on end, like the tools around
+		     it, with the bigger brush at the top. -->
+		<input
+			class="h-24 w-4 cursor-pointer justify-self-center accent-accent [direction:rtl] [writing-mode:vertical-lr]"
+			type="range"
+			min="0"
+			max={BRUSH_STEPS}
+			step="1"
+			value={brushStep}
+			oninput={(e) => sizeBrush(e.currentTarget.valueAsNumber)}
+			aria-label="Brush size"
+			title="Brush size"
+		/>
+		<span class="h-px bg-line"></span>
+	<ToolButton
+		tip="left"
+		icon="fog"
+		label={world.map.fog.on ? 'Lift all the fog' : 'Cover the whole map'}
+		hint={world.map.fog.on ? 'Ctrl+Z brings it back' : undefined}
+		shortcut={KEY.fogAll}
+		onclick={fogAll}
+	/>
+{/snippet}
+
 <div class="flex h-dvh flex-col">
 	<!-- A table display is the map and nothing around it. -->
 	<header
 		hidden={display}
-		class="flex min-h-12 items-center justify-between gap-3 border-b bg-panel px-3 py-1.5 max-[720px]:flex-wrap"
+		class="flex min-h-12 items-center gap-3 border-b bg-panel px-3 py-1.5 max-[720px]:flex-wrap"
 	>
-		<nav
-			class="flex min-w-0 items-center gap-2 overflow-x-auto font-serif text-[17px] whitespace-nowrap scrollbar-none"
-			aria-label="Breadcrumb"
-		>
-			<a class="flex p-1 {crumbLink}" href="/" aria-label="All campaigns" title="All campaigns">
-				<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-					<circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" />
-					<path d="M12 5.5 14 12l-2 6.5L10 12Z" fill="currentColor" />
-				</svg>
-			</a>
-			{#each world.trail as crumb, i (crumb.id)}
-				<span class="text-[#5c667a]" aria-hidden="true">›</span>
-				{#if i < world.trail.length - 1}
-					<a class={crumbLink} href={mapUrl(crumb.id)}>{crumb.name}</a>
-				{:else}
-					<span class="font-semibold" aria-current="page">{crumb.name}</span>
+		<!-- The menu and the trail of maps keep to one row, on a narrow screen too. -->
+		<div class="flex min-w-0 items-center gap-3">
+			<!-- The menu of the bar: what there is to set about the map itself, for
+			     the GM, and the way out of the campaign, for everyone. It stands
+			     outside the trail of maps, which scrolls sideways and would cut off
+			     what hangs under it. -->
+			<Menu
+				label="Menu"
+				items={[
+					...(isGm
+						? [{ label: 'Map Settings', shortcut: KEY.settings, onclick: () => (settings = 'name') }]
+						: []),
+					{ label: 'Exit', shortcut: KEY.exit, onclick: () => (exiting = true) }
+				]}
+			/>
+			<nav
+				class="flex min-w-0 items-center gap-2 overflow-x-auto font-serif text-[17px] whitespace-nowrap scrollbar-none"
+				aria-label="Breadcrumb"
+			>
+				{#each world.trail as crumb, i (crumb.id)}
+					{#if i > 0}<span class="text-[#5c667a]" aria-hidden="true">›</span>{/if}
+					{#if i < world.trail.length - 1}
+						<a class={crumbLink} href={mapUrl(crumb.id)}>{crumb.name}</a>
+					{:else}
+						<span class="font-semibold" aria-current="page">{crumb.name}</span>
+					{/if}
+				{/each}
+				{#if world.regions.length}
+					<!-- The same doorways as on the map, for keyboards and screen readers. -->
+					<select
+						class="ml-1.5 cursor-pointer rounded-lg border bg-panel-2 px-1.5 py-0.75 font-sans text-[13px] text-muted touch:min-h-9 touch:min-w-28 touch:text-base"
+						aria-label="Step into a region of this map"
+						onchange={(e) => {
+							const region = world.regions.find((r) => r.id === e.currentTarget.value);
+							e.currentTarget.value = '';
+							if (region) enter(region);
+						}}
+					>
+						<option value="">Step into…</option>
+						{#each world.regions as region (region.id)}
+							{#if isGm || !region.closed}
+								<option value={region.id}>
+									{region.name}{region.hidden ? (isGm ? ' (hidden)' : ' (a secret)') : ''}{region.closed
+										? ' (closed)'
+										: ''}
+								</option>
+							{/if}
+						{/each}
+					</select>
 				{/if}
-			{/each}
-			{#if world.regions.length}
-				<!-- The same doorways as on the map, for keyboards and screen readers. -->
-				<select
-					class="ml-1.5 cursor-pointer rounded-lg border bg-panel-2 px-1.5 py-0.75 font-sans text-[13px] text-muted touch:min-h-9 touch:min-w-28 touch:text-base"
-					aria-label="Step into a region of this map"
-					onchange={(e) => {
-						const region = world.regions.find((r) => r.id === e.currentTarget.value);
-						e.currentTarget.value = '';
-						if (region) enter(region);
-					}}
-				>
-					<option value="">Step into…</option>
-					{#each world.regions as region (region.id)}
-						{#if isGm || !region.closed}
-							<option value={region.id}>
-								{region.name}{region.hidden ? (isGm ? ' (hidden)' : ' (a secret)') : ''}{region.closed
-									? ' (closed)'
-									: ''}
-							</option>
-						{/if}
-					{/each}
-				</select>
-			{/if}
-		</nav>
+			</nav>
+		</div>
 
 		<!-- ml-auto keeps these on the right when a narrow screen wraps them onto a row of their own. -->
 		<div class="ml-auto flex shrink-0 items-center gap-2">
 			{#if live.status === 'offline'}
 				<span class="text-xs text-[#e8b85a]" role="status">Reconnecting…</span>
 			{/if}
-			<ul class="mr-1 flex" aria-label="At the table now">
-				{#each live.online as person (person.id)}
-					<li
-						class={[
-							'-ml-1.5 grid size-6.5 cursor-default place-items-center rounded-full border-2 border-panel text-[11px] font-semibold',
-							person.role === 'gm' ? 'bg-accent text-accent-ink' : 'bg-[#3a465c]'
-						]}
-						title="{person.name}{person.role === 'gm' ? ' (GM)' : ''}{person.id === data.me.id
-							? ' (you)'
-							: ''}"
-					>
-						{initials(person.name)}
-					</li>
-				{/each}
-			</ul>
-
 			<!-- Nothing of the finder is on screen but this, until it is asked for. -->
 			<ToolButton
 				small
 				tip="bottom-end"
 				icon="search"
 				label="Find a place or a marker"
-				hint="Ctrl+K"
+				shortcut={KEY.find}
 				onclick={() => (finding = true)}
 			/>
+			<!-- What every key does. Only where there are keys to press. -->
+			<span class="flex touch:hidden">
+				<ToolButton
+					small
+					tip="bottom-end"
+					icon="keys"
+					label="Keyboard shortcuts"
+					shortcut={KEY.help}
+					onclick={() => (helping = true)}
+				/>
+			</span>
 
 			{#if isGm}
-				{#if live.shown}
-					<!-- A picture is up for the whole table. This is how it comes down. -->
-					<button
-						class="btn btn-sm btn-active max-w-56"
-						title="{live.shown.to?.length
-							? 'Some of the players are'
-							: 'The table is'} looking at this picture. Click to put it away."
-						onclick={() => showPicture(null)}
-					>
-						<span class="truncate">
-							Showing “{live.shown.name}”{live.shown.to?.length
-								? ` to ${live.shown.to.length} ${live.shown.to.length > 1 ? 'players' : 'player'}`
-								: ''}
-						</span>
-						<span aria-hidden="true">×</span>
-					</button>
-				{/if}
 				<!-- The players' view of this map in a window of its own, to put on a
 				     screen the table can see. It opens in the one window however
 				     often it is asked for. -->
@@ -1313,19 +1695,25 @@
 					class="btn btn-sm no-underline"
 					href="{mapUrl(world.map.id)}?display"
 					target="odyssey-display"
-					title="Opens what the players see in a window of its own, for a TV or a second screen"
+					aria-keyshortcuts={ariaKey(KEY.display)}
+					title="Opens what the players see in a window of its own, for a TV or a second screen ({keyLabel(
+						KEY.display
+					)})"
 					>Display</a
 				>
 				<!-- The campaign's pictures, to stock ahead of the maps and tokens that will use them. -->
 				<button
 					class="btn btn-sm"
+					aria-keyshortcuts={ariaKey(KEY.gallery)}
+					title="The campaign's pictures, for its maps and tokens ({keyLabel(KEY.gallery)})"
 					onclick={() => {
-						gallery = 'browse';
+						gallery = true;
 					}}>Gallery</button
 				>
 				<button
 					class="btn btn-sm"
-					title="A code for players to scan, and the link to send them"
+					aria-keyshortcuts={ariaKey(KEY.invite)}
+					title="A code for players to scan, and the link to send them ({keyLabel(KEY.invite)})"
 					onclick={() => {
 						inviting = true;
 					}}>Invite</button
@@ -1340,11 +1728,10 @@
 				bind:this={canvas}
 				map={world.map}
 				backdrop={world.backdrop}
-				regions={world.regions}
+				regions={shownRegions}
 				markers={shownMarkers}
 				tokens={world.tokens}
 				drawings={world.drawings}
-				party={world.party}
 				{miles}
 				{dayMiles}
 				{hands}
@@ -1356,13 +1743,14 @@
 				aligned={alignBox}
 				passive={display}
 				{tool}
+				{fogShape}
+				bind:fogSize
 				{ink}
 				shape={pen === 'line' || pen === 'text' ? 'circle' : pen}
 				depth={world.trail.length}
 				bind:selectedMarkerId
 				bind:selectedRegionId
 				bind:selectedIds
-				bind:selectedParty
 				{send}
 				ondone={() => {
 					// A shape that was drawn, a text that was written: back to the
@@ -1370,6 +1758,8 @@
 					// hand after a line, which is seldom the only one. Either way
 					// it remembers what it last drew for the next time it is taken up.
 					battleTool = 'pan';
+					// On a world map, the box has caught its markers.
+					boxing = false;
 				}}
 				onplace={placed}
 				onnote={(x, y) => {
@@ -1381,19 +1771,19 @@
 				}}
 				onenter={enter}
 				onreshape={(region, points) => run({ t: 'region.update', id: region.id, points })}
-				onparty={(x, y) => run({ t: 'party.move', mapId: world.map.id, x, y, along: true })}
-				onpartyremove={removeParty}
+				regionBar={isGm && !display ? regionBar : undefined}
 				onedit={(marker) => (form = { mode: 'edit', marker })}
 				onmove={(marker) => startPlacing({ move: marker })}
 				ondelete={deleteMarker}
 				onhide={(marker, hidden) => run({ t: 'marker.update', id: marker.id, changes: { hidden } })}
-				onshare={(marker, seenBy) =>
-					run({ t: 'marker.update', id: marker.id, changes: { hidden: true, seenBy } })}
-				onshowmarker={showMarkerPicture}
+				onmarkervisibility={(markers) =>
+					(visibilityOf = { kind: 'marker', ids: markers.map((marker) => marker.id) })}
 				fresh={discoveries?.fresh ?? []}
 				onseen={(id) => discoveries?.seen(id)}
 				onalign={(box) => (alignBox = box)}
 				onedittoken={(token) => (tokenForm = token)}
+				ontokenvisibility={(tokens) =>
+					(visibilityOf = { kind: 'token', ids: tokens.map((token) => token.id) })}
 				onsavegroup={saveGroup}
 				onhand={(at) => {
 					// A display is nobody at the table: it holds nothing.
@@ -1407,24 +1797,31 @@
 				     place name: no bar, no box. The maps on the way here are lettered
 				     before it, fainter, and each is the way back out to itself. Only
 				     the names take the pointer, so the map under the rest of the line
-				     still does. -->
-				<nav
-					class="pointer-events-none absolute top-4 left-5 flex max-w-[calc(100%-40px)] items-baseline gap-2 overflow-hidden font-serif text-xl font-semibold tracking-[0.02em] whitespace-nowrap text-[#fff8e4] text-shadow-map"
-					aria-label="Breadcrumb"
+				     still does. The date it is in the world is lettered the same
+				     way in the corner across from it. -->
+				<div
+					class="pointer-events-none absolute inset-x-5 top-4 flex items-baseline justify-between gap-8 font-serif text-xl font-semibold tracking-[0.02em] whitespace-nowrap text-[#fff8e4] text-shadow-map"
 				>
-					{#each world.trail as crumb, i (crumb.id)}
-						{#if i < world.trail.length - 1}
-							<a
-								class="pointer-events-auto shrink-0 text-[#fff8e4] no-underline opacity-45 transition-opacity hover:opacity-100 focus-visible:opacity-100 touch:py-2"
-								href={mapUrl(crumb.id)}
-								title="Back out to {crumb.name}">{crumb.name}</a
-							>
-							<span class="opacity-45" aria-hidden="true">›</span>
-						{:else}
-							<span class="truncate opacity-70" aria-current="page">{crumb.name}</span>
-						{/if}
-					{/each}
-				</nav>
+					<nav class="flex min-w-0 items-baseline gap-2 overflow-hidden" aria-label="Breadcrumb">
+						{#each world.trail as crumb, i (crumb.id)}
+							{#if i < world.trail.length - 1}
+								<a
+									class="pointer-events-auto shrink-0 text-[#fff8e4] no-underline opacity-45 transition-opacity hover:opacity-100 focus-visible:opacity-100 touch:py-2"
+									href={mapUrl(crumb.id)}
+									title="Back out to {crumb.name}">{crumb.name}</a
+								>
+								<span class="opacity-45" aria-hidden="true">›</span>
+							{:else}
+								<span class="truncate opacity-70" aria-current="page">{crumb.name}</span>
+							{/if}
+						{/each}
+					</nav>
+					{#if date}
+						<span class="max-w-[45%] shrink-0 truncate opacity-70" aria-label="The date in the world">
+							{date}
+						</span>
+					{/if}
+				</div>
 			{/if}
 
 			{#if displayInvite}
@@ -1436,45 +1833,116 @@
 				>
 					<QrCode text={displayInvite.url} size={260} label="A code to scan to join the table" />
 					<strong class="font-serif text-xl">Scan to join</strong>
-					<span class="max-w-[260px] text-center text-xs wrap-anywhere text-muted">
+					<span class="max-w-65 text-center text-xs wrap-anywhere text-muted">
 						{displayInvite.url}
 					</span>
 				</aside>
 			{/if}
 
-			{#if battle}
-				<!-- Whose turn it is, down the left side of a battle map. It is there
-				     once a token has been put in the order, for everyone, and on a
-				     table display under the name of the map. A narrow screen keeps
-				     its Fit button in that corner, so there it starts lower. -->
-				<div class={['absolute left-3.5 z-1', display ? 'top-14' : 'top-3.5 max-[720px]:top-16']}>
-					<TurnOrder
-						bind:this={turnOrder}
-						{campaignId}
-						tokens={world.tokens}
-						turns={world.map.turns}
-						gm={isGm}
-						userId={data.me.id}
-						passive={display}
-						bind:collapsed={turnsFolded}
-						selectedId={selectedIds.length === 1 ? selectedIds[0] : null}
-						onpick={(id) => {
-							battleTool = 'pan';
-							selectedIds = [id];
-						}}
-						onchange={setTurns}
-						onnext={passTurn}
-					/>
-				</div>
-			{/if}
+			<!-- What floats in the upper left corner of the map, one under the
+			     other: the date, who is at the table, and on a battle map the turn
+			     order. Only the boxes take the pointer, so the map between and
+			     under them still does. A table display has the turn order alone,
+			     under the name of the map. A narrow screen keeps its Fit button in
+			     that corner, so there they start lower. -->
+			<div
+				class={[
+					'pointer-events-none absolute bottom-40 left-3.5 z-1 flex flex-col items-start gap-2',
+					display ? 'top-14' : 'top-3.5 max-[720px]:top-16'
+				]}
+			>
+				{#if !display}
+					<!-- The date it is in the world. It is whatever the GM writes, since
+					     the calendar is the setting's own: the GM has it as a field that
+					     reads as text until it is clicked, and saves when it is left, in
+					     a box of its own. The players have the words, once there are some. -->
+					{#if isGm}
+						<div class="pointer-events-auto flex shrink-0 p-1 {floating}">
+							<input
+								class="max-w-56 min-w-20 field-sizing-content truncate rounded-md border border-transparent bg-transparent px-1.5 py-0.5 font-serif text-[15px] placeholder:font-sans placeholder:text-[13px] placeholder:text-muted hover:border-line focus:border-line focus:bg-[#12161e] touch:min-h-9 touch:text-base"
+								value={date}
+								size={Math.max(10, date.length)}
+								maxlength={LIMITS.date}
+								placeholder="Set the date…"
+								aria-label="The date in the world"
+								title="The date in the world, as the whole table sees it"
+								autocomplete="off"
+								spellcheck="false"
+								onchange={(e) => saveDate(e.currentTarget)}
+								onkeydown={(e) => {
+									if (e.key === 'Enter') e.currentTarget.blur();
+									if (e.key === 'Escape') {
+										// Unwritten: back to what it was. And the key is the
+										// field's own: it puts no tool away on the map.
+										e.stopPropagation();
+										e.currentTarget.value = date;
+										e.currentTarget.blur();
+									}
+								}}
+							/>
+						</div>
+					{:else if date}
+						<!-- Lettered on the map itself, the way a table display has it: no
+						     box, and the map under it still takes the pointer. -->
+						<span
+							class="max-w-72 shrink-0 truncate px-1 font-serif text-xl font-semibold tracking-[0.02em] text-[#fff8e4] opacity-70 text-shadow-map"
+							aria-label="The date in the world"
+						>
+							{date}
+						</span>
+					{/if}
+					{#if live.online.length}
+						<ul class="pointer-events-auto flex shrink-0 p-1.5 {floating}" aria-label="At the table now">
+							{#each live.online as person (person.id)}
+								<li
+									class={[
+										'grid size-6.5 cursor-default place-items-center rounded-full border-2 border-panel text-[11px] font-semibold not-first:-ml-1.5',
+										person.role === 'gm' ? 'bg-accent text-accent-ink' : 'bg-[#3a465c]'
+									]}
+									title="{person.name}{person.role === 'gm' ? ' (GM)' : ''}{person.id === data.me.id
+										? ' (you)'
+										: ''}"
+								>
+									{initials(person.name)}
+								</li>
+							{/each}
+						</ul>
+					{/if}
+				{/if}
+				{#if battle}
+					<!-- Whose turn it is, down the left side of a battle map. It is there
+					     once a token has been put in the order, for everyone: until then
+					     the GM has the button that puts one in. It has what is left of
+					     the height, and scrolls inside that. -->
+					<div class="pointer-events-auto flex min-h-0 flex-col">
+						<TurnOrder
+							bind:this={turnOrder}
+							{campaignId}
+							tokens={world.tokens}
+							turns={world.map.turns}
+							gm={isGm}
+							userId={data.me.id}
+							passive={display}
+							bind:collapsed={turnsFolded}
+							{selectedIds}
+							onpick={(id) => {
+								battleTool = 'pan';
+								selectedIds = [id];
+							}}
+							onchange={setTurns}
+							onnext={passTurn}
+						/>
+					</div>
+				{/if}
+			</div>
 
 			{#if empty && isGm && tool === 'pan'}
 				<p
 					class="absolute top-4.5 left-1/2 w-max max-w-[calc(100%-28px)] -translate-x-1/2 rounded-full border bg-night/90 px-3.5 py-2 text-center text-sm max-[720px]:max-w-[calc(100%-136px)] max-[720px]:rounded-2xl"
 				>
 					{battle
-						? 'This battle map is empty. Choose a map image in the corner, and add tokens from below.'
-						: 'This map is empty. Add a map image, markers and regions from the bar below.'}
+						? 'This battle map is empty. Choose a map image in Map Settings, in the menu at the top, and add tokens from below.'
+						: 'This map is empty. Choose a map image in Map Settings, in the menu at the top, and add markers and regions from the bar below.'}
 				</p>
 			{/if}
 
@@ -1487,44 +1955,21 @@
 					: (BATTLE_TOOLS.find((each) => each.tool === battleTool) ?? BATTLE_TOOLS[0])}
 				<div class="absolute top-3.5 right-3.5 z-1 flex items-start gap-1.5">
 					{#if !toolsFolded && isGm && fogging}
-						<!-- The fog's own tools, out while the GM is at it: clear some of
-						     it, cover some again, or do the whole map at once. -->
+						<!-- The fog's own tools, out while the GM is at it. -->
 						<div class="grid gap-1.5 p-1.5 {floating}" role="toolbar" aria-label="Fog of war">
-							<ToolButton
-								tip="left"
-								icon="reveal"
-								label="Clear the fog from an area"
-								hint={world.map.fog.on ? undefined : 'There is no fog on this map yet'}
-								disabled={!world.map.fog.on}
-								active={battleTool === 'reveal'}
-								onclick={() => take('reveal')}
-							/>
-							<ToolButton
-								tip="left"
-								icon="hide"
-								label="Cover an area with fog"
-								active={battleTool === 'cover'}
-								onclick={() => take('cover')}
-							/>
-							<span class="h-px bg-line"></span>
-							<ToolButton
-								tip="left"
-								icon="fog"
-								label={world.map.fog.on ? 'Lift all the fog' : 'Cover the whole map'}
-								hint={world.map.fog.on ? 'Ctrl+Z brings it back' : undefined}
-								onclick={fogAll}
-							/>
+							{@render fogButtons()}
 						</div>
 					{/if}
 					{#if !toolsFolded && battleTool === 'sketch'}
 						<!-- What the pen draws, out while it is in hand: a line, a shape, or text. -->
 						<div class="grid gap-1.5 p-1.5 {floating}" role="toolbar" aria-label="What to draw">
-							{#each PENS as each (each.pen)}
+							{#each PENS as each, i (each.pen)}
 								<ToolButton
 									tip="left"
 									icon={each.icon}
 									label={each.label}
 									hint={each.hint}
+									shortcut={PEN_KEYS[i]}
 									active={pen === each.pen}
 									onclick={() => (pen = each.pen)}
 								/>
@@ -1549,6 +1994,7 @@
 									role="radio"
 									aria-checked={ink === option}
 									aria-label="Colour {option}"
+									title="{keyLabel(KEY.ink)} takes the next colour, {keyLabel(KEY.inkBack)} the one before"
 									onclick={() => (ink = option)}
 								></button>
 							{/each}
@@ -1561,6 +2007,7 @@
 								icon={inHand.icon}
 								label="Show the tools"
 								hint="In hand: {inHand.label.toLowerCase()}"
+								shortcut={KEY.palettes}
 								active={battleTool !== 'pan'}
 								onclick={() => (toolsFolded = false)}
 							/>
@@ -1569,6 +2016,7 @@
 								tip="left"
 								icon="up"
 								label="Fold the tools away"
+								hint="{keyLabel(KEY.palettes)} folds the dock and the turn order too"
 								onclick={() => (toolsFolded = true)}
 							/>
 							<span class="h-px bg-line"></span>
@@ -1590,7 +2038,7 @@
 									icon="person"
 									label={myTokens.length > 1 ? 'Go to my tokens' : 'Go to my token'}
 									hint={myTurn ? 'It is your turn' : undefined}
-									shortcut="g"
+									shortcut={KEY.mine}
 									active={myTurn !== null}
 									onclick={goToMine}
 								/>
@@ -1599,21 +2047,9 @@
 								<span class="h-px bg-line"></span>
 								<ToolButton
 									tip="left"
-									icon="image"
-									label={world.map.imageFile ? 'Change the map image' : 'Choose a map image'}
-									onclick={() => (gallery = 'pick')}
-								/>
-								<ToolButton
-									tip="left"
-									icon="rename"
-									label="Rename this map"
-									onclick={() =>
-										(prompt = { kind: 'rename', mapId: world.map.id, initial: world.map.name })}
-								/>
-								<ToolButton
-									tip="left"
 									icon="grid"
 									label="Set up the grid"
+									shortcut={KEY.grid}
 									active={battleTool === 'align'}
 									onclick={() => (setup = true)}
 								/>
@@ -1622,19 +2058,60 @@
 									icon="fog"
 									label="Fog of war"
 									hint={world.map.fog.on ? 'On: players see only what you clear' : 'Off'}
+									shortcut={KEY.fog}
 									active={fogging}
 									expanded={fogging}
 									onclick={pickFog}
 								/>
-								<span class="h-px bg-line"></span>
+							{/if}
+						{/if}
+					</div>
+				</div>
+			{:else if !display}
+				<!-- A world map has the same corner for what is used on the map
+				     rather than built into it: the box that selects several
+				     markers, the ruler, the pointing tool, and for the GM the fog.
+				     Each is lit while it is in hand, and a second click puts it
+				     down. The first three have the keys a battle map gives them.
+				     What goes with the one in hand comes out beside it. -->
+				<div class="absolute top-3.5 right-3.5 z-1 flex items-start gap-1.5">
+					{#if isGm && fogTool}
+						<!-- The fog's own tools, out while the GM is at it: the ones a
+						     battle map has. -->
+						<div class="grid gap-1.5 p-1.5 {floating}" role="toolbar" aria-label="Fog">
+							{@render fogButtons()}
+						</div>
+					{/if}
+					<div class="grid gap-1.5 p-1.5 {floating}" role="toolbar" aria-label="Tools in hand">
+						{#each WORLD_TOOLS as each (each.key)}
+							{#if each.shown()}
 								<ToolButton
 									tip="left"
-									icon="gather"
-									label="Bring everyone here"
-									hint="Shows the table what you see"
-									onclick={gather}
+									icon={each.icon}
+									label={each.label}
+									hint={each.hint()}
+									shortcut={each.key}
+									active={each.held()}
+									onclick={each.take}
 								/>
 							{/if}
+						{/each}
+						{#if isGm}
+							<span class="h-px bg-line"></span>
+							<!-- Each world map has its own: under it, players see only
+							     what the GM has cleared. -->
+							<ToolButton
+								tip="left"
+								icon="fog"
+								label="Fog"
+								hint={world.map.fog.on
+									? 'On: players see only what you clear'
+									: 'Off: cover this map, or a part of it'}
+								shortcut={KEY.fog}
+								active={fogTool !== null}
+								expanded={fogTool !== null}
+								onclick={pickWorldFog}
+							/>
 						{/if}
 					</div>
 				</div>
@@ -1720,12 +2197,20 @@
 									max="500"
 									step="1"
 									bind:value={alignCount}
+									onkeydown={(e) => {
+										if (e.key === 'Enter') keepAlignment();
+									}}
 								/>
 							</label>
 							<span class="text-xs text-muted tabular-nums">
 								One cell is {alignGrid.size} pixels
 							</span>
-							<button class="btn btn-sm btn-primary" onclick={keepAlignment}>Use this grid</button>
+							<button
+								class="btn btn-sm btn-primary"
+								aria-keyshortcuts="Enter"
+								title="Enter"
+								onclick={keepAlignment}>Use this grid</button
+							>
 							<button class="btn btn-sm btn-ghost" onclick={putAway}>Cancel</button>
 						</div>
 					{/if}
@@ -1744,34 +2229,14 @@
 						onerror={(text) => say(text, 'failure')}
 					/>
 				{:else}
-				{#if sharingRegion && selectedRegion && tool === 'pan'}
-					<!-- Who a hidden region is there for all the same: they see it, and
-					     can step inside. Choosing someone hides it from the rest. -->
-					<div
-						class="pointer-events-auto grid w-[min(440px,calc(100%-24px))] gap-2 p-2.5 {floating}"
-						role="group"
-						aria-label="Players who see {selectedRegion.name}"
-					>
-						<span class="text-xs text-muted">
-							Only these players see “{selectedRegion.name}”, and can step inside:
-						</span>
-						<PlayerPicker
-							{players}
-							value={selectedRegion.seenBy}
-							label="Players who see {selectedRegion.name}"
-							onchange={(seenBy) =>
-								selectedRegion &&
-								run({ t: 'region.update', id: selectedRegion.id, hidden: true, seenBy })}
-						/>
-					</div>
-				{/if}
-				{#if filterOpen && tool === 'pan'}
+				{#if filterOpen && !placing && !drawing}
 					<!-- Which types of marker to see: a pill for each, lit while its type
-					     is shown, with how many of them this map holds. -->
+					     is shown, with how many of them this map holds. Under them, a
+					     switch for the regions. -->
 					<div
 						class="pointer-events-auto grid w-[min(440px,calc(100%-24px))] gap-2 p-2.5 {floating}"
 						role="group"
-						aria-label="Types of marker to show"
+						aria-label="What the map shows"
 					>
 						<div class="flex flex-wrap justify-center gap-1.5">
 							{#each MARKER_TYPES as option (option.id)}
@@ -1796,264 +2261,102 @@
 								</button>
 							{/each}
 						</div>
+						<!-- The whole row is the switch, so there is plenty to aim at. -->
+						<button
+							class="group flex cursor-pointer items-center justify-between gap-2 border-t pt-2 text-[13px] touch:py-2"
+							role="switch"
+							aria-checked={!regionsHidden}
+							onclick={() => hideRegions(!regionsHidden)}
+						>
+							<span class={regionsHidden ? 'text-muted' : ''}>
+								Regions
+								{#if world.regions.length}
+									<span class="text-[11px] tabular-nums opacity-70">{world.regions.length}</span>
+								{/if}
+							</span>
+							<span
+								class={[
+									'flex h-4.5 w-8 items-center rounded-full border p-0.5 transition-colors duration-120',
+									regionsHidden ? 'bg-panel-2 group-hover:border-[#465166]' : 'border-accent bg-accent'
+								]}
+							>
+								<span
+									class={[
+										'size-3 rounded-full transition-transform duration-120',
+										regionsHidden ? 'bg-muted' : 'translate-x-3.5 bg-accent-ink'
+									]}
+								></span>
+							</span>
+						</button>
 						<div class="flex items-center justify-between gap-2">
 							<span class="text-xs text-muted">Only changes what you see.</span>
 							<span class="flex gap-1.5">
 								<button
 									class="btn btn-sm btn-ghost"
-									disabled={hiddenTypes.length === 0}
-									onclick={() => hideTypes([])}>Show all</button
+									disabled={hiddenTypes.length === 0 && !regionsHidden}
+									onclick={() => {
+										hideTypes([]);
+										hideRegions(false);
+									}}>Show all</button
 								>
 								<button
 									class="btn btn-sm btn-ghost"
-									disabled={hiddenTypes.length === MARKER_TYPES.length}
-									onclick={() => hideTypes(MARKER_TYPES.map((each) => each.id))}>Hide all</button
+									disabled={hiddenTypes.length === MARKER_TYPES.length && regionsHidden}
+									onclick={() => {
+										hideTypes(MARKER_TYPES.map((each) => each.id));
+										hideRegions(true);
+									}}>Hide all</button
 								>
 							</span>
 						</div>
 					</div>
 				{/if}
 				<div
-					class="pointer-events-auto flex max-w-[calc(100%-120px)] flex-wrap items-center justify-center gap-1.5 p-1.5 max-[720px]:max-w-[calc(100%-24px)] max-[720px]:flex-col {floating}"
+					class="pointer-events-auto flex max-w-[calc(100%-120px)] flex-wrap items-center justify-center gap-1.5 p-1.5 max-[720px]:max-w-[calc(100%-24px)] {floating}"
 					role="toolbar"
 					aria-label="Map tools"
 				>
-					{#if tool !== 'pan'}
-						<button class="btn" onclick={putAway}>
-							{measuring
-								? 'Put the ruler away'
-								: pointing
-									? 'Done pointing'
-									: fogTool
-										? 'Done with the fog'
-										: 'Cancel'}
-						</button>
-						{#if measuring && isGm}
-							<!-- What the ruler goes by, and the way to change it. -->
-							<button
-								class="btn"
-								title="How far across this map is, and how far a day's travel goes"
-								onclick={() => (scaling = true)}
-							>
-								Scale: {miles === null
-									? 'none'
-									: `${milesCount(miles)} across · ${milesCount(dayMiles)} a day`}
-							</button>
-						{/if}
-						{#if fogTool && isGm}
-							<!-- The fog's own tools, out while the GM is at it, as on a battle
-							     map: clear some of it, cover some again, or do the whole map
-							     at once. -->
+					{#if placing || drawing}
+						<!-- A marker being put down or a region being drawn: all there
+						     is to do here is to give it up. The ruler, the pointing tool
+						     and the fog are in the corner, and leave the bar as it is. -->
+						<button class="btn" onclick={putAway}>Cancel</button>
+					{:else}
+						<!-- The tools for the map: icons, each with a tooltip that names
+						     it. A player has one tool, so theirs keeps its words. What is
+						     done with a region floats over the one selected, not here. -->
+						<ToolButton
+							icon="note"
+							label={isGm ? 'Add a note' : 'Add note'}
+							shortcut={KEY.note}
+							named={!isGm}
+							onclick={() => startPlacing({ create: 'player' })}
+						/>
+						<!-- Lit while some type is filtered out, so markers that don't
+						     show are never a mystery. -->
+						<ToolButton
+							icon="filter"
+							label="Filter markers and regions"
+							hint={filterHint}
+							shortcut={KEY.filter}
+							active={hiddenTypes.length > 0 || regionsHidden}
+							expanded={filterOpen}
+							onclick={() => (filterOpen = !filterOpen)}
+						/>
+						{#if isGm}
 							<span class="w-px self-stretch bg-line"></span>
 							<ToolButton
-								icon="reveal"
-								label="Clear the fog from an area"
-								hint={world.map.fog.on ? 'What is there shows to the players' : 'There is no fog on this map yet'}
-								disabled={!world.map.fog.on}
-								active={fogTool === 'reveal'}
-								onclick={() => (fogTool = 'reveal')}
+								icon="marker"
+								label="Add a world marker"
+								shortcut={KEY.marker}
+								onclick={() => startPlacing({ create: 'world' })}
 							/>
 							<ToolButton
-								icon="hide"
-								label="Cover an area with fog"
-								hint="Also where the party has been"
-								active={fogTool === 'cover'}
-								onclick={() => (fogTool = 'cover')}
+								icon="region"
+								label="Draw a region"
+								shortcut={KEY.region}
+								onclick={startRegion}
 							/>
-							<ToolButton
-								icon="fog"
-								label={world.map.fog.on ? 'Lift all the fog' : 'Cover the whole map'}
-								hint={world.map.fog.on ? 'Ctrl+Z brings it back' : 'It lifts wherever the party goes'}
-								onclick={fogWorld}
-							/>
-						{/if}
-					{:else}
-						<!-- The tools for the map. This wrapper only exists on a narrow
-						     screen, where it makes them a row of their own. -->
-						<div class="contents flex-wrap items-center justify-center gap-1.5 max-[720px]:flex">
-							<!-- Icons, each with a tooltip that names it. A player has one
-							     tool, so theirs keeps its words. -->
-							<ToolButton
-								icon="note"
-								label={isGm ? 'Add a note' : 'Add note'}
-								named={!isGm}
-								onclick={() => startPlacing({ create: 'player' })}
-							/>
-							<!-- Lit while some type is filtered out, so markers that don't
-							     show are never a mystery. -->
-							<ToolButton
-								icon="filter"
-								label="Filter markers by type"
-								hint={hiddenTypes.length
-									? `${hiddenTypes.length} of ${MARKER_TYPES.length} types hidden`
-									: undefined}
-								active={hiddenTypes.length > 0}
-								expanded={filterOpen}
-								onclick={() => (filterOpen = !filterOpen)}
-							/>
-							<!-- A ruler needs a scale to go by. Where no map on the way here
-							     has one, the GM is asked for it, and players have no ruler. -->
-							{#if isGm || miles !== null}
-								<ToolButton
-									icon="ruler"
-									label="Measure a distance"
-									hint={miles === null
-										? 'Asks how far across this map is first'
-										: `This map is about ${milesCount(miles)} across`}
-									onclick={startMeasuring}
-								/>
-							{/if}
-							<!-- Everyone's, like the ping itself: with it in hand, the
-							     table sees where the pointer is while its button is down. -->
-							<ToolButton
-								icon="ping"
-								label="Point at the map"
-								hint="Hold the button down: the table sees where you point"
-								onclick={startPointing}
-							/>
-							{#if isGm}
-								<span class="w-px self-stretch bg-line"></span>
-								<ToolButton
-									icon="marker"
-									label="Add a world marker"
-									onclick={() => startPlacing({ create: 'world' })}
-								/>
-								<ToolButton
-									icon="region"
-									label="Draw a region"
-									onclick={() => {
-										selectedMarkerId = null;
-										selectedRegionId = null;
-										pointing = false;
-										drawing = true;
-									}}
-								/>
-								<ToolButton
-									icon="image"
-									label={world.map.imageFile ? 'Change the map image' : 'Choose a map image'}
-									onclick={() => (gallery = 'pick')}
-								/>
-								<ToolButton
-									icon="rename"
-									label="Rename this map"
-									onclick={() =>
-										(prompt = { kind: 'rename', mapId: world.map.id, initial: world.map.name })}
-								/>
-								<span class="w-px self-stretch bg-line"></span>
-								<!-- Where the story has taken everyone: click, then click the
-								     spot. Once it stands on this map it can be dragged as well,
-								     and clicked, for the button that takes it off again. -->
-								<ToolButton
-									icon="party"
-									label={world.party?.mapId === world.map.id
-										? 'Move the party'
-										: 'Put the party on this map'}
-									hint="Shows the table where it is"
-									onclick={() => startPlacing({ party: true })}
-								/>
-								<!-- Each world map has its own: under it, players see only
-								     where the party has been, and what the GM has cleared by
-								     hand. Its tools take the bar's place while they are out. -->
-								<ToolButton
-									icon="fog"
-									label="Fog"
-									hint={world.map.fog.on
-										? 'On: players see where the party has been, and what you clear'
-										: 'Off: cover this map, or a part of it'}
-									active={world.map.fog.on}
-									onclick={pickWorldFog}
-								/>
-								<ToolButton
-									icon="gather"
-									label="Bring everyone here"
-									hint="Shows the table what you see"
-									onclick={gather}
-								/>
-							{/if}
-						</div>
-						{#if isGm}
-							<!-- What can be done with a region. Always here on a world map, so
-							     the bar keeps its shape, and live once a region on the map has
-							     been clicked. A narrow screen has no room for that: there they
-							     are a second row, which shows up with the selection. A battle
-							     map has no regions, and so none of these. -->
-							<span class="w-px self-stretch bg-line max-[720px]:hidden"></span>
-							<div
-								class={['flex items-center gap-1.5', !selectedRegion && 'max-[720px]:hidden']}
-								role="group"
-								aria-label={selectedRegion ? `Region ${selectedRegion.name}` : 'Region'}
-							>
-								<ToolButton
-									icon="enter"
-									label="Enter the region"
-									hint={regionHint}
-									disabled={!selectedRegion}
-									onclick={() => {
-										const region = selectedRegion;
-										selectedRegionId = null;
-										if (region) enter(region);
-									}}
-								/>
-								<ToolButton
-									icon={selectedRegion?.closed ? 'unlock' : 'lock'}
-									label={selectedRegion?.closed
-										? 'Open the region to players'
-										: 'Close the region to players'}
-									hint={regionHint ?? (selectedRegion?.closed
-										? 'They can step inside again'
-										: "They still see it, and can't step inside")}
-									disabled={!selectedRegion}
-									active={selectedRegion?.closed}
-									onclick={() =>
-										selectedRegion &&
-										run({ t: 'region.update', id: selectedRegion.id, closed: !selectedRegion.closed })}
-								/>
-								<ToolButton
-									icon={selectedRegion?.hidden ? 'reveal' : 'hide'}
-									label={selectedRegion?.hidden
-										? 'Reveal the region to all players'
-										: 'Hide the region from players'}
-									hint={regionHint}
-									disabled={!selectedRegion}
-									active={selectedRegion?.hidden}
-									onclick={() =>
-										selectedRegion &&
-										run({ t: 'region.update', id: selectedRegion.id, hidden: !selectedRegion.hidden })}
-								/>
-								<ToolButton
-									icon="people"
-									label="Show the region to some players only"
-									hint={regionHint ?? 'A secret between them and you'}
-									disabled={!selectedRegion}
-									active={!!selectedRegion?.seenBy.length}
-									expanded={sharingRegion}
-									onclick={() => {
-										filterOpen = false;
-										sharingRegion = !sharingRegion;
-									}}
-								/>
-								<ToolButton
-									icon="rename"
-									label="Rename the region"
-									hint={regionHint}
-									disabled={!selectedRegion}
-									onclick={() =>
-										selectedRegion &&
-										(prompt = {
-											kind: 'rename',
-											mapId: selectedRegion.targetMapId,
-											initial: selectedRegion.name
-										})}
-								/>
-								<ToolButton
-									icon="delete"
-									label="Delete the region"
-									hint={regionHint}
-									danger
-									disabled={!selectedRegion}
-									onclick={() => (deleting = selectedRegion)}
-								/>
-							</div>
 						{/if}
 					{/if}
 				</div>
@@ -2088,6 +2391,19 @@
 	/>
 {/if}
 
+{#if visibilityOf && visibilityThings.length}
+	<VisibilityDialog
+		title={visibilityThings.length === 1
+			? `Visibility of “${visibilityThings[0].name}”`
+			: `Visibility of ${visibilityThings.length} ${visibilityOf.kind}s`}
+		things={visibilityThings}
+		{players}
+		note={visibilityOf.kind === 'region' ? 'The players picked can step inside too.' : undefined}
+		onchange={setVisibility}
+		onclose={() => (visibilityOf = null)}
+	/>
+{/if}
+
 {#if setup && battle}
 	<MapSetup
 		map={world.map}
@@ -2097,45 +2413,36 @@
 	/>
 {/if}
 
-{#if gallery === 'pick'}
+{#if gallery}
 	<Gallery
 		{campaignId}
-		kind="map"
-		current={world.map.imageFile}
-		onpick={layImage}
-		onclose={() => (gallery = null)}
-	/>
-{:else if gallery === 'browse'}
-	<Gallery
-		{campaignId}
-		onshow={showPicture}
-		shownFile={live.shown?.file ?? null}
-		{players}
 		onclose={() => {
-			gallery = null;
+			gallery = false;
 			// What was added, revealed or taken out shows in the dock of tokens.
 			galleryStamp++;
 		}}
 	/>
 {/if}
 
-{#if scaling && !battle}
-	<ScalePrompt
+{#if settings && isGm}
+	<MapSettings
 		map={world.map}
+		{campaignId}
+		first={settings}
+		borrowed={!!world.backdrop}
 		{miles}
 		{dayMiles}
-		onsubmit={async (across, pace) => {
-			const saved = await run({
-				t: 'map.update',
-				id: world.map.id,
-				miles: across,
-				...(pace === undefined ? {} : { dayMiles: pace })
-			});
+		onsubmit={async (changes) => {
+			const saved = await run({ t: 'map.update', id: world.map.id, ...changes });
 			// With no scale left to go by, the ruler goes back in the drawer.
-			if (saved && across === null) measuring = false;
+			if (saved && changes.miles === null) measuring = false;
 			return saved;
 		}}
-		onclose={() => (scaling = false)}
+		onclose={() => {
+			settings = null;
+			// The dialog's own gallery may have been added to or tidied.
+			galleryStamp++;
+		}}
 	/>
 {/if}
 
@@ -2152,46 +2459,12 @@
 	/>
 {/if}
 
-{#if finding}
-	<Finder {campaignId} here={world.map.id} onpick={go} onclose={() => (finding = false)} />
+{#if helping}
+	<KeySheet gm={isGm} kind={world.map.kind} onclose={() => (helping = false)} />
 {/if}
 
-{#if live.shown && !isGm && closedPicture !== live.shown.file}
-	<!-- A picture the GM is holding up for the table: over everything, for as
-	     long as it is up. Each person may close their own. A table display
-	     has nobody to close it, and shows it until the GM puts it away. A
-	     big map image is shown by its preview, which is plenty for a screen. -->
-	{@const shown = live.shown}
-	<div
-		class="fixed inset-0 z-20 grid place-items-center bg-[rgb(6_8_12/0.9)] p-5"
-		role="dialog"
-		aria-label="A picture from the GM: {shown.name}"
-	>
-		{#if !display}
-			<button
-				class="absolute inset-0 cursor-zoom-out"
-				aria-label="Close the picture"
-				onclick={() => (closedPicture = shown.file)}
-			></button>
-		{/if}
-		<figure class="pointer-events-none relative grid max-h-full justify-items-center gap-3">
-			<img
-				class="max-h-[calc(100dvh-110px)] max-w-full rounded-md object-contain shadow-pop"
-				src={imageUrl(
-					campaignId,
-					shown.file,
-					tileLevels(shown.width, shown.height) > 0 ? 'preview' : undefined
-				)}
-				alt={shown.name}
-			/>
-			<figcaption class="font-serif text-xl font-semibold text-[#fff8e4] text-shadow-map">
-				{shown.name}
-				{#if !display}
-					<span class="ml-2 font-sans text-xs font-normal text-muted">Click anywhere to close</span>
-				{/if}
-			</figcaption>
-		</figure>
-	</div>
+{#if finding}
+	<Finder {campaignId} here={world.map.id} onpick={go} onclose={() => (finding = false)} />
 {/if}
 
 {#if prompt}
@@ -2208,6 +2481,18 @@
 		onsubmit={saveName}
 		onclose={() => (prompt = null)}
 	/>
+{/if}
+
+{#if exiting}
+	<Modal title="Exit “{data.campaign.name}”?" onclose={() => (exiting = false)}>
+		<p>This takes you out of the campaign, back to the list of your campaigns.</p>
+		<p class="text-[13px] text-muted">Everything on the maps is already saved.</p>
+		<!-- Cancel comes first, so that is where the dialog puts the focus. -->
+		<div class="flex justify-end gap-2">
+			<button class="btn btn-ghost" onclick={() => (exiting = false)}>Cancel</button>
+			<button class="btn btn-primary" onclick={() => goto('/')}>Exit</button>
+		</div>
+	</Modal>
 {/if}
 
 {#if deleting}

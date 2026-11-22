@@ -75,20 +75,16 @@ export function announce(db: Db, events: StoredEvent[]): Promise<void> {
 }
 
 /**
- * Has the GM's call to gather delivered, to each role that may follow it:
- * a null keeps a role where it is. `only` names the players who may follow
- * although the table may not.
- */
-export function summon(campaignId: string, gather: NonNullable<Broadcast['gather']>): Promise<void> {
-	return send({ campaignId, events: [], gather });
-}
-
-/**
  * Tells the GM who is asking for a seat they sat in before, in place of
  * whoever was asking a moment ago. Nobody else is told.
  */
 export function knocked(db: Db, campaignId: string): Promise<void> {
 	return send({ campaignId, events: [], knocks: knocksOf(db, campaignId) });
+}
+
+/** Tells everyone what date it is in the world now, or with nothing, that there is none. */
+export function dated(campaignId: string, date: string): Promise<void> {
+	return send({ campaignId, events: [], date });
 }
 
 /**

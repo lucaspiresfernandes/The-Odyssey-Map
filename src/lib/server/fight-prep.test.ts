@@ -13,6 +13,7 @@ import { memoryStorage, setStorage } from './storage';
 import { toLiveEvent } from './visibility';
 import { ActionError, perform, viewerOf, type Actor } from './world';
 import { LIMITS, type Point, type Region, type Token } from '../shared/types';
+import type { CommandOf } from '../shared/types';
 
 let db: Db;
 let owner: User;
@@ -58,7 +59,7 @@ function refusal(fn: () => unknown): string {
 	return 'allowed';
 }
 
-function token(by: Actor, extra: Record<string, unknown> = {}, on = field): Token {
+function token(by: Actor, extra: Partial<CommandOf<'token.create'>> = {}, on = field): Token {
 	const [event] = perform(db, by, { t: 'token.create', mapId: on, name: 'Goblin', x: 0.5, y: 0.5, ...extra });
 	return event.after as Token;
 }

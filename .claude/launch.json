@@ -12,7 +12,7 @@
 			"runtimeExecutable": "cmd",
 			"runtimeArgs": [
 				"/c",
-				"set DATA_DIR=data/preview&& set PORT=4273&& set WS_PORT=3201&& bun scripts/run.ts start"
+				"set DATA_DIR=data/preview&& set PORT=4273&& set WS_PORT=3201&& set APP_URL=http://127.0.0.1:4273&& bun scripts/run.ts start"
 			],
 			"port": 4273
 		}

@@ -31,7 +31,6 @@ import {
 	type LiveEvent,
 	type MapInfo,
 	type Marker,
-	type Party,
 	type Patch,
 	type Region,
 	type StoredEvent,
@@ -117,11 +116,6 @@ export function projectEvent(event: StoredEvent, who: Who, fog: Fog = NO_FOG): P
 			};
 		}
 		return null;
-	}
-
-	// The party is never where players are kept out, so where it is, is news for all.
-	if (event.entity === 'party') {
-		return { t: 'party.set', party: event.after as Party | null };
 	}
 
 	// A map is only ever deleted along with the region that led to it, and

@@ -132,9 +132,6 @@ piece(gm, 'Smuggler 2', 11, 9, { outline: TOKEN_COLORS[2] });
 piece(gm, 'Brute', 17.5, 11.5, { size: 2, color: TOKEN_COLORS[1] });
 piece(gm, 'Lookout', 21, 3, { color: TOKEN_COLORS[6], hidden: true });
 
-// The party has made it to the port: the world map shows it in there.
-perform(db, gm, { t: 'party.move', mapId: port, x: 0.47, y: 0.62 });
-
 mark(gm, world, {
 	type: 'quest',
 	title: 'The Drowned Bell',
@@ -143,7 +140,7 @@ mark(gm, world, {
 	y: 0.7
 });
 mark(gm, world, {
-	type: 'danger',
+	type: 'note',
 	title: 'Wyrm nest',
 	description: 'Hidden until the party finds the scorched clearing.',
 	x: 0.34,
@@ -151,7 +148,7 @@ mark(gm, world, {
 	hidden: true
 });
 mark(gm, port, {
-	type: 'npc',
+	type: 'note',
 	title: 'Harbourmaster Ilse',
 	description: 'Knows every ship that came in this month, and which ones did not declare their cargo.',
 	x: 0.7,
@@ -166,7 +163,7 @@ mark(gm, tavern, {
 	hidden: true
 });
 mark(mira, tavern, {
-	type: 'npc',
+	type: 'note',
 	title: 'The suspicious innkeeper',
 	description: 'Went pale when we asked about the cellar.',
 	x: 0.52,

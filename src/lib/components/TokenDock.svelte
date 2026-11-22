@@ -20,6 +20,7 @@
 		type GroupsResponse,
 		type TokenGroup
 	} from '#lib/shared/types.ts';
+	import { KEY, ariaKey, keyLabel } from '#lib/client/keys.ts';
 	import ToolButton from './ToolButton.svelte';
 
 	interface Props {
@@ -222,8 +223,9 @@
 			<button
 				class="{piece} border-[#12151c] bg-(--c)"
 				style:--c={color}
-				title="A plain token"
+				title="A plain token ({keyLabel(KEY.plainToken)})"
 				aria-label="Add a plain token"
+				aria-keyshortcuts={ariaKey(KEY.plainToken)}
 				onpointerdown={(e) => onpointerdown(e, null)}
 				{onpointermove}
 				onpointerup={(e) => onpointerup(e, true)}

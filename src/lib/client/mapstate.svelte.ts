@@ -9,7 +9,6 @@ import type {
 	MapInfo,
 	MapSnapshot,
 	Marker,
-	Party,
 	Region,
 	Token
 } from '#lib/shared/types.ts';
@@ -27,8 +26,6 @@ export class MapState {
 	markers = $state<Marker[]>([]);
 	tokens = $state<Token[]>([]);
 	drawings = $state<Drawing[]>([]);
-	/** Where the party is, on this map or any other. */
-	party = $state<Party | null>(null);
 	/**
 	 * How many miles across this map is, if anything on the way here says.
 	 * Like the backdrop, only the server can work it out, so it is as old
@@ -49,7 +46,6 @@ export class MapState {
 		this.markers = snapshot.markers;
 		this.tokens = snapshot.tokens;
 		this.drawings = snapshot.drawings;
-		this.party = snapshot.party;
 		this.miles = snapshot.miles;
 		this.dayMiles = snapshot.dayMiles;
 		this.lastSeq = snapshot.lastSeq;
@@ -109,11 +105,6 @@ export class MapState {
 					r.targetMapId === map.id ? { ...r, name: map.name, kind: map.kind } : r
 				);
 				break;
-			}
-			// The party is the campaign's, so it is news on whichever map this is.
-			// Where it went on this one is added to the road behind it.
-			case 'party.set': {
-				this.party = patch.party;
 			}
 		}
 	}

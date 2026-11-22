@@ -1,8 +1,8 @@
 <script lang="ts">
+	import { KEY } from '#lib/client/keys.ts';
 	import { canEditMarkerKind, canEditWorld, canRemoveMarker } from '#lib/shared/rules.ts';
 	import { imageUrl, markerType, type Marker, type Player, type Role } from '#lib/shared/types.ts';
 	import MarkerGlyph from './MarkerGlyph.svelte';
-	import PlayerPicker from './PlayerPicker.svelte';
 	import ToolButton from './ToolButton.svelte';
 
 	interface Props {
@@ -19,12 +19,10 @@
 		onmove: (marker: Marker) => void;
 		ondelete: (marker: Marker) => void;
 		onhide: (marker: Marker, hidden: boolean) => void;
-		/** The players of the campaign, for the GM to choose who a hidden marker is a secret with. */
+		/** The players of the campaign, for the GM to read who a hidden marker is a secret with. */
 		players?: Player[];
-		/** The GM chose who sees a hidden marker: these players, and nobody else at the table. */
-		onshare?: (marker: Marker, seenBy: string[]) => void;
-		/** The GM holds the marker's picture up for the whole table to look at. */
-		onshow?: (marker: Marker) => void;
+		/** The GM is to say who sees the marker. */
+		onvisibility?: (marker: Marker) => void;
 	}
 
 	let {
@@ -39,8 +37,7 @@
 		ondelete,
 		onhide,
 		players = [],
-		onshare,
-		onshow
+		onvisibility
 	}: Props = $props();
 
 	/** The picture couldn't be loaded: the card does without it. */
@@ -55,16 +52,41 @@
 	const inOnIt = $derived(
 		players.filter((player) => marker.seenBy.includes(player.id)).map((player) => player.name)
 	);
-	/** The GM is choosing who sees it. */
-	let sharing = $state(false);
+	/** Who sees it, for the tooltip of the button that changes it. */
+	const seen = $derived(
+		!marker.hidden
+			? 'Everyone sees it'
+			: inOnIt.length
+				? `Only you and ${inOnIt.join(', ')} see it`
+				: 'Only you see it'
+	);
 
-	// The choosing is for the marker it was started on: it is put away when
-	// the card shows another, and stays out while this one changes under it.
-	const shownId = $derived(marker.id);
-	$effect(() => {
-		void shownId;
-		sharing = false;
-	});
+	/**
+	 * A key was pressed with this card pinned: it does what the button it
+	 * belongs to does. True if it was one of the card's. `held` says the key
+	 * is being held down: it is done once, not over and over.
+	 */
+	export function key(pressed: string, held = false): boolean {
+		const mine = keyed(pressed);
+		if (!mine) return false;
+		if (!held) mine();
+		return true;
+	}
+
+	/** What a key does to the marker, or nothing if it is no key of the card's. */
+	function keyed(pressed: string): (() => void) | null {
+		if (!pinned || !editable) return null;
+		const world = marker.kind === 'world';
+		if (pressed === KEY.rename || pressed === KEY.renameToo) return () => onedit(marker);
+		if (pressed === KEY.move) return () => onmove(marker);
+		// The quick way, with no button of its own: hidden from everyone, or back.
+		if (pressed === KEY.hide && world) return () => onhide(marker, !marker.hidden);
+		if (pressed === KEY.share && world && onvisibility) return () => onvisibility(marker);
+		if ((pressed === KEY.remove || pressed === 'Backspace') && removable) {
+			return () => ondelete(marker);
+		}
+		return null;
+	}
 </script>
 
 <article
@@ -135,54 +157,42 @@
 		{#if pinned}
 			<!-- Icons, each with a tooltip that names it, like the tools under the map. -->
 			<footer class="mt-1.5 flex flex-wrap gap-1">
-				<ToolButton small icon="rename" label="Edit" onclick={() => onedit(marker)} />
-				<ToolButton small icon="move" label="Move" onclick={() => onmove(marker)} />
-				{#if marker.kind === 'world'}
+				<ToolButton
+					small
+					icon="rename"
+					label="Edit"
+					shortcut={KEY.rename}
+					onclick={() => onedit(marker)}
+				/>
+				<ToolButton
+					small
+					icon="move"
+					label="Move"
+					shortcut={KEY.move}
+					onclick={() => onmove(marker)}
+				/>
+				{#if marker.kind === 'world' && onvisibility}
 					<ToolButton
 						small
-						icon={marker.hidden ? 'reveal' : 'hide'}
-						label={marker.hidden ? 'Reveal to all players' : 'Hide from players'}
+						icon={marker.hidden ? 'hide' : 'reveal'}
+						label="Visibility"
+						hint={seen}
+						shortcut={KEY.share}
 						active={marker.hidden}
-						onclick={() => onhide(marker, !marker.hidden)}
-					/>
-					{#if onshare}
-						<ToolButton
-							small
-							icon="people"
-							label="Show to some players only"
-							hint="A secret between them and you"
-							active={marker.seenBy.length > 0}
-							expanded={sharing}
-							onclick={() => (sharing = !sharing)}
-						/>
-					{/if}
-				{/if}
-				{#if picture && onshow}
-					<ToolButton
-						small
-						icon="show"
-						label="Show the picture to the table"
-						hint="Full screen, on every screen"
-						onclick={() => onshow(marker)}
+						onclick={() => onvisibility(marker)}
 					/>
 				{/if}
 				{#if removable}
-					<ToolButton small danger icon="delete" label="Delete" onclick={() => ondelete(marker)} />
+					<ToolButton
+						small
+						danger
+						icon="delete"
+						label="Delete"
+						shortcut={KEY.remove}
+						onclick={() => ondelete(marker)}
+					/>
 				{/if}
 			</footer>
-			{#if sharing && onshare}
-				<!-- Who a hidden marker is shown to all the same. Choosing someone
-				     hides it from the rest. -->
-				<div class="mt-1 grid gap-1.5 border-t pt-2">
-					<span class="text-xs text-muted">Only these players see it:</span>
-					<PlayerPicker
-						{players}
-						value={marker.seenBy}
-						label="Players who see this marker"
-						onchange={(ids) => onshare(marker, ids)}
-					/>
-				</div>
-			{/if}
 		{:else}
 			<p class="text-xs text-muted">Click the marker to edit</p>
 		{/if}

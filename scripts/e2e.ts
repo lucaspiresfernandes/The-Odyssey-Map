@@ -719,22 +719,6 @@ async function run() {
 		gmSocket.messages.filter((m) => m.t === 'hand.left').at(-1)?.id === pointed?.id
 	);
 
-	// The party: the GM's to move, and news for the whole table.
-	const marched = await gm.command(campaign, { t: 'party.move', mapId, x: 0.4, y: 0.6 });
-	await pause(300);
-	const partyNews = playerSocket.messages.filter((m) => m.t === 'event' && m.event.patch.t === 'party.set');
-	check('the GM moves the party, and the player is shown where', marched.status === 200 && partyNews.at(-1)?.event.patch.party?.x === 0.4);
-	check('a player cannot', (await player.command(campaign, { t: 'party.move', mapId, x: 0.1, y: 0.1 })).status === 403);
-	check('nor does it go on a battle map', (await gm.command(campaign, { t: 'party.move', mapId: bridgeId, x: 0.5, y: 0.5 })).status === 400);
-	check('nor can a player take it off the maps', (await player.command(campaign, { t: 'party.remove' })).status === 403);
-	const struck = await gm.command(campaign, { t: 'party.remove' });
-	await pause(300);
-	const partyNow = () => playerSocket.messages.filter((m) => m.t === 'event' && m.event.patch.t === 'party.set').at(-1)?.event.patch.party;
-	check('the GM takes the party off the maps, and the player is told', struck.status === 200 && partyNow() === null);
-	const replanted = await gm.command(campaign, { t: 'history.revert', seq: struck.body.undo?.[0] });
-	await pause(300);
-	check('and undo plants it back where it stood', replanted.status === 200 && partyNow()?.x === 0.4);
-
 	// Fog of war: what stands under it is not in the page a player loads, and
 	// when it moves they are sent the tokens they may see now.
 	const bridgePage = async () => (await player.request(`/c/${campaign}/m/${bridgeId}`)).text();
@@ -813,48 +797,6 @@ async function run() {
 		shows(playerSocket).at(-1)?.shown === null && (await player.request(lichPath)).status === 404
 	);
 
-	// Bringing everyone here: the app says who may follow, and the WebSocket
-	// server passes the call on.
-	const gathers = (socket: { messages: any[] }) => socket.messages.filter((m) => m.t === 'gather');
-	const call = (who: Visitor, to: string, view: unknown = { x: 0.5, y: 0.5, w: 0.4, h: 0.3 }) =>
-		who.request(`/c/${campaign}/gather`, {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ mapId: to, view, from: 'e2e' })
-		});
-	const called = await call(gm, bridgeId);
-	await pause(300);
-	check('the GM brings everyone to a map', called.status === 200 && (await called.json()).players === true);
-	check(
-		'the player and the display are sent there, to the same part of it',
-		[playerSocket, displaySocket].every((socket) => {
-			const got = gathers(socket).at(-1)?.gather;
-			return got?.mapId === bridgeId && got.view.w === 0.4 && got.from === 'e2e';
-		})
-	);
-	check('a player cannot bring anyone anywhere', (await call(player, mapId)).status === 403);
-	check('nor is a view that makes no sense passed on', (await call(gm, mapId, { x: 0.5, y: 0.5, w: 0, h: 'all' })).status === 400);
-	check('nor one of a map that is not there', (await call(gm, 'nosuchmap')).status === 404);
-	const before = [gathers(playerSocket).length, gathers(displaySocket).length, gathers(gmSocket).length];
-	const secretly = await call(gm, cryptId);
-	await pause(300);
-	check('behind a hidden region the GM is told the players stay', (await secretly.json()).players === false);
-	check(
-		'and only the GM\'s own windows follow',
-		gathers(playerSocket).length === before[0] && gathers(displaySocket).length === before[1] && gathers(gmSocket).length === before[2] + 1
-	);
-	// Whoever connects later is brought to where their kind was last called.
-	const [lateDisplay, lateGm] = [gm.connect(campaign, app, true), gm.connect(campaign)];
-	await Promise.all([lateDisplay.opened, lateGm.opened]);
-	await pause(300);
-	const lateCall = (socket: { messages: any[] }) => socket.messages.find((m) => m.t === 'gather');
-	check(
-		'a screen that connects later is brought to where the table was last called',
-		lateCall(lateDisplay)?.late === true && lateCall(lateDisplay)?.gather.mapId === bridgeId && typeof lateCall(lateDisplay)?.gather.at === 'number'
-	);
-	check('and never to where only the GM went', lateCall(lateGm)?.late === true && lateCall(lateGm)?.gather.mapId === cryptId);
-	lateDisplay.ws.close();
-	lateGm.ws.close();
 	displaySocket.ws.close();
 
 	// What some players are let in on and the rest are not: the app says what
@@ -941,17 +883,6 @@ async function run() {
 	await gm.command(campaign, { t: 'region.update', id: tombRegion?.id, closed: false });
 	check('opened, it is', (await player.request(`/c/${campaign}/m/${tombRegion?.targetMapId}`)).status === 200);
 
-	// A region hidden from the table and shown to one player: the GM can bring them along.
-	await gm.command(campaign, { t: 'region.update', id: tombRegion?.id, hidden: true, seenBy: [friendId] });
-	const counts = [gathers(friendSocket).length, gathers(playerSocket).length];
-	const quietly = await call(gm, tombRegion?.targetMapId);
-	await pause(300);
-	check(
-		'a player who is let in follows a call the table does not',
-		(await quietly.json()).players === false &&
-			gathers(friendSocket).length === counts[0] + 1 &&
-			gathers(playerSocket).length === counts[1]
-	);
 	friendSocket.ws.close();
 	screen.ws.close();
 

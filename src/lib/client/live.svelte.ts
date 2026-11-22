@@ -15,8 +15,7 @@ import type {
 	ClientMessage,
 	Command,
 	CommandResponse,
-	Gather,
-	GatherResponse,
+	DateResponse,
 	Hand,
 	HandSpot,
 	Knock,
@@ -28,8 +27,7 @@ import type {
 	SeatResponse,
 	ServerMessage,
 	ShowResponse,
-	Shown,
-	Sight
+	Shown
 } from '#lib/shared/types.ts';
 
 interface Options {
@@ -66,10 +64,14 @@ export class Live {
 	hands = $state.raw<Hand[]>([]);
 	/** The spots being pointed out right now, this browser's own among them. */
 	pings = $state.raw<LivePing[]>([]);
-	/** The picture the GM is holding up for the table, if any. */
-	shown = $state.raw<Shown | null>(null);
 	/** For the GM: who is asking for a seat they sat in before, the first to ask first. */
 	knocks = $state.raw<Knock[]>([]);
+	/**
+	 * The date it is in the world, as the GM wrote it: empty for none, and
+	 * null until the server has said. The page was loaded with one to show
+	 * until then.
+	 */
+	date = $state<string | null>(null);
 
 	/**
 	 * The last few events received. A page that finishes loading while
@@ -80,14 +82,9 @@ export class Live {
 	#options: Options;
 	#ws: WebSocket | null = null;
 	#listeners = new Set<(event: LiveEvent) => void>();
-	#gatherers = new Set<(gather: Gather, late: boolean) => void>();
-	/** A call that came before anyone was listening for one. */
-	#waiting: { gather: Gather; late: boolean } | null = null;
 	/** Who this browser is at the table, once the server has said. */
 	#me: { id: string; name: string; role: Role } | null = null;
 	#pingKey = 0;
-	/** Names this browser, so that its own call to gather passes it by. */
-	#name = Math.random().toString(36).slice(2);
 	#pending = new Map<number, Pending>();
 	#nextId = 1;
 	#attempt = 0;
@@ -139,8 +136,8 @@ export class Live {
 				this.status = 'open';
 				this.online = message.online;
 				this.hands = message.hands;
-				this.shown = message.shown;
 				this.knocks = message.knocks ?? [];
+				this.date = message.date ?? null;
 				this.#me = { ...message.user, role: message.role };
 				// A new connection is a new hand to everyone else.
 				this.#toldSpot = null;
@@ -164,17 +161,14 @@ export class Live {
 			case 'ping':
 				this.#pinged(message.ping);
 				break;
-			case 'show':
-				this.shown = message.shown;
-				break;
 			case 'knocks':
 				this.knocks = message.knocks;
 				break;
+			case 'date':
+				this.date = message.date;
+				break;
 			case 'event':
 				this.#dispatch(message.event);
-				break;
-			case 'gather':
-				this.#called(message.gather, message.late === true);
 				break;
 			case 'ack': {
 				const pending = this.#pending.get(message.id);
@@ -235,89 +229,27 @@ export class Live {
 	}
 
 	/**
-	 * Calls `listener` whenever the GM brings everyone somewhere. `late` says
-	 * the call was made before this browser connected: it is where the table
-	 * is, not news. Returns the unsubscribe function.
+	 * Says what date it is in the world, or with nothing, that there is none:
+	 * the GM's to do. Resolves to the date as the server kept it. Rejects
+	 * with the server's reason if it refuses.
 	 */
-	onGather(listener: (gather: Gather, late: boolean) => void): () => void {
-		this.#gatherers.add(listener);
-		const waiting = this.#waiting;
-		this.#waiting = null;
-		if (waiting) listener(waiting.gather, waiting.late);
-		return () => this.#gatherers.delete(listener);
-	}
-
-	/** Where this browser keeps the time of the last call it answered, or made. */
-	get #answeredKey() {
-		return `odyssey:gathered:${this.#options.campaignId}`;
-	}
-
-	/**
-	 * A call to gather has come in. This browser's own passes it by, and so
-	 * does one it has answered before: the last call is sent again whenever
-	 * a browser connects, and a reload is no reason to be brought back.
-	 */
-	#called(gather: Gather, late: boolean) {
-		if (gather.from === this.#name) return;
+	async setDate(date: string): Promise<string> {
+		let body: DateResponse;
 		try {
-			if (Number(sessionStorage.getItem(this.#answeredKey)) >= gather.at) return;
-			sessionStorage.setItem(this.#answeredKey, String(gather.at));
-		} catch {
-			// No storage to remember it in: a late call is then left alone, so
-			// that nobody is brought back on every reload.
-			if (late) return;
-		}
-		if (this.#gatherers.size === 0) this.#waiting = { gather, late };
-		for (const listener of this.#gatherers) listener(gather, late);
-	}
-
-	/**
-	 * Brings everyone else to this part of a map: the GM's to do. Resolves to
-	 * whether the players may follow, which they may not onto a map behind a
-	 * hidden region. Rejects with the server's reason if it refuses.
-	 */
-	async gather(mapId: string, view: Sight): Promise<boolean> {
-		let body: GatherResponse;
-		try {
-			const response = await fetch(`/c/${this.#options.campaignId}/gather`, {
+			const response = await fetch(`/c/${this.#options.campaignId}/date`, {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ mapId, view, from: this.#name })
+				body: JSON.stringify({ date })
 			});
 			body = await response.json();
 		} catch {
 			throw new Error("Can't reach the server.");
 		}
 		if (!body.ok) throw new Error(body.error ?? 'Something went wrong.');
-		try {
-			// A reload of this window is not brought back by its own call.
-			if (body.at) sessionStorage.setItem(this.#answeredKey, String(body.at));
-		} catch {
-			// Nothing to remember it in.
-		}
-		return body.players === true;
-	}
-
-	/**
-	 * Holds a picture of the gallery up, by its id, or with null puts away
-	 * the one that is up: the GM's to do. `to` names the players it is for,
-	 * by id: with none, it is for the whole table. `file` names the picture
-	 * by its file instead, for one that is known from where it is used: the
-	 * card of a marker. Rejects with the server's reason if it refuses.
-	 */
-	async show(id: string | null, to: string[] = [], file?: string): Promise<void> {
-		let body: ShowResponse;
-		try {
-			const response = await fetch(`/c/${this.#options.campaignId}/show`, {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify(file ? { file, to } : { id, to })
-			});
-			body = await response.json();
-		} catch {
-			throw new Error("Can't reach the server.");
-		}
-		if (!body.ok) throw new Error(body.error ?? 'Something went wrong.');
+		// Here at once, and with the live connection down, at all: everyone
+		// else hears of it from the server.
+		this.date = body.date ?? date;
+		return this.date;
 	}
 
 	/**

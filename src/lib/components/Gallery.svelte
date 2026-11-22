@@ -38,16 +38,6 @@
 		 * from that shelf, and without one from either.
 		 */
 		onpick?: (item: GalleryItem) => void;
-		/**
-		 * For the GM's storeroom: holds a picture up to be looked at, or with
-		 * null puts away the one that is up. `to` names the players it is for,
-		 * by id: with none, it is for the whole table. `shownFile` is the file
-		 * of the one that is up.
-		 */
-		onshow?: (item: GalleryItem | null, to: string[]) => void;
-		shownFile?: string | null;
-		/** The players of the campaign, to choose who a picture is held up for. */
-		players?: Player[];
 		onclose: () => void;
 	}
 
@@ -57,9 +47,6 @@
 		current = null,
 		readonly = false,
 		onpick,
-		onshow,
-		shownFile = null,
-		players = [],
 		onclose
 	}: Props = $props();
 
@@ -229,23 +216,6 @@
 			{/if}
 		</p>
 
-		{#if onshow && players.length}
-			<!-- Who a picture is held up for. Nobody picked, it is the whole table. -->
-			<div class="grid gap-1.5 rounded-[10px] border bg-panel-2 px-3 py-2.5">
-				<span class="text-[13px] text-muted">
-					{audience.length
-						? 'The screen on a picture holds it up for these players only:'
-						: 'The screen on a picture holds it up for the whole table. Pick players to show it to them only:'}
-				</span>
-				<PlayerPicker
-					{players}
-					value={audience}
-					label="Players a picture is held up for"
-					onchange={(ids) => (audience = ids)}
-				/>
-			</div>
-		{/if}
-
 		{#if error}
 			<p class="rounded-lg border border-danger/50 bg-danger/10 px-3 py-2 text-sm" role="alert">
 				{error}
@@ -394,42 +364,6 @@
 										aria-hidden="true"
 									>
 										<path d={item.hidden ? STRUCK : EYE} />
-									</svg>
-								</button>
-							{/if}
-							{#if onshow}
-								<!-- Holds the picture up for everyone at the table, on their own
-								     screens and on the table display. It stays gold, and in view,
-								     for as long as it is up: click it again to put it away. -->
-								{@const up = item.file === shownFile}
-								<button
-									class={[
-										'absolute top-1 left-1/2 grid size-6.5 -translate-x-1/2 cursor-pointer place-items-center rounded-full border bg-night/85 transition-opacity touch:size-9',
-										up
-											? 'border-accent text-accent'
-											: 'text-muted opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 hover:text-cream touch:opacity-100'
-									]}
-									aria-label="Show {item.name} to the table"
-									aria-pressed={up}
-									title={up
-										? 'This picture is up. Click to put it away.'
-										: audience.length
-											? 'Show it to the players picked above, full screen'
-											: 'Show it to the table, full screen'}
-									onclick={() => onshow(up ? null : item, audience)}
-								>
-									<svg
-										width="15"
-										height="15"
-										viewBox="0 0 24 24"
-										fill="none"
-										stroke="currentColor"
-										stroke-width="2"
-										stroke-linecap="round"
-										stroke-linejoin="round"
-										aria-hidden="true"
-									>
-										<path d="M3 4h18v12H3Z M8 20h8 M12 16v4" />
 									</svg>
 								</button>
 							{/if}

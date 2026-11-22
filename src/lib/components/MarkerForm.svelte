@@ -8,6 +8,7 @@
 		type MarkerKind,
 		type MarkerType
 	} from '#lib/shared/types.ts';
+  import { untrack } from 'svelte';
 	import Gallery from './Gallery.svelte';
 	import MarkerGlyph from './MarkerGlyph.svelte';
 	import Modal from './Modal.svelte';
@@ -27,17 +28,12 @@
 	let { mode, kind, campaignId, initial = {}, onsubmit, onclose }: Props = $props();
 
 	// Deliberately a one-time copy: the form owns its fields once it is open.
-	// svelte-ignore state_referenced_locally
-	let type = $state<MarkerType>(initial.type ?? (kind === 'world' ? 'location' : 'note'));
-	// svelte-ignore state_referenced_locally
-	let title = $state(initial.title ?? '');
-	// svelte-ignore state_referenced_locally
-	let description = $state(initial.description ?? '');
-	// svelte-ignore state_referenced_locally
-	let hidden = $state(initial.hidden ?? false);
+	let type = $state<MarkerType>(untrack(() => initial.type ?? MARKER_TYPES[0].id));
+	let title = $state(untrack(() => initial.title ?? ''));
+	let description = $state(untrack(() => initial.description ?? ''));
+	let hidden = $state(untrack(() => initial.hidden ?? false));
 	/** The picture its card shows, by file name. A world marker's only. */
-	// svelte-ignore state_referenced_locally
-	let image = $state(initial.image ?? null);
+	let image = $state(untrack(() => initial.image ?? null));
 	/** The gallery is open, to choose that picture from. */
 	let picking = $state(false);
 	let saving = $state(false);

@@ -11,7 +11,7 @@ const [mode = 'dev', ...flags] = process.argv.slice(2);
 const host = flags.includes('--lan') ? '0.0.0.0' : '127.0.0.1';
 const bun = process.execPath;
 
-const appPort = mode === 'start' ? process.env.PORT || '3000' : '5173';
+const appPort = '5173';
 
 const env = {
 	...process.env,

@@ -1,11 +1,18 @@
 // What a session is run with: marks on tokens, the turn order, spell
 // templates, the scale of a world map, the road the party has taken, the
-// finder, a picture held up for the table, and what a token picture starts
-// its tokens out as.
+// finder, a picture held up for the table, the date in the world, and what
+// a token picture starts its tokens out as.
 
 import { beforeEach, describe, expect, test } from 'bun:test';
 import { createGuest, registerUser } from './auth';
-import { actorFor, createCampaign, getMembership, joinCampaign } from './campaigns';
+import {
+	actorFor,
+	createCampaign,
+	dateOf,
+	getMembership,
+	joinCampaign,
+	setDate
+} from './campaigns';
 import { openDb, type Db } from './db';
 import {
 	addToGallery,
@@ -20,17 +27,19 @@ import {
 } from './gallery';
 import { findable, getMapSnapshot } from './queries';
 import { toLiveEvent } from './visibility';
-import { ActionError, perform, undoable, type Actor } from './world';
-import type {
-	Drawing,
-	MapInfo,
-	Marker,
-	Patch,
-	Point,
-	Region,
-	StoredEvent,
-	Token
+import { ActionError, perform, performReceived, undoable, type Actor } from './world';
+import {
+	LIMITS,
+	type Drawing,
+	type MapInfo,
+	type Marker,
+	type Patch,
+	type Point,
+	type Region,
+	type StoredEvent,
+	type Token
 } from '../shared/types';
+import type { CommandOf, TemplateKind } from '../shared/types';
 
 let db: Db;
 let gm: Actor;
@@ -66,14 +75,14 @@ function refusal(fn: () => unknown): string {
 }
 
 /** Draws a region on a map and returns it. */
-function draw(name: string, on = mapId, extra: Record<string, unknown> = {}): Region {
+function draw(name: string, on = mapId, extra: Partial<CommandOf<'region.create'>> = {}): Region {
 	const events = perform(db, gm, { t: 'region.create', mapId: on, name, points: SQUARE, ...extra });
 	return events[1].after as Region;
 }
 
 const battlefield = () => draw('The Bridge', mapId, { kind: 'battle' }).targetMapId;
 
-function token(by: Actor, on: string, extra: Record<string, unknown> = {}): Token {
+function token(by: Actor, on: string, extra: Partial<CommandOf<'token.create'>> = {}): Token {
 	const [made] = perform(db, by, { t: 'token.create', mapId: on, name: 'Goblin', x: 0.5, y: 0.5, ...extra });
 	return made.after as Token;
 }
@@ -116,10 +125,10 @@ describe('marks on tokens', () => {
 			perform(db, player, { t: 'token.update', id: goblin.id, changes: { marks: ['red', 'down', 'blue'] } })
 		).toHaveLength(0);
 		expect(
-			refusal(() => perform(db, player, { t: 'token.update', id: goblin.id, changes: { marks: ['on fire'] } }))
+			refusal(() => performReceived(db, player, { t: 'token.update', id: goblin.id, changes: { marks: ['on fire'] } }))
 		).toBe('invalid');
 		expect(
-			refusal(() => perform(db, player, { t: 'token.update', id: goblin.id, changes: { marks: 'red' } }))
+			refusal(() => performReceived(db, player, { t: 'token.update', id: goblin.id, changes: { marks: 'red' } }))
 		).toBe('invalid');
 	});
 
@@ -159,7 +168,7 @@ describe('the turn order', () => {
 		expect(turns(bridge)).toEqual({ order: [b.id], current: null, round: 2 });
 
 		const set = (changes: unknown, by = gm, on = bridge) =>
-			refusal(() => perform(db, by, { t: 'map.update', id: on, turns: changes }));
+			refusal(() => performReceived(db, by, { t: 'map.update', id: on, turns: changes }));
 		expect(set({ order: [a.id] }, player)).toBe('forbidden');
 		expect(set({ order: ['nobody'] })).toBe('not_found');
 		expect(set({ order: [a.id] }, gm, mapId)).toBe('invalid');
@@ -248,12 +257,12 @@ describe('the turn order', () => {
 });
 
 describe('spell templates', () => {
-	const template = (on: string, kind: string, points: unknown, by: Actor = player) =>
+	const template = (on: string, kind: TemplateKind, points: Point[], by: Actor = player) =>
 		perform(db, by, { t: 'drawing.create', mapId: on, kind, points, color: '#e5544b' });
 
 	test('anyone lays one down: a circle, a cone or a box, kept as two points', () => {
 		const bridge = battlefield();
-		for (const kind of ['circle', 'cone', 'rect']) {
+		for (const kind of ['circle', 'cone', 'rect'] as const) {
 			const [made] = template(bridge, kind, [[0.5, 0.5], [0.6, 0.5]]);
 			expect(made.after).toMatchObject({ kind, points: [[0.5, 0.5], [0.6, 0.5]], text: '', authorId: player.userId });
 		}
@@ -262,7 +271,9 @@ describe('spell templates', () => {
 
 	test('one needs two points, apart, on the map', () => {
 		const bridge = battlefield();
-		const lay = (points: unknown, kind = 'circle') => refusal(() => template(bridge, kind, points));
+		// Shapes that are no shape, as a browser gone wrong might send them.
+		const lay = (points: unknown, kind = 'circle') =>
+			refusal(() => performReceived(db, player, { t: 'drawing.create', mapId: bridge, kind, points, color: '#e5544b' }));
 		expect(lay([[0.5, 0.5]])).toBe('invalid');
 		expect(lay([[0.5, 0.5], [0.6, 0.5], [0.7, 0.5]])).toBe('invalid');
 		expect(lay([[0.5, 0.5], [0.5, 0.5]])).toBe('invalid');
@@ -298,7 +309,7 @@ describe('the scale of a world map', () => {
 		expect((set[0].after as MapInfo).miles).toBe(600);
 
 		const scale = (value: unknown, by = gm, on = mapId) =>
-			refusal(() => perform(db, by, { t: 'map.update', id: on, miles: value }));
+			refusal(() => performReceived(db, by, { t: 'map.update', id: on, miles: value }));
 		expect(scale(300, player)).toBe('forbidden');
 		expect(scale(0)).toBe('invalid');
 		expect(scale('far')).toBe('invalid');
@@ -341,7 +352,7 @@ describe('the finder', () => {
 			t: 'marker.create',
 			mapId: kingdom,
 			kind: 'world',
-			type: 'city',
+			type: 'note',
 			title: 'Saltmere',
 			x: 0.5,
 			y: 0.5
@@ -359,14 +370,14 @@ describe('the finder', () => {
 			id: (made.after as Marker).id,
 			mapId: kingdom,
 			path: ['The Sunless Reach', 'The Kingdom'],
-			type: 'city'
+			type: 'note'
 		});
 	});
 
 	test('a player is told of nothing hidden, nor of anything behind a hidden region', () => {
 		const vault = draw('The Vault', mapId, { hidden: true }).targetMapId;
 		draw('The Inner Vault', vault);
-		const pin = { t: 'marker.create', kind: 'world', type: 'treasure', x: 0.5, y: 0.5 };
+		const pin = { t: 'marker.create', kind: 'world', type: 'treasure', x: 0.5, y: 0.5 } as const;
 		perform(db, gm, { ...pin, mapId: vault, title: 'The Crown' });
 		perform(db, gm, { ...pin, mapId, title: 'The Trapdoor', hidden: true });
 		perform(db, gm, { ...pin, mapId, title: 'The Inn' });
@@ -430,6 +441,33 @@ describe('a picture held up for the table', () => {
 		removeFromGallery(db, gm, lich.id);
 		expect(shownTo(db, gm.campaignId)).toBeNull();
 		expect(loads(lich.file)).toBe(false);
+	});
+});
+
+describe('the date in the world', () => {
+	const told = (who: Actor) => getMembership(db, gm.campaignId, who.userId)!.date;
+
+	test('a campaign starts with none, and the GM writes one in their own words', () => {
+		expect(dateOf(db, gm.campaignId)).toBe('');
+		// Whatever the calendar of the setting calls it: nothing reads it.
+		expect(setDate(db, gm, '  15th of Mirtul,\n 1492 DR  ')).toBe('15th of Mirtul, 1492 DR');
+		expect(dateOf(db, gm.campaignId)).toBe('15th of Mirtul, 1492 DR');
+		// Everyone at the table is told the same.
+		expect(told(gm)).toBe('15th of Mirtul, 1492 DR');
+		expect(told(player)).toBe('15th of Mirtul, 1492 DR');
+
+		expect(setDate(db, gm, '')).toBe('');
+		expect(told(player)).toBe('');
+	});
+
+	test('only the GM does, and only so much of it', () => {
+		setDate(db, gm, 'Midsummer');
+		expect(refusal(() => setDate(db, player, 'Shieldmeet'))).toBe('forbidden');
+		expect(refusal(() => setDate(db, gm, 'x'.repeat(LIMITS.date + 1)))).toBe('invalid');
+		expect(refusal(() => setDate(db, gm, 1492))).toBe('invalid');
+		expect(refusal(() => setDate(db, gm, undefined))).toBe('invalid');
+		expect(dateOf(db, gm.campaignId)).toBe('Midsummer');
+		expect(setDate(db, gm, 'x'.repeat(LIMITS.date))).toHaveLength(LIMITS.date);
 	});
 });
 

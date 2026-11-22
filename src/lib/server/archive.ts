@@ -22,6 +22,7 @@ import type { Campaign } from './campaigns';
 import type { Db } from './db';
 import { newImageFile } from './gallery';
 import { newId, newToken } from './ids';
+import { fogOf } from '../shared/fog';
 import {
 	campaigns,
 	drawings,
@@ -29,7 +30,6 @@ import {
 	maps,
 	markers,
 	members,
-	parties,
 	regions,
 	tokenGroups,
 	tokens
@@ -51,13 +51,13 @@ import {
 	isTemplate,
 	type DrawingKind,
 	type Fog,
+	type FogMark,
 	type GalleryKind,
 	type Grid,
 	type GroupToken,
 	type MapKind,
 	type MarkerKind,
 	type MarkerType,
-	type Oval,
 	type Point,
 	type Rect,
 	type TokenMark,
@@ -101,6 +101,8 @@ function manifestOf(db: Db, campaignId: string) {
 			odyssey: VERSION,
 			exportedAt: Date.now(),
 			name: campaign.name,
+			// The date it is in the world: where the story has got to.
+			date: campaign.date,
 			rootMapId: campaign.rootMapId,
 			maps: mapRows.map(({ campaignId: _, ...map }) => map),
 			regions: on((list) =>
@@ -148,8 +150,7 @@ function manifestOf(db: Db, campaignId: string) {
 				.where(eq(tokenGroups.campaignId, campaignId))
 				.orderBy(tokenGroups.createdAt)
 				.all()
-				.map(({ campaignId: _, ...group }) => group),
-			party: tx.select().from(parties).where(eq(parties.campaignId, campaignId)).get() ?? null
+				.map(({ campaignId: _, ...group }) => group)
 		};
 	});
 }
@@ -233,11 +234,25 @@ function fog(value: unknown): Fog {
 		if (!(x0 < x1 && y0 < y1)) refuse();
 		return [x0, y0, x1, y1];
 	});
-	const spots = list(raw.spots ?? [], LIMITS.fogSpots).map((each): Oval => {
-		const [x, y, rx, ry] = list(each, 4);
-		return [coord(x), coord(y), number(rx, 1e-6, 4), number(ry, 1e-6, 4)];
+	// What was done to it by hand since: a box, or where a brush swept, round or square.
+	const marks = list(raw.marks ?? [], LIMITS.fogMarks).map((each): FogMark => {
+		const mark = record(each);
+		if (mark.box !== undefined) {
+			const [x0, y0, x1, y1] = list(mark.box, 4).map(coord);
+			if (!(x0 < x1 && y0 < y1)) refuse();
+			return { cover: flag(mark.cover), box: [x0, y0, x1, y1] };
+		}
+		const [rx, ry] = list(mark.r, 2);
+		const swept = {
+			cover: flag(mark.cover),
+			path: points(mark.path, 1, LIMITS.fogPath),
+			r: [number(rx, 1e-6, 4), number(ry, 1e-6, 4)] as [number, number]
+		};
+		return mark.square === true ? { ...swept, square: true } : swept;
 	});
-	return spots.length ? { on: flag(raw.on), clear, spots } : { on: flag(raw.on), clear };
+	// A file from when a world map's fog lifted around the party has round
+	// patches of another kind. Those are left behind.
+	return fogOf({ on: flag(raw.on), clear, marks });
 }
 
 function grid(value: unknown): Grid {
@@ -319,6 +334,8 @@ function build(
 	pictures: Map<string, { file: string; width: number; height: number }>
 ): Campaign {
 	const name = text(manifest.name, LIMITS.name);
+	// From files that have one: on one line, as the GM's own would be kept.
+	const date = text(manifest.date ?? '', 4000, false).replace(/\s+/g, ' ').slice(0, LIMITS.date);
 	const now = Date.now();
 	const campaignId = newId();
 
@@ -444,6 +461,7 @@ function build(
 					ownerId: owner.id,
 					inviteToken: newToken(),
 					rootMapId: mapIds.get(text(manifest.rootMapId, 64))!,
+					date,
 					createdAt: now
 				})
 				.run();
@@ -617,33 +635,7 @@ function build(
 					.run();
 			}
 
-			// The party stands where it stood, if that is a world map every player may open.
-			if (manifest.party != null) {
-				const party = record(manifest.party);
-				const at = typeof party.mapId === 'string' ? party.mapId : null;
-				let open = at !== null && kinds.get(at) === 'world';
-				const shut = new Set(
-					regionRows
-						.filter((region) => flag(region.hidden) || flag(region.closed))
-						.map((region) => region.targetMapId as string)
-				);
-				for (let id: string | null = at; open && id; id = parents.get(id) ?? null) {
-					if (shut.has(id)) open = false;
-				}
-				if (open && at) {
-					tx.insert(parties)
-						.values({
-							campaignId,
-							mapId: mapIds.get(at)!,
-							x: coord(party.x),
-							y: coord(party.y),
-							updatedAt: now
-						})
-						.run();
-				}
-			}
-
-			return { id: campaignId, name, rootMapId: mapIds.get(text(manifest.rootMapId, 64))! };
+			return { id: campaignId, name, rootMapId: mapIds.get(text(manifest.rootMapId, 64))!, date };
 		},
 		{ behavior: 'immediate' }
 	);

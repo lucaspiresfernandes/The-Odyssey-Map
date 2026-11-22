@@ -13,7 +13,12 @@ export const load: LayoutServerLoad = (event) => {
 	const display = event.url.searchParams.has('display');
 	const role = display ? 'player' : campaign.role;
 	return {
-		campaign: { id: campaign.id, name: campaign.name, rootMapId: campaign.rootMapId },
+		campaign: {
+			id: campaign.id,
+			name: campaign.name,
+			rootMapId: campaign.rootMapId,
+			date: campaign.date
+		},
 		role,
 		display,
 		me: { id: user.id, name: user.name },

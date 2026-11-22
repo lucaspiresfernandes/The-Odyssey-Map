@@ -13,7 +13,7 @@ import { toLiveEvent } from '#lib/server/visibility.ts';
 import {
 	ActionError,
 	deletedMaps,
-	perform,
+	performReceived,
 	undoable,
 	viewerOf,
 	type ErrorCode
@@ -43,7 +43,7 @@ export const POST: RequestHandler = async (event) => {
 
 	try {
 		const db = getDb();
-		const events = perform(db, actor, command);
+		const events = performReceived(db, actor, command);
 		// Deliver the change before answering, so the sender has already seen
 		// its effect by the time their request resolves.
 		await announce(db, events);

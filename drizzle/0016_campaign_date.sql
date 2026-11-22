@@ -1,0 +1,1 @@
+ALTER TABLE `campaigns` ADD `date` text DEFAULT '' NOT NULL;
