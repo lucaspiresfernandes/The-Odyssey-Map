@@ -1365,12 +1365,19 @@
 				onping={(x, y) => live.ping({ mapId: world.map.id, x, y })}
 			/>
 
-			<DisplayLettering {display} trail={world.trail} {mapUrl} {date} {displayInvite} />
+			<!-- A battle is a moment, not a day on the calendar: its map has no date. -->
+			<DisplayLettering
+				{display}
+				trail={world.trail}
+				{mapUrl}
+				date={battle ? '' : date}
+				{displayInvite}
+			/>
 
 			<!-- What floats in the upper left corner of the map, one under the
-			     other: the date, and who is at the table. On a battle map that
-			     second box is a dock of two tabs, the turn order and who is at
-			     the table. Only the boxes take the pointer, so the map between
+			     other: the date, and who is at the table. A battle map has
+			     neither, but a dock of two tabs instead, the turn order and who
+			     is at the table. Only the boxes take the pointer, so the map between
 			     and under them still does. A table display has the turn order
 			     alone, under the name of the map. A narrow screen keeps its Fit
 			     button in that corner, so there they start lower. -->
@@ -1380,12 +1387,11 @@
 					display ? 'top-14' : 'top-3.5 max-[720px]:top-16'
 				]}
 			>
-				{#if !display}
+				{#if !display && !battle}
 					<TableCorner
 						{isGm}
 						{date}
 						online={live.online}
-						{battle}
 						meId={data.me.id}
 						{saveDate}
 					/>

@@ -1,6 +1,6 @@
 <script lang="ts">
-	// What floats in the upper left corner of a map: the date it is in the
-	// world, and on a world map, who is at the table.
+	// What floats in the upper left corner of a world map: the date it is in
+	// the world, and who is at the table. A battle map has none of it.
 
 	import { LIMITS, type Presence } from '#lib/shared/types.ts';
 
@@ -9,14 +9,12 @@
 		/** The date it is in the world, in the GM's own words. Empty for none. */
 		date: string;
 		online: Presence[];
-		/** A battle map has its own dock for who is at the table. */
-		battle: boolean;
 		meId: string;
 		/** The GM has written a date in the field, or cleared it. */
 		saveDate: (field: HTMLInputElement) => void;
 	}
 
-	let { isGm, date, online, battle, meId, saveDate }: Props = $props();
+	let { isGm, date, online, meId, saveDate }: Props = $props();
 
 	/** A bar that floats over the map. */
 	const floating = 'rounded-xl border bg-panel/94 shadow-pop';
@@ -70,7 +68,7 @@
 		{date}
 	</span>
 {/if}
-{#if online.length && !battle}
+{#if online.length}
 	<ul class="pointer-events-auto flex shrink-0 p-1.5 {floating}" aria-label="At the table now">
 		{#each online as person (person.id)}
 			<li

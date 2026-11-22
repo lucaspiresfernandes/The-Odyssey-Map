@@ -11,7 +11,7 @@ import type { DatabaseDriver } from '../db';
 import * as schema from '../schema';
 
 /** `file:data/odyssey.db`, `file:///C:/maps/odyssey.db` or a bare path, as a path. */
-function pathOf(url: string): string {
+export function pathOf(url: string): string {
 	if (url.startsWith('file://')) return fileURLToPath(url);
 	return url.startsWith('file:') ? url.slice('file:'.length) : url;
 }

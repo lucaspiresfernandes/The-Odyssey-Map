@@ -74,6 +74,10 @@ export class InHand {
 		} else if (measure) drawn.push({ key: 'mine', points: measure, tint: '#fff' });
 		for (const other of this.#table.hands()) {
 			if (!other.ruler || other.ruler.length < 2) continue;
+			// The way a token has come is drawn only with the token. One this
+			// person can't see, under the fog, is carried without a trace.
+			const { drag } = other;
+			if (drag && !this.#board.tokens.some((t) => t.id === drag.id)) continue;
 			drawn.push({ key: other.id, points: other.ruler.map(clamped), tint: tintOf(other) });
 		}
 		return drawn.map((ruler): Ruler => ({ ...ruler, length: this.#distance(ruler.points) }));
