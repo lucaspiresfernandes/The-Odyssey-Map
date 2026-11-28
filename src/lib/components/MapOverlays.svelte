@@ -17,6 +17,7 @@
 		type Frame
 	} from '#lib/client/placement.ts';
 	import type { Stage } from '#lib/client/stage.svelte.ts';
+	import { DOUBLE_TAP_MS } from '#lib/client/tools/board.ts';
 	import type { Carry } from '#lib/client/tools/carry.svelte.ts';
 	import type { FogBrush } from '#lib/client/tools/fog-brush.svelte.ts';
 	import { PIN_HEIGHT } from '#lib/client/tools/marquee.ts';
@@ -216,6 +217,24 @@
 	});
 
 	/**
+	 * The region whose buttons have been up long enough to be meant. They can
+	 * come up right under the mouse, and the click that selected the region
+	 * may be the first of two: until a second one would no longer make a
+	 * double click, it goes through them to the region.
+	 */
+	let settledRegionId = $state<string | null>(null);
+	const selectedRegionId = $derived(selectedRegion?.id ?? null);
+	$effect(() => {
+		const id = selectedRegionId;
+		if (id === null) return;
+		const timer = setTimeout(() => (settledRegionId = id), DOUBLE_TAP_MS);
+		return () => {
+			clearTimeout(timer);
+			settledRegionId = null;
+		};
+	});
+
+	/**
 	 * Where the buttons for the selection float: just under it, in the middle,
 	 * or over the top of it when it is too low on the screen for that.
 	 */
@@ -364,12 +383,15 @@
 
 	<!-- The buttons for the region selected on a world map, floating over its
 	     name. Out of sight until their size is known, and while the
-	     region is off screen or a corner of it is in hand. -->
+	     region is off screen or a corner of it is in hand. For a moment after
+	     the region is selected they let the pointer through, so the second
+	     click of a double click reaches the region under them. -->
 	{#if regionBar && canShape && selectedRegion && tool === 'pan'}
 		<div
 			class={[
 				'absolute',
-				regionBarPosition && regionBarW > 0 ? 'pointer-events-auto' : 'invisible'
+				!(regionBarPosition && regionBarW > 0) && 'invisible',
+				settledRegionId === selectedRegion.id && 'pointer-events-auto'
 			]}
 			style:left="{regionBarPosition?.left ?? 0}px"
 			style:top="{regionBarPosition?.top ?? 0}px"

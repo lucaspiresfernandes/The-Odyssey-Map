@@ -21,7 +21,13 @@
 	import { nameSpot, type Frame } from '#lib/client/placement.ts';
 	import { Stage, clamped, inside } from '#lib/client/stage.svelte.ts';
 	import { POINT_CURSOR, tintOf } from '#lib/client/tints.ts';
-	import { dragSlack, type Board, type Gesture, type GestureOf } from '#lib/client/tools/board.ts';
+	import {
+		DOUBLE_TAP_MS,
+		dragSlack,
+		type Board,
+		type Gesture,
+		type GestureOf
+	} from '#lib/client/tools/board.ts';
 	import { Carry } from '#lib/client/tools/carry.svelte.ts';
 	import { FogBrush } from '#lib/client/tools/fog-brush.svelte.ts';
 	import { InHand, type Holding } from '#lib/client/tools/in-hand.svelte.ts';
@@ -1154,7 +1160,7 @@
 		const point = toMap(e.clientX, e.clientY);
 		const now = performance.now();
 		const double =
-			now - lastTap.at < 400 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 28;
+			now - lastTap.at < DOUBLE_TAP_MS && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 28;
 
 		// With Alt held, a click points the spot out to the table and does
 		// nothing else, whatever is under it.

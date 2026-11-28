@@ -121,6 +121,13 @@ export type GestureOf<T extends Gesture['type']> = Extract<Gesture, { type: T }>
 /** How far a pointer has to go before a press is a drag and not a click: further for a finger. */
 export const dragSlack = (e: PointerEvent) => (e.pointerType === 'mouse' ? 4 : 10);
 
+/**
+ * How long after a click a second one on the same spot still makes a double
+ * click, in milliseconds. Buttons a first click brings up stay out of the
+ * pointer's way for as long, so the second lands on the map and not on them.
+ */
+export const DOUBLE_TAP_MS = 400;
+
 export const isToken = (thing: Token | Drawing | Marker): thing is Token =>
 	!('points' in thing) && !('title' in thing);
 export const isMarker = (thing: Token | Drawing | Marker): thing is Marker => 'title' in thing;
